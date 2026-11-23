@@ -285,6 +285,7 @@
                nil)
     :prim (prim-rng node env)
     :math (do (run! #(rng % env) (:args node)) nil)
+    :extern (do (run! #(rng % env) (:args node)) (when (= :long (:type node)) full))
     :alength (do (rng (:arr node) env) (alen env (:arr node)))
     :aget (do (rng (:arr node) env)
               (index-facts! node env (rng (:idx node) env))
@@ -314,5 +315,9 @@
   "Facts for a checked region: {:entry analysis, iid analysis ...}."
   [region]
   (into {:entry (analyze-fn (:params region) (:body region))}
-        (map (fn [inst] [(:iid inst) (analyze-fn (:params inst) (:body inst))]))
+        (mapcat (fn [inst]
+                  ;; a platform body (defnative's on) is its own function in C
+                  (cons [(:iid inst) (analyze-fn (:params inst) (:body inst))]
+                        (map-indexed (fn [i v] [[(:iid inst) i] (analyze-fn (:params inst) (:body v))])
+                                     (:variants inst)))))
         (:instances region)))

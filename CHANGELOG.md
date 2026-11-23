@@ -29,6 +29,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run behind one guard at the function's entry: a fast copy when it holds, the
   fully checked body otherwise, so results and exceptions are unchanged. The
   rules are proved with z3 in `test/native/proofs/range-*.smt2`.
+- A native region keeps a small constant-size array (up to 256 elements) on
+  the C stack when it never leaves the function or the loop iteration that
+  made it: no allocation, no free. An array that is returned, carried by
+  `recur`, taken by a helper, or shares a name with a heap array stays on the
+  heap. One indexed only by constants (a scratch `[x y z]`) becomes plain C
+  locals, with no memory at all.
+- `jolt.native/defextern` declares a C function native regions call directly:
+  `(defextern ^double fast-erf [^double x] {:header "erf.h"})`. Arguments and
+  results are scalars; the region's C calls it by name (declared from the hints,
+  or through its header), and the Jolt fallback and plain Jolt code call the
+  same function through `jolt.ffi`. A `jolt build` links it from a `:static`
+  native. An array parameter (`^doubles`, `^longs`) reaches C as a pointer to
+  its elements and their count; a region passes the array's own storage, and
+  the Jolt side copies it in and back out.
+- A native helper can give a body per platform, chosen by the C compiler:
+  `(defnative f [xs] (on "defined(__aarch64__)" ...) (on :default ...))`. A
+  platform no guard covers is a build error unless there is a `:default`,
+  which is also what the Jolt fallback runs. The bodies must agree on their
+  result type and on which arguments they take.
 
 ### Fixed
 

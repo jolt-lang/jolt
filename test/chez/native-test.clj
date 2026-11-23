@@ -13,7 +13,7 @@
             [jolt.native.emit :as emit]
             [jolt.native.fallback :as fallback]
             [jolt.native.rt :as rt]
-            [jolt.native :refer [defnative]]))
+            [jolt.native :refer [defnative defextern]]))
 
 (def failures (atom []))
 (defn fail! [msg] (swap! failures conj msg) (println "FAIL" msg))
@@ -53,6 +53,25 @@
 (let [p (.start (ProcessBuilder. ^java.util.List ["cc" "-O2" "-shared" "-fPIC" "-o" rt-so (str work-dir "/jn_rt.c")]))]
   (when-not (zero? (.waitFor p)) (throw (ex-info "cc failed for jn_rt" {}))))
 (scm/call "load-shared-object" rt-so)
+
+;; C functions for the defextern rows: linked into every region object like
+;; jn_rt, and loaded into the process so their jolt.ffi bindings resolve too
+(def ext-so (str work-dir "/jn_ext.dylib"))
+(spit (str work-dir "/jn_ext.c")
+      (str "#include <stdint.h>\n"
+           "int64_t jn_ext_mix(int64_t a, double b) { return a * 3 + (int64_t)(b * 10.0); }\n"
+           "_Bool jn_ext_odd(int64_t a) { return (a & 1) != 0; }\n"
+           "double jn_ext_half(double x) { return x / 2.0; }\n"
+           "static int64_t jn_ext_count;\n"
+           "void jn_ext_tick(void) { jn_ext_count++; }\n"
+           "int64_t jn_ext_ticks(void) { return jn_ext_count; }\n"
+           "double jn_ext_sum(double *xs, int64_t n) { double s = 0; for (int64_t i = 0; i < n; i++) s += xs[i]; return s; }\n"
+           "void jn_ext_scale(double *xs, int64_t n, double k) { for (int64_t i = 0; i < n; i++) xs[i] *= k; }\n"
+           "void jn_ext_fill(int64_t *xs, int64_t n, int64_t v) { for (int64_t i = 0; i < n; i++) xs[i] = v + i; }\n"
+           "int64_t jn_ext_lsum(int64_t *xs, int64_t n) { int64_t s = 0; for (int64_t i = 0; i < n; i++) s += xs[i]; return s; }\n"))
+(let [p (.start (ProcessBuilder. ^java.util.List ["cc" "-O2" "-shared" "-fPIC" "-o" ext-so (str work-dir "/jn_ext.c")]))]
+  (when-not (zero? (.waitFor p)) (throw (ex-info "cc failed for jn_ext" {}))))
+(scm/call "load-shared-object" ext-so)
 (def counter (atom 0))
 
 (defn compile-region
@@ -65,7 +84,7 @@
         so (str work-dir "/" sym ".dylib")
         _ (spit c src)
         cmd ["cc" "-O2" "-ffp-contract=off" "-shared" "-fPIC" "-Wall" "-Werror" "-DJN_EXTERN_STATUS"
-             "-Wno-unused-variable" "-Wno-unused-but-set-variable" "-o" so c rt-so
+             "-Wno-unused-variable" "-Wno-unused-but-set-variable" "-o" so c rt-so ext-so
              ;; bionic links no libm into a shared object unasked (atan2 went unresolved)
              "-lm"]
         p (.start (ProcessBuilder. ^java.util.List cmd))
@@ -583,6 +602,232 @@
 (check-reject "recur not in tail position" '[]
               '((loop [i 0] (do (recur (inc i)) i))) #"tail position")
 (check-reject "unknown function" '[^long a] '((println a)) #"not allowed")
+
+;; --- stack arrays: small constant-size arrays that stay in the function -----
+;; (jolt.native.stack) live in a frame buffer: no calloc, no free. The tracker
+;; would count a free of one as a bad free.
+
+(defn- c-of [params body]
+  (emit/emit-region (mem/check-region (ast/analyze-region params body)) "jn_x"))
+
+(defn- stack-arrays [src] (count (re-seq #"_buf\[" src)))
+
+(check-eq "a temporary per iteration is not heap-allocated"
+          (boolean (re-find #"\.data = JN_CALLOC\("
+                            (c-of '[^long n]
+                                  '((loop [i 0 s 0.0]
+                                      (if (< i n)
+                                        (recur (inc i) (let [t (double-array 3)] (aset t 1 2.0) (+ s (aget t 1))))
+                                        s))))))
+          false)
+(check-eq "the region's result stays on the heap"
+          (stack-arrays (c-of '[] '((let [a (double-array 3)] (aset a 0 1.0) a)))) 0)
+(check-eq "an array carried by recur stays on the heap"
+          (stack-arrays (c-of '[^long n]
+                              '((loop [a (double-array 2) i 0]
+                                  (if (< i n) (recur (let [b (double-array 2)] (aset b 0 (aget a 0)) b) (inc i))
+                                      (aget a 0))))))
+          0)
+(check-eq "an array a helper takes stays on the heap"
+          (stack-arrays (c-of '[] '((let [a (double-array 3)] (alength (keep-it a)))))) 0)
+(check-eq "an array a helper only borrows goes on the stack"
+          (stack-arrays (c-of '[] '((let [a (double-array 3)] (aset a 0 2.0) (dot a a))))) 1)
+(check-eq "a name that may hold a heap array keeps both on the heap"
+          (stack-arrays (c-of '[^doubles xs ^boolean c]
+                              '((let [a (if c (double-array 3) (aclone xs))] (aget a 0)))))
+          0)
+(check-eq "a size past the cap stays on the heap"
+          (stack-arrays (c-of '[] '((let [a (double-array 300)] (aget a 0))))) 0)
+
+(check-run "a stack temporary is zeroed each time it is made" '[^long n]
+           '((loop [i 0 s 0.0]
+               (if (< i n)
+                 (recur (inc i) (let [t (double-array 2)] (aset t 0 (+ (aget t 0) 1.0)) (+ s (aget t 0))))
+                 s)))
+           [[0] [3] [10]])
+
+(check-run "an error with stack arrays live frees only the heap ones" '[^doubles xs ^long k]
+           '((let [t (double-array 4) h (aclone xs)]
+               (aset t 1 (aget h 0))
+               (aset t k 1.0)
+               (+ (aget t 1) (aget h 0))))
+           [[(da 1 2) 2] [(da 1 2) 9] [(da) 0]])
+
+(check-run "stack long-arrays and a borrowing helper" '[^long n]
+           '((let [a (long-array 5)]
+               (dotimes [i 5] (aset a i (* i n)))
+               (let [b (long-array 5)] (dotimes [i 5] (aset b i 1)) (dot a b))))
+           [[3] [0] [-4]])
+
+;; --- scalar replacement: a stack array used only at constant indexes ---------
+
+(defn- scalar-locals [src] (count (re-seq #"_e[0-9]+ = 0;" src)))
+
+(check-eq "a constant-index temporary becomes locals"
+          (let [src (c-of '[^long n]
+                          '((loop [i 0 s 0.0]
+                              (if (< i n)
+                                (recur (inc i) (let [t (double-array 3)]
+                                                 (aset t 0 (double i)) (aset t 2 1.0)
+                                                 (+ s (aget t 0) (aget t 2) (double (alength t)))))
+                                s))))]
+            [(pos? (scalar-locals src)) (stack-arrays src)])
+          [true 0])
+(check-eq "a variable index keeps the array in memory"
+          (stack-arrays (c-of '[^long k] '((let [t (double-array 3)] (aset t 0 1.0) (aget t (rem k 3)))))) 1)
+(check-eq "a helper call keeps the array in memory"
+          (stack-arrays (c-of '[] '((let [t (double-array 3)] (aset t 0 2.0) (dot t t))))) 1)
+(check-eq "a constant index past the end keeps the array in memory"
+          (stack-arrays (c-of '[^boolean c] '((let [t (double-array 2)] (if c (aget t 5) (aget t 1)))))) 1)
+
+;; an owned helper parameter has no site of its own: a name that can be it or a
+;; stack array stays on the heap, scalarized neither, and is freed as a whole
+(defnative pick-own [c xs] (let [x (if c (double-array 2) xs)] (aget x 0)))
+(defnative pick-own-at [c xs i] (let [x (if c (double-array 2) xs)] (aget x i)))
+(check-run "a stack site and an owned parameter in one name" '[^long n]
+           '((let [a (double-array n)] (aset a 0 5.0) (pick-own (< n 0) a)))
+           [[3] [1] [0]] :raw true)
+(check-run "the same at a variable index" '[^long n ^long i]
+           '((let [a (double-array n)] (aset a 0 5.0) (pick-own-at (< n 0) a i)))
+           [[3 0] [3 2] [3 5] [1 0]] :raw true)
+;; each frame of a recursive helper would push its stack arrays again
+(defnative deep-buf [n] (let [b (double-array 256) j (rem n 256)] (aset b j 1.0) (if (<= n 0) (aget b j) (+ (aget b j) (deep-buf (dec n))))))
+(check-eq "a recursive helper keeps its arrays on the heap"
+          (stack-arrays (c-of '[^long n] '((deep-buf n)))) 0)
+(check-run "a recursive helper with an array per frame" '[^long n] '((deep-buf n)) [[0] [50]] :raw true)
+(check-eq "a frame keeps at most 8KB of stack arrays"
+          (stack-arrays (c-of '[] '((let [a (double-array 256) b (double-array 256) c (double-array 256)
+                                          d (double-array 256) e (double-array 256)]
+                                      (+ (dot a a) (dot b b) (dot c c) (dot d d) (dot e e))))))
+          4)
+
+(check-run "locals are zeroed each time the array is made" '[^long n]
+           '((loop [i 0 s 0.0]
+               (if (< i n)
+                 (recur (inc i) (let [t (double-array 2)] (aset t 0 (+ (aget t 0) 1.0)) (+ s (aget t 0) (aget t 1))))
+                 s)))
+           [[0] [4]])
+(check-run "a past-the-end constant still raises" '[^boolean c]
+           '((let [t (double-array 2)] (if c (aget t 5) (aget t 1))))
+           [[true] [false]])
+(check-run "scalar long arrays through a let alias" '[^long n]
+           '((let [a (long-array 2) b a] (aset b 1 n) (aset b 0 (* 2 (aget b 1))) (+ (aget b 0) (aget b 1))))
+           [[3] [-4611686018427387904]])
+
+;; --- defextern: C functions a region calls directly ---------------------------
+;; The C half calls the function; the fallback calls it through jolt.ffi.
+
+(defextern ^long ext-mix [^long a ^double b] {:c "jn_ext_mix"})
+(defextern ^boolean ext-odd [^long a] {:c "jn_ext_odd"})
+(defextern ^double ext-half [^double x] {:c "jn_ext_half"})
+(defextern ext-tick [] {:c "jn_ext_tick"})
+(defextern ^long ext-ticks [] {:c "jn_ext_ticks"})
+;; no :c: the symbol's name with - (and anything else C refuses) as _
+(defextern ^double jn-ext-half [^double x])
+
+(check-run "a region calls declared C functions" '[^long n ^double d]
+           '((loop [i 0 s 0]
+               (if (< i n)
+                 (recur (inc i) (if (ext-odd i) (+ s (ext-mix i d)) s))
+                 (+ (double s) (ext-half d)))))
+           [[0 1.5] [7 0.25] [20 -2.0]])
+
+(check-run "a long passed where C takes a double" '[^long n]
+           '((ext-half n))
+           [[9] [-3]])
+(check-run "a C name made from the symbol's" '[^double d] '((jn-ext-half d)) [[3.0] [-1.0]])
+
+(let [before (ext-ticks)
+      f (:call (compile-region '[^long n] '((dotimes [_ n] (ext-tick)) (ext-ticks))))]
+  (check-eq "a void C function runs for its effect" (- (f 4) before) 4))
+
+(defnative scaled-mix [a] (ext-mix a 0.5))
+(check-run "a helper calls a C function" '[^long n] '((scaled-mix n)) [[2] [-5]])
+
+(check-reject "a C function's argument types are checked" '[^double d] '((ext-odd d))
+              #"takes :long here, got :double")
+(check-reject "a C function's arity is checked" '[] '((ext-half))
+              #"takes 1 argument")
+
+(check-eq "a C function without a header is declared from its hints"
+          (boolean (re-find #"double jn_ext_half\(double\);" (c-of '[^double x] '((ext-half x)))))
+          true)
+
+(defextern ^double ext-cbrt [^double x] {:c "cbrt" :header "<math.h>"})
+(check-eq "a C function with a header is included, not declared"
+          (let [src (c-of '[^double x] '((ext-cbrt x)))]
+            [(boolean (re-find #"#include <math.h>\n" src)) (boolean (re-find #"double cbrt\(double\);" src))])
+          [true false])
+(check-run "a libm function through its header" '[^double x] '((ext-cbrt x)) [[27.0] [-8.0] [2.0]])
+
+;; array arguments: a pointer to the elements and their count
+
+(defextern ^double ext-sum [^doubles xs] {:c "jn_ext_sum"})
+(defextern ext-scale [^doubles xs ^double k] {:c "jn_ext_scale"})
+(defextern ext-fill [^longs xs ^long v] {:c "jn_ext_fill"})
+(defextern ^long ext-lsum [^longs xs] {:c "jn_ext_lsum"})
+
+(check-run "a C function reads a borrowed array" '[^doubles xs] '((ext-sum xs))
+           [[(da 1 2 3.5)] [(da)]])
+(check-run "a C function writes a borrowed array in place" '[^doubles xs ^double k]
+           '((ext-scale xs k) (+ (aget xs 0) (ext-sum xs)))
+           [[(da 1 2 3) 2.0] [(da 4) -0.5]])
+(check-run "owned arrays cross as their storage" '[^long n]
+           '((let [a (long-array n) d (double-array 3)]
+               (ext-fill a 10)
+               (aset d 1 1.5)
+               (ext-scale d 4.0)
+               (+ (double (ext-lsum a)) (aget d 1))))
+           [[0] [5]])
+(check-reject "a borrowed long-array must be copied for C" '[^longs xs] '((ext-lsum xs))
+              #"pass \(aclone it\)")
+(check-run "a copied long-array is fine" '[^longs xs] '((ext-lsum (aclone xs)))
+           [[(long-array [1 2 3])] [(long-array [])]])
+(check-eq "an array passed to C stays in memory"
+          (stack-arrays (c-of '[] '((let [t (double-array 3)] (aset t 0 1.0) (ext-sum t))))) 1)
+(check-eq "the fallback writes C's changes back"
+          (let [a (da 1 2)] (ext-scale a 3.0) (vec a))
+          [3.0 6.0])
+
+;; --- platform bodies: defnative's (on guard ...), chosen by the C compiler ------
+
+(defnative which-body [] (on "0" 10) (on "1" 20) (on :default 30))
+(let [f (:call (compile-region '[] '((which-body))))]
+  (check-eq "C compiles the first body whose guard holds" (f) 20)
+  (check-eq "the fallback runs the :default body" (which-body) 30))
+
+(defnative no-body [] (on "0" 1) (on "defined(JN_NEVER_DEFINED)" 2))
+(check-eq "a platform no body covers is a build error"
+          (try (compile-region '[] '((no-body))) :compiled
+               (catch Throwable e (boolean (re-find #"Not Supported on This Platform" (.getMessage e)))))
+          true)
+
+(defnative vsum [xs]
+  (on "defined(__aarch64__) || defined(__x86_64__)"
+      (loop [i 0 s 0] (if (< i (alength xs)) (recur (inc i) (+ s (aget xs i))) s)))
+  (on :default
+      (loop [i (dec (alength xs)) s 0] (if (>= i 0) (recur (dec i) (+ s (aget xs i))) s))))
+(check-run "equivalent platform bodies agree with the fallback" '[^longs xs]
+           '((vsum xs))
+           [[(long-array [1 2 3 4])] [(long-array [])] [(long-array [-5 9])]])
+
+(defnative mixed-types [x] (on "1" x) (on :default (double x)))
+(check-reject "platform bodies must agree on their result type" '[^long n] '((mixed-types n))
+              #"platform bodies return different types")
+
+(defnative mixed-takes [a] (on "1" (let [b a] (alength b))) (on :default (alength a)))
+(check-reject "platform bodies must take the same arguments" '[]
+              '((let [a (double-array 2)] (mixed-takes a)))
+              #"platform bodies take different arguments")
+
+(check-eq "a guard is one line of C"
+          (try (eval '(jolt.native/defnative bad-guard [] (on "1\n#define X" 1))) :defined
+               (catch Throwable e (boolean (re-find #"one-line C condition" (.getMessage e)))))
+          true)
+
+(defnative halve-on [x] (on "1" (ext-half x)) (on :default (* 0.5 x)))
+(check-run "a C function used only in a platform body is declared" '[^double x]
+           '((halve-on x)) [[3.0] [-1.5]])
 
 ;; --- random programs ----------------------------------------------------------
 ;; A generator builds well-typed region programs and tracks ownership with its

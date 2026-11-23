@@ -194,7 +194,7 @@
     (fail form (str what " takes a long here, got " (pr-str (:type a)))))
   a)
 
-(declare analyze-body)
+(declare analyze-body analyze-extern-call)
 
 ;; --- native helpers (jolt.native/defnative) ----------------------------------
 
@@ -205,6 +205,14 @@
     (when-let [v (resolve f)]
       (when-let [h (:jolt.native/helper (meta v))]
         (assoc h :sym (symbol (str (:ns (meta v))) (str (:name (meta v)))))))))
+
+(defn extern-of
+  "The C function (jolt.native/defextern) a call head names, or nil."
+  [env f]
+  (when (and (symbol? f) (not (contains? env f)))
+    (when-let [v (resolve f)]
+      (when-let [x (:jolt.native/extern (meta v))]
+        (assoc x :sym (symbol (str (:ns (meta v))) (str (:name (meta v)))))))))
 
 (def ^:private ret-hints
   {'long :long 'double :double 'boolean :bool 'doubles [:array :double] 'longs [:array :long]})
@@ -239,6 +247,16 @@
             (> n 4) (fail form (str "native helper " (:sym h) "'s result type does not settle; give it a return type hint"))
             :else (do (reset! *instances* snap) (recur t (inc n)))))))))
 
+(defn- variant-type
+  "The result type of a helper's bodies, which must agree (a body that never
+  returns agrees with any)."
+  [h form bodies]
+  (let [ts (distinct (remove #{:never} (map :type bodies)))]
+    (when (< 1 (count ts))
+      (fail form (str "native helper " (:sym h) "'s platform bodies return different types: "
+                      (clojure.string/join ", " (map pr-str ts)))))
+    (or (first ts) :never)))
+
 (defn- attempt-instance
   "One analysis of a helper instance, its own calls typed `assumed`: the hint
   when hinted? (then binding), else the current guess of instantiate!'s
@@ -255,15 +273,21 @@
                               :candidate (= :loan (first-or-nil t))})
                    (:params h) ptypes)
           env (into {} (map (fn [p] [(:name p) p]) ps))
-          body (binding [*ns* (the-ns (:ns h))] (analyze-body env (:body h) false form))
-          t (:type body)]
+          analyze-in (fn [forms] (binding [*ns* (the-ns (:ns h))] (analyze-body env forms false form)))
+          variants (when (:variants h)
+                     (mapv (fn [v] (assoc v :body (analyze-in (:body v)))) (:variants h)))
+          body (if variants
+                 (:body (or (first (filter #(= :default (:guard %)) variants)) (first variants)))
+                 (analyze-in (:body h)))
+          t (variant-type h form (if variants (map :body variants) [body]))]
       (when (borrowed? t)
         (fail form (str "native helper " (:sym h) " returns an array the region only borrowed from"
                         " its caller (a ^doubles or ^longs parameter); pass (aclone x) so the helper"
                         " gets one it can own")))
       (when (and hinted? (not= assumed t) (not= :never t))
         (fail form (str "native helper " (:sym h) " is hinted " (pr-str assumed) " but returns " (pr-str t))))
-      (let [inst {:iid iid :ret (if hinted? assumed t) :params ps :body body :sym (:sym h) :types ptypes}]
+      (let [inst (cond-> {:iid iid :ret (if hinted? assumed t) :params ps :body body :sym (:sym h) :types ptypes}
+                   variants (assoc :variants variants))]
         (swap! *instances* assoc key inst)
         inst))))
 
@@ -353,7 +377,30 @@
             (node :math :double form :fn (name f) :args args))
         (if-let [h (helper-of env f)]
           (analyze-helper-call h args form)
-          (fail form (str "not allowed in a native region: " (pr-str f))))))))
+          (if-let [x (extern-of env f)]
+            (analyze-extern-call x args form)
+            (fail form (str "not allowed in a native region: " (pr-str f)))))))))
+
+(defn- extern-arg-ok? [want t]
+  (if (vector? want)
+    (and (array-type? t) (= (elem-type want) (elem-type t)))
+    (or (= want t) (and (= want :double) (= :long t)) (unknown? t))))
+
+(defn- analyze-extern-call
+  "A call to a declared C function: scalars and arrays in (an array as its
+  storage and length), a scalar (or nothing) out."
+  [x args form]
+  (when-not (= (count args) (count (:params x)))
+    (fail form (str (:sym x) " takes " (count (:params x)) " argument(s), got " (count args))))
+  (doseq [[want a] (map vector (:params x) args)]
+    (when-not (extern-arg-ok? want (:type a))
+      (fail form (str (:sym x) " takes " (pr-str want) " here, got " (pr-str (:type a)))))
+    ;; a long-array borrowed from Jolt holds fixnums (value * 8), not int64_t
+    (when (= [:ref :long] (:type a))
+      (fail form (str (:sym x) " gets a long-array's int64_t elements; a ^longs borrowed from"
+                      " Jolt stores fixnums, so pass (aclone it)"))))
+  (node :extern (:ret x) form :c (:c x) :header (:header x) :params (:params x)
+        :args args :sym (:sym x)))
 
 (def ^:private builtins
   "Heads analyze-call handles itself: never macroexpanded."

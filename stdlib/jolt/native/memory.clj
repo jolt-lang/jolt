@@ -238,6 +238,10 @@
                 long-arith (and (= :long (:type node)) (fallible-prims (:prim node)))]
             (if (or long-arith (= :to-long (:prim node))) (snapshot n) n))
     :math (visit-args node)
+    ;; a C function borrows the arrays it is passed, for the call
+    :extern (let [args (mapv visit (:args node))]
+              (doseq [a args] (if (ast/array-type? (:type a)) (borrow-checked! a) (unmanage! a)))
+              (assoc node :args args))
     :alength (assoc node :arr (borrow-checked! (visit-borrowing node :arr)))
     :aget (let [arr (visit-borrowing node :arr)
                 idx (visit (:idx node))]
@@ -311,13 +315,33 @@
             borrowed (set/difference (set candidates) (set (keys consumed)))]
         [(strip-ids body borrowed) (set/difference (deleters) borrowed) consumed]))))
 
-(defn- check-instance [inst]
+(defn- check-variant
+  "Check one body of a helper instance: [checked-body delete takes]."
+  [inst body]
   (let [cands (keep (fn [p] (when (:candidate p) (:id p))) (:params inst))
-        [b d consumed] (check-body (:body inst) cands)
+        [b d consumed] (check-body body cands)
         idx (into {} (map-indexed (fn [i p] [(:id p) i]) (:params inst)))]
-    [(assoc inst :body b :delete d)
-     {:positions (set (map idx (keys consumed)))
-      :why (into {} (map (fn [[id why]] [(idx id) why]) consumed))}]))
+    [b d {:positions (set (map idx (keys consumed)))
+          :why (into {} (map (fn [[id why]] [(idx id) why]) consumed))}]))
+
+(defn- check-instance
+  "A helper instance checked: each platform body (defnative's on) separately,
+  and they must take the same arguments, or a caller could not know whether it
+  still owns what it passed."
+  [inst]
+  (if-let [vs (:variants inst)]
+    (let [checked (mapv #(check-variant inst (:body %)) vs)
+          positions (distinct (map #(:positions (nth % 2)) checked))
+          vs (mapv (fn [v [b d _]] (assoc v :body b :delete d)) vs checked)
+          default (or (first (filter #(= :default (:guard %)) vs)) (first vs))]
+      (when (< 1 (count positions))
+        (ast/fail (:form (:body inst))
+              (str "native helper " (:sym inst) "'s platform bodies take different arguments;"
+                   " each must give away (or keep) the same ones")))
+      [(assoc inst :variants vs :body (:body default) :delete (:delete default))
+       (nth (first checked) 2)])
+    (let [[b d takes] (check-variant inst (:body inst))]
+      [(assoc inst :body b :delete d) takes])))
 
 (defn check-region
   "Run the ownership pass over an analyzed region and each native helper

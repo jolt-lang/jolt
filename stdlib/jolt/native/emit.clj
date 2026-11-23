@@ -31,7 +31,8 @@
   multiply-add rounds once where Jolt rounds twice."
   (:require [clojure.string :as str]
             [jolt.native.ast :as ast]
-            [jolt.native.range :as ranges]))
+            [jolt.native.range :as ranges]
+            [jolt.native.stack :as stack]))
 
 (def err-codes
   {:oob 1 :overflow 2 :div-zero 3 :neg-size 4 :long-range 5 :oom 6 :fixnum-store 7})
@@ -56,6 +57,9 @@
 ;; the fast copy of a function is emitted (nil in the checked copy)
 (def ^:dynamic *ranges* nil)
 (def ^:dynamic *fast* nil)
+;; stack arrays per function (jolt.native.stack), and the current function's
+(def ^:dynamic *stacks* nil)
+(def ^:dynamic *stack* nil)
 
 (defn- proven? [node k] (and *fast* (get-in *fast* [(:id node) k])))
 
@@ -93,7 +97,12 @@
 
 (defn- helper-name [iid] (str *sym* "_h" iid))
 
-(defn- frees [ids] (str/join " " (map #(str "JN_FREE(" (var-name %) ".data);") (sort ids))))
+(defn- frees
+  "Free the owned arrays named by ids, except those only ever holding a stack
+  array, which the frame frees."
+  [ids]
+  (str/join " " (map #(str "JN_FREE(" (var-name %) ".data);")
+                     (sort (remove (or (:holders *stack*) #{}) ids)))))
 
 (defn- raise! [node code & {:keys [a b d]}]
   (str "{ " (frees (:live node))
@@ -103,7 +112,8 @@
        (when d (str " jn_tls.d = " d ";"))
        " return " (ret-zero) "; }"))
 
-(declare emit fresh-copy! as-double-if emit-entry)
+(declare emit fresh-copy! as-double-if emit-entry emit-stack-array emit-heap-array emit-aclone
+         scalar-site elem-local)
 
 (defn- c-double-lit [v]
   (cond (Double/isNaN v) "(0.0/0.0)"
@@ -207,20 +217,24 @@
 (defn- emit-index-cast
   "aget/aset take their index through RT.intCast, which on the JVM runs as the
   index argument is evaluated: before a later argument (aset's value) runs, so
-  its side effects never happen when the index overflows."
+  its side effects never happen when the index overflows. An array kept in
+  locals is only ever indexed by constants in range (jolt.native.stack)."
   [node idx]
-  (when-not (proven? node :idx-int)
+  (when-not (or (proven? node :idx-int) (scalar-site (:arr node)))
     (line! "if (" idx " < INT32_MIN || " idx " > INT32_MAX) " (raise! node :overflow))))
 
 (defn- emit-array-index
   "The bounds check, inside the store or load: after every argument ran."
   [node arr idx]
-  (when-not (proven? node :in-bounds)
+  (when-not (or (proven? node :in-bounds) (scalar-site (:arr node)))
     (line! "if (" idx " < 0 || " idx " >= " arr ".len) " (raise! node :oob :a idx :b (str arr ".len")))))
 
-(defn- bind! [id t atom]
+(defn- bind!
+  "Bind id to atom. A name for an array kept in locals has nothing to copy:
+  its elements are the site's locals and its length a constant."
+  [id t atom]
   (let [n (declare-var! id t)]
-    (line! n " = " atom ";")
+    (when-not (get (:scalar *stack*) id) (line! n " = " atom ";"))
     n))
 
 (defn- emit-loop [node]
@@ -284,7 +298,8 @@
               branch (fn [b dels]
                        (let [v (emit b)]
                          (when-not (= :never (:type b))
-                           (when r (line! r " = " (if (and (= t :double) (= :long (:type b)))
+                           (when (and r (not (get (:scalar *stack*) (:id node))))
+                             (line! r " = " (if (and (= t :double) (= :long (:type b)))
                                                     (str "(double)" v) v) ";"))
                            (line! (frees dels)))))]
           (line! "if (" c ") {")
@@ -299,6 +314,15 @@
     :prim (let [v (emit-prim node) r (fresh! (:type node))]
             (line! r " = " v ";")
             r)
+    :extern (let [args (mapv (fn [a want]
+                               (let [v (emit a)]
+                                 ;; an array crosses as its storage and length
+                                 (if (vector? want) (str v ".data, " v ".len") (as-double-if want v (:type a)))))
+                             (:args node) (:params node))
+                  call (str (:c node) "(" (str/join ", " args) ")")]
+              (if (#{:unit :never} (:type node))
+                (do (line! call ";") "0")
+                (let [r (fresh! (:type node))] (line! r " = " call ";") r)))
     :math (let [args (mapv (fn [a] (as-double (emit a) (:type a))) (:args node))
                 r (fresh! :double)
                 f (case (:fn node) "sqrt" "sqrt" "sin" "sin" "cos" "cos" "tan" "tan"
@@ -308,11 +332,18 @@
             r)
     ;; a temp like every other value: inlined, (aget a (alength a)) emitted
     ;; `a.len >= a.len`, which compilers flag as a tautology
-    :alength (let [r (fresh! :long)] (line! r " = " (emit (:arr node)) ".len;") r)
+    :alength (let [r (fresh! :long) a (emit (:arr node))]
+               (line! r " = " (if-let [site (scalar-site (:arr node))]
+                                (str (get-in *stack* [:sites site]) "LL")
+                                (str a ".len"))
+                      ";")
+               r)
     :aget (let [arr (emit (:arr node)) idx (emit (:idx node)) r (fresh! (:type node))]
             (emit-index-cast node idx)
             (emit-array-index node arr idx)
-            (line! r " = " arr ".data[" idx "]" (when (fx-borrowed? (:type (:arr node))) " / 8") ";")
+            (if-let [site (scalar-site (:arr node))]
+              (line! r " = " (elem-local site (:val (:idx node))) ";")
+              (line! r " = " arr ".data[" idx "]" (when (fx-borrowed? (:type (:arr node))) " / 8") ";"))
             r)
     :aset (let [arr (emit (:arr node))
                 idx (emit (:idx node))
@@ -321,11 +352,14 @@
                 r (fresh! (:type node))]
             (emit-array-index node arr idx)
             (line! r " = " (as-double-if (:type node) v (:type (:val node))) ";")
-            (if (fx-borrowed? (:type (:arr node)))
+            (cond
+              (scalar-site (:arr node))
+              (line! (elem-local (scalar-site (:arr node)) (:val (:idx node))) " = " r ";")
+              (fx-borrowed? (:type (:arr node)))
               (do (line! "if (" r " < " fixnum-min " || " r " > " fixnum-max ") "
                          (raise! node :fixnum-store :a r))
                   (line! arr ".data[" idx "] = (int64_t)((uint64_t)" r " * 8);"))
-              (line! arr ".data[" idx "] = " r ";"))
+              :else (line! arr ".data[" idx "] = " r ";"))
             r)
     ;; a native helper instance: a failure there has freed its own values and
     ;; set the status; the caller frees what it holds and passes it on
@@ -335,24 +369,59 @@
             (line! r " = " (helper-name (:instance node)) "(" (str/join ", " args) ");")
             (line! "if (jn_tls.code) { " (frees (:live node)) " return " (ret-zero) "; }")
             r)
-    ;; the size goes through Number.intValue as the JVM's Numbers.T_array does:
-    ;; the low 32 bits, signed, so (double-array 4294967296) is empty
-    :new-array (let [raw (emit (:len node))
-                     len (fresh! :long)
-                     n (declare-var! (:id node) (:type node))]
-                 (line! "{ int64_t lo = " raw " & 0xffffffffLL; " len " = lo >= 0x80000000LL ? lo - 0x100000000LL : lo; }")
-                 (line! "if (" len " < 0) " (raise! node :neg-size :a len))
-                 (line! n ".len = " len "; " n ".data = JN_CALLOC(" len " > 0 ? " len " : 1, 8);")
-                 (line! "if (!" n ".data) " (raise! node :oom))
-                 n)
-    :aclone (let [src (emit (:arr node))
-                  n (declare-var! (:id node) (:type node))]
-              (line! n ".len = " src ".len; " n ".data = JN_MALLOC(" src ".len > 0 ? " src ".len * 8 : 8);")
-              (line! "if (!" n ".data) " (raise! node :oom))
-              (if (fx-borrowed? (:type (:arr node)))
-                (line! "for (int64_t k = 0; k < " src ".len; k++) " n ".data[k] = " src ".data[k] / 8;")
-                (line! "memcpy(" n ".data, " src ".data, " src ".len * 8);"))
-              n)))
+    :new-array (if-let [n-el (get-in *stack* [:sites (:id node)])]
+                 (emit-stack-array node n-el)
+                 (emit-heap-array node))
+    :aclone (emit-aclone node)))
+
+(defn- elem-local [site k] (str (var-name site) "_e" k))
+
+(defn- scalar-site
+  "The stack site an array expression names when its elements are kept in C
+  locals (jolt.native.stack :scalar), or nil."
+  [arr]
+  (get (:scalar *stack*) (if (= :local (:op arr)) (:binding arr) (:id arr))))
+
+(defn- emit-stack-array
+  "A small constant-size array that stays in this function: a frame buffer,
+  zeroed each time it is made, as calloc would. When every use is a constant
+  index, its elements are C locals instead, which a compiler keeps in
+  registers."
+  [node n-el]
+  (let [n (declare-var! (:id node) (:type node))
+        et (if (= :double (ast/elem-type (:type node))) "double" "int64_t")]
+    (emit (:len node))
+    (if (get (:scalar *stack*) (:id node))
+      (do (doseq [k (range n-el)]
+            (swap! *decls* assoc (elem-local (:id node) k) (str et " " (elem-local (:id node) k) " = 0;")))
+          (line! (str/join " " (map #(str (elem-local (:id node) %) " = 0;") (range n-el)))))
+      (let [buf (str n "_buf")]
+        (swap! *decls* assoc buf (str et " " buf "[" (max 1 n-el) "];"))
+        (line! n ".len = " n-el "; " n ".data = " buf "; memset(" buf ", 0, sizeof " buf ");")))
+    n))
+
+(defn- emit-heap-array
+  "The size goes through Number.intValue as the JVM's Numbers.T_array does:
+  the low 32 bits, signed, so (double-array 4294967296) is empty."
+  [node]
+  (let [raw (emit (:len node))
+        len (fresh! :long)
+        n (declare-var! (:id node) (:type node))]
+    (line! "{ int64_t lo = " raw " & 0xffffffffLL; " len " = lo >= 0x80000000LL ? lo - 0x100000000LL : lo; }")
+    (line! "if (" len " < 0) " (raise! node :neg-size :a len))
+    (line! n ".len = " len "; " n ".data = JN_CALLOC(" len " > 0 ? " len " : 1, 8);")
+    (line! "if (!" n ".data) " (raise! node :oom))
+    n))
+
+(defn- emit-aclone [node]
+  (let [src (emit (:arr node))
+        n (declare-var! (:id node) (:type node))]
+    (line! n ".len = " src ".len; " n ".data = JN_MALLOC(" src ".len > 0 ? " src ".len * 8 : 8);")
+    (line! "if (!" n ".data) " (raise! node :oom))
+    (if (fx-borrowed? (:type (:arr node)))
+      (line! "for (int64_t k = 0; k < " src ".len; k++) " n ".data[k] = " src ".data[k] / 8;")
+      (line! "memcpy(" n ".data, " src ".data, " src ".len * 8);"))
+    n))
 
 (defn- as-double-if [want v vt] (if (and (= want :double) (= vt :long)) (str "(double)" v) v))
 
@@ -446,24 +515,71 @@ static _Thread_local jn_out jn_tls;
           (line! "}")))
       (or res "0"))))
 
-(defn- emit-helper
-  "A static C function for one native helper instance. Its array parameters are
-  borrowed structs; an owned array result is returned by value."
-  [inst]
+(defn- emit-helper-fn
+  "One static C function for a helper instance, from one of its bodies. key
+  names that body's range and stack facts."
+  [inst body delete key]
   (binding [*decls* (atom (sorted-map))
             *lines* (atom [])
             *tmp* (atom 0)
-            *fn-ret* (:ret inst)]
+            *fn-ret* (:ret inst)
+            *stack* (get *stacks* key)]
     (let [t (:ret inst)
-          v (emit-versioned (:body inst) (get *ranges* (:iid inst)))
-          body @*lines*
+          v (emit-versioned body (get *ranges* key))
+          lines @*lines*
           result (cond
-                   (ast/owned? t) [(frees (disj (:delete inst) (:id (:body inst)))) (str "return " v ";")]
-                   (#{:unit :never} t) [(frees (:delete inst)) "return 0;"]
-                   :else [(str (ctype t) " result = " v ";") (frees (:delete inst)) "return result;"])]
+                   (ast/owned? t) [(frees (disj delete (:id body))) (str "return " v ";")]
+                   (#{:unit :never} t) [(frees delete) "return 0;"]
+                   :else [(str (ctype t) " result = " v ";") (frees delete) "return result;"])]
       (str (helper-sig inst) " {\n"
-           (str/join "\n" (map #(str "  " %) (concat (vals @*decls*) body result)))
+           (str/join "\n" (map #(str "  " %) (concat (vals @*decls*) lines result)))
            "\n}\n"))))
+
+;; emit-helper's platform-body emission (and defextern's :header) are ported
+;; from Ferret, https://github.com/nakkaya/ferret
+;; Copyright (c) 2019, Nurullah Akkaya. BSD 2-Clause: licenses/BSD-2-ferret.txt
+(defn- emit-helper
+  "The static C function for one native helper instance. Its array parameters
+  are borrowed structs; an owned array result is returned by value.
+
+  A helper with platform bodies (defnative's on) is emitted as Ferret emits
+  one: each guarded body under its #if, defining NAME_ENABLED, the :default
+  as the #else, and an #error for a platform no body covers. #elif, not one
+  #if per body, so two guards that both hold cannot define it twice."
+  [inst]
+  (if-let [vs (seq (map-indexed vector (:variants inst)))]
+    (let [enabled (str (str/upper-case (helper-name (:iid inst))) "_ENABLED")
+          one (fn [[i v]] (str "#define " enabled "\n" (emit-helper-fn inst (:body v) (:delete v) [(:iid inst) i])))
+          guarded (remove #(= :default (:guard (second %))) vs)
+          default (first (filter #(= :default (:guard (second %))) vs))]
+      (str (apply str (map-indexed (fn [k [i v]] (str (if (zero? k) "#if " "#elif ") "(" (:guard v) ")\n" (one [i v])))
+                                   guarded))
+           (when default (str (if (seq guarded) "#else\n" "") (one default)))
+           (when (seq guarded) "#endif\n")
+           "#if !defined(" enabled ")\n#error " (:sym inst) " Not Supported on This Platform\n#endif\n"))
+    (emit-helper-fn inst (:body inst) (:delete inst) (:iid inst))))
+
+(defn- extern-ctype [t]
+  (case t
+    :long "int64_t" :double "double" :bool "_Bool" :unit "void"
+    (if (= :double (ast/elem-type t)) "double *, int64_t" "int64_t *, int64_t")))
+
+(defn- extern-decls
+  "Each C function the region calls: its header's #include (Ferret's
+  native-header), or a prototype from its hints."
+  [region]
+  (let [all (->> (cons (:body region)
+                       (mapcat #(cons (:body %) (map :body (:variants %))) (:instances region)))
+                 (mapcat #(tree-seq map? (fn [n] (filter map? (concat (vals n) (mapcat (fn [v] (when (sequential? v) v)) (vals n))))) %))
+                 (filter #(= :extern (:op %)))
+                 (map #(select-keys % [:c :header :params :type]))
+                 distinct)]
+    (str (apply str (map #(str "#include " (if (str/starts-with? % "<") % (str "\"" % "\"")) "\n")
+                         (distinct (keep :header all))))
+         (apply str (for [x all :when (nil? (:header x))]
+                      (str (extern-ctype (:type x)) " " (:c x) "("
+                           (if (seq (:params x)) (str/join ", " (map extern-ctype (:params x))) "void")
+                           ");\n"))))))
 
 (defn emit-region
   "C source for a checked region, exporting sym (and sym_copy_out when it
@@ -471,10 +587,11 @@ static _Thread_local jn_out jn_tls;
   [region sym]
   (binding [*sym* sym
             *region* (atom (assoc region :loops {}))
-            *ranges* (ranges/analyze-region region)]
+            *ranges* (ranges/analyze-region region)
+            *stacks* (stack/analyze-region region)]
     (let [helpers (str (apply str (map #(str (helper-sig %) ";\n") (:instances region)))
                        (apply str (map emit-helper (:instances region))))]
-      (str prelude "\n" helpers (emit-entry region sym)))))
+      (str prelude "\n" (extern-decls region) helpers (emit-entry region sym)))))
 
 (defn- emit-entry
   "The region's exported entry and its status accessors."
@@ -482,7 +599,8 @@ static _Thread_local jn_out jn_tls;
   (binding [*decls* (atom (sorted-map))
             *lines* (atom [])
             *tmp* (atom 0)
-            *fn-ret* :entry]
+            *fn-ret* :entry
+            *stack* (:entry *stacks*)]
     (let [t (:type region)
           ret-c (cond (= [:array :double] t) "double *" (= [:array :long] t) "int64_t *"
                       (#{:unit :never} t) "int" :else (ctype t))
