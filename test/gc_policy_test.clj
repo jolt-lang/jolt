@@ -73,8 +73,49 @@
            (gc-size-nursery! 400000 500000)
            (for-each (lambda (i) (gc-size-nursery! 120000 6000000)) '(1 2 3 4 5 6)))"))
 
+;; For the live-set bound and the check on growth past it, decided on readings
+;; the test supplies rather than on this machine's timing. The churn loop's own
+;; nursery is a timing outcome: past its bound the policy probes (double, and if
+;; the share of time rose, one jump to 8x the base, then back and hold), the run
+;; is only ~40 collections long, and it ends wherever the probe stands. Main read
+;; 84MB, 168MB or 670MB for the same binary (about one run in seven at 670MB,
+;; which the old "under 512MB" check failed). Here each scenario resets the
+;; policy, takes ~64MB as the live set (so the bound is 64MB) and feeds 120
+;; collections whose share of time is a function of the nursery they ran in;
+;; the path of sizes it leaves is exact. Run with JOLT_MAX_HEAP=off, so the cap
+;; is the 1GB one on every machine. Interrupts are off while it runs, so no real
+;; collection feeds the policy in between.
+(def ^:private replay-src
+  "(lambda (live n share-at)
+     (with-interrupts-disabled
+       (set! gc-share-gc 0.0) (set! gc-share-el 0.0) (set! gc-share 0.0) (set! gc-seen 0)
+       (set! gc-probe-from #f) (set! gc-probe-jumped? #f) (set! gc-growth-hold #f) (set! gc-hold-n 0)
+       (set! gc-hot-at-bound 0) (gc-win-reset!) (sa-gc-trip-bytes! gc-trip-floor)
+       (set! gc-live-after-full live)
+       (let loop ((i 0) (path (list (sa-gc-trip-bytes))))
+         (if (= i n)
+             (let ((ms (map (lambda (b) (number->string (quotient b 1048576))) (reverse path))))
+               (apply string-append (car ms) (map (lambda (s) (string-append \",\" s)) (cdr ms))))
+             (begin
+               (gc-size-nursery! (* (share-at (quotient (sa-gc-trip-bytes) 1048576)) 1000000) 100000000)
+               (loop (+ i 1) (if (= (sa-gc-trip-bytes) (car path)) path (cons (sa-gc-trip-bytes) path))))))))")
+
+(defn- decide []
+  (let [replay (jolt.host/scheme-eval-string replay-src)
+        path (fn [label share-at]
+               (println "path" label (replay (* 64 1024 1024) 120 share-at)))]
+    ;; collection over the 10% target but never dominating: up to the bound, no further
+    (path "over-target" (fn [_] 15))
+    ;; dominating at the bound, and a doubling past it pays: kept
+    (path "paid" (fn [mb] (if (<= mb 64) 30 15)))
+    ;; a doubling that costs more, then 8x that costs more too: back to the bound, held
+    (path "costlier" (fn [mb] (cond (<= mb 64) 30 (<= mb 128) 40 :else 45)))
+    ;; a doubling that costs more, then 8x that pays: kept at 8x
+    (path "big-window" (fn [mb] (cond (<= mb 64) 30 (<= mb 128) 40 :else 15)))))
+
 (defn -main [mode]
   (case mode
+    "decide" (decide)
     "refresh" (refresh)
     "churn" (churn)
     "light" (reduce + (range 1000))
@@ -85,6 +126,10 @@
     ;; and the free memory kept (the gate reads the high-water mark and the GC log)
     "ceiling" (hold-and-churn))
   (println "trip" (jolt.host/gc-trip-bytes))
+  (when (= mode "churn")
+    ;; the live set its bound is sized from, read raw: the bound the policy
+    ;; computes would let a broken bound vouch for itself
+    (println "live" (jolt.host/scheme-eval-string "gc-live-after-full")))
   (when (= mode "ceiling")
     (println "peak" (jolt.host/maximum-memory-bytes) "max" (.maxMemory (Runtime/getRuntime)))))
 
