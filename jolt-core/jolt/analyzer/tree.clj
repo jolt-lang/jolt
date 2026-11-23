@@ -97,8 +97,12 @@
 (defn- note-free! [refs bound nm]
   (when-not (contains? bound nm) (swap! refs conj nm)))
 
-(defn- arity-params [a]
-  (if (:rest a) (conj (:params a) (:rest a)) (:params a)))
+(defn arity-params
+  "The local formals introduced by this arity, in binding order."
+  [arity]
+  (if-let [rest-name (:rest arity)]
+    (conj (:params arity) rest-name)
+    (:params arity)))
 
 (defn- walk-free-fn [refs n bound]
   (if-let [inner (:free-names n)]
