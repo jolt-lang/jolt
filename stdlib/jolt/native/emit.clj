@@ -123,9 +123,10 @@
       :neg (if (= t :long)
              (let [r (fresh! :long)]
                (line! "if (" (first one) " == INT64_MIN) " (raise! node :overflow))
-               (line! r " = -" (first one) ";")
+               (line! r " = -(" (first one) ");")
                r)
-             (str "(-" (first one) ")"))
+             ;; -(x), not -x: x may be a negative literal, and --1.5 is a decrement
+             (str "(-(" (first one) "))"))
       (:inc :dec) (if (= t :long)
                     (let [r (fresh! :long)]
                       (line! "if (" (if (= p :inc) "__builtin_add_overflow" "__builtin_sub_overflow")
@@ -139,8 +140,8 @@
         (line! a " = " a0 "; " b " = " b0 ";")
         (line! "if (" b " == 0) " (raise! node :div-zero))
         (case p
-          :quot (do (line! "if (" a " == INT64_MIN && " b " == -1) " (raise! node :overflow))
-                    (line! r " = " a " / " b ";"))
+          ;; INT64_MIN / -1 is undefined in C; the JVM's long / wraps to INT64_MIN
+          :quot (line! r " = (" b " == -1) ? (int64_t)(0ULL - (uint64_t)" a ") : " a " / " b ";")
           ;; INT64_MIN % -1 is undefined in C; the JVM answers 0
           :rem (line! r " = (" b " == -1) ? 0 : " a " % " b ";")
           ;; clojure.core/mod: (let [m (rem n d)] (if (or (zero? m) (= (pos? n) (pos? d))) m (+ m d)))

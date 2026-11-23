@@ -764,11 +764,10 @@
 ;; build process itself, and the site then calls the fallback. Each argument
 ;; goes through the host's check for its kind before either path, so both see
 ;; the same coerced values. A ^doubles argument crosses as its flvector
-;; (scheme-object) and C reads it in place: the call is a plain foreign call,
-;; never __collect_safe, so the thread stays active and no collection can move
-;; the flvector while C holds its address. C reports a failure in the 40-byte
-;; out buffer (code, two longs, a double, and an owned result's length) and the
-;; raise fn turns it into the JVM's exception.
+;; (scheme-object) and C reads it in place, locked (pinned) or with the thread
+;; kept active (^:hold-gc) so no collection moves it. C reports a failure in its
+;; per-thread status (code, two longs, a double, and an owned result's length),
+;; and the raise fn turns it into the JVM's exception.
 (def ^:private native-arg-chez
   {"doubles" "scheme-object" "longs" "scheme-object" "long" "integer-64" "double" "double"
    "bool" "boolean"})
@@ -816,27 +815,35 @@
      :free (when (= result "longs") (entry-of "_free" ["uptr"] "void"))}))
 
 (defn- native-result-value
-  "The jolt value of a successful call's result R."
-  [result r {:keys [err-l copy-out elem free]}]
+  "The jolt value of a successful call's result R, an owned array of length N."
+  [result r n {:keys [copy-out elem free]}]
   (case result
-    "doubles" (let [n (fresh-label "jn_n") fv (fresh-label "jn_fv")]
-                (str "(let* ((" n " (" err-l " 2)) (" fv " (make-flvector " n "))) "
+    "doubles" (let [fv (fresh-label "jn_fv")]
+                (str "(let ((" fv " (make-flvector " n "))) "
                      "(" copy-out " " fv " " r " " n ") "
                      "(jolt-native-wrap-flv " fv "))"))
-    "longs" (str "(jolt-native-wrap-longs (" err-l " 2) " r " " copy-out " " elem " " free ")")
+    "longs" (str "(jolt-native-wrap-longs " n " " r " " copy-out " " elem " " free ")")
     "unit" "jolt-nil"
     r))
 
 (defn- native-call-expr
-  "The call itself: plain, or with the borrowed BACKINGS locked around it."
-  [p c-args backings pinned?]
+  "The call and the reads of its status, with interrupts off from before the
+  call until every status field is read: the status is per OS thread, so a
+  fiber switched in on this carrier could run another region and overwrite it.
+  Pinned, the borrowed BACKINGS are locked around the call too. Answers a
+  `(values r code info)`: info is the result length on success (when the
+  result is an array), else #(a b d) for the raise."
+  [p c-args backings pinned? array-result? {:keys [status err-l err-d]}]
   (let [call (str "(" p (apply str (map #(str " " %) c-args)) ")")
         each (fn [f] (apply str (map #(str "(" f " " % ") ") backings)))
-        r (fresh-label "jn_r")]
-    (if pinned?
-      (str "(begin (disable-interrupts) " (each "sa-lock-object")
-           "(let ((" r " " call ")) " (each "sa-unlock-object") "(enable-interrupts) " r "))")
-      call)))
+        r (fresh-label "jn_r") code (fresh-label "jn_code") info (fresh-label "jn_info")]
+    (str "(begin (disable-interrupts) " (when pinned? (each "sa-lock-object"))
+         "(let* ((" r " " call ") (" code " (" status ")) "
+         "(" info " (if (fx= 0 " code ") "
+         (if array-result? (str "(" err-l " 2)") "#f") " "
+         "(vector (" err-l " 0) (" err-l " 1) (" err-d "))))) "
+         (when pinned? (each "sa-unlock-object")) "(enable-interrupts) "
+         "(values " r " " code " " info ")))")))
 
 (defn- emit-native-region [emit node]
   (let [kinds (:kinds node)
@@ -848,10 +855,10 @@
       (call-fallback args)
       (let [pinned? (not= "hold-gc" (:mode node))
             acc (native-accessors node pinned?)
-            {:keys [status err-l err-d]} acc
             p (fresh-label "jn_p")
             r (fresh-label "jn_r")
             code (fresh-label "jn_code")
+            info (fresh-label "jn_info")
             as (mapv (fn [_] (fresh-label "jn_a")) kinds)
             bs (mapv (fn [k] (when (contains? #{"doubles" "longs"} k) (fresh-label "jn_b"))) kinds)
             backings (filterv some? bs)]
@@ -859,10 +866,12 @@
              (apply str (map (fn [a k v] (str " (" a " (" (native-arg-check k) " " v "))")) as kinds args))
              ") (if " p " "
              "(let* (" (apply str (map (fn [a b] (when b (str "(" b " (jolt-native-flv " a ")) "))) as bs))
-             "(" r " " (native-call-expr p (map (fn [a b] (or b a)) as bs) backings (and pinned? (seq backings))) ")) "
-             "(let ((" code " (" status "))) "
-             "(if (fx= 0 " code ") " (native-result-value (:result node) r acc) " "
-             "(jolt-invoke " (emit (:raise node)) " " code " (" err-l " 0) (" err-l " 1) (" err-d "))))) "
+             ") (let-values (((" r " " code " " info ") "
+             (native-call-expr p (map (fn [a b] (or b a)) as bs) backings (and pinned? (seq backings))
+                               (contains? #{"doubles" "longs"} (:result node)) acc)
+             ")) "
+             "(if (fx= 0 " code ") " (native-result-value (:result node) r info acc) " "
+             "(jolt-invoke " (emit (:raise node)) " " code " (vector-ref " info " 0) (vector-ref " info " 1) (vector-ref " info " 2))))) "
              (call-fallback as) "))")))))
 
 (defn emit-ffi-node [emit node]
