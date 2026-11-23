@@ -733,17 +733,28 @@
   ;; jrec-pic-desc/i), with the site unchanged: on the slow box the two arms
   ;; read 0.73 -> 1.11 and 1.00 -> 1.35 over both steps. The protocol call then
   ;; read the var cell and the receiver's descriptor without their type tests,
-  ;; the instance? site unchanged: 1.35 and 1.56. The ceilings are 1.6 and 1.9,
-  ;; room for CI's higher reading. A site with no cache reads ~2.3-3.9 against
-  ;; this call, so still well past both.
+  ;; the instance? site unchanged: 1.35 and 1.56.
+  ;;
+  ;; What these two read depends on the CPU, not on the moment. Over 22 CI runs
+  ;; of the x86 shard (2026-11-21..22) instance-site-type read 1.53-1.75 in most
+  ;; and 1.88-2.10 in a few, and in those runs the whole column moved with it:
+  ;; multimethod-call 6.7-7.0 (4.1-5.1 elsewhere), try-deep 1.64 (1.38-1.46),
+  ;; deftype-method 1.96 (1.47-1.69), var-call 0.72 (0.90-1.17). Each of those
+  ;; runs read the same on all three of its samplings and again in a fresh
+  ;; process (2.09, then 2.07), so no sampling scheme can take it out: it is
+  ;; the runner's microarchitecture. The ceilings cover that spread. The site
+  ;; with its cache bypassed (every call taking the memo path, the state before
+  ;; the cache) reads 8.5 and 7.0 here, macOS arm64 2026-11-22, against 1.45
+  ;; and 1.68 with it, so 2.0 and 2.6 still fail it by 3-4x. (Ceilings were 1.6
+  ;; and 1.9; macOS arm64 reads instance-site up to 1.56.)
   (judge! "instance-site"
           #(dotimes [_ dispatch-n] (dp1 dispatch-t))
           #(dotimes [_ dispatch-n] (instance? fastpath_ratio_test.DP7 dispatch-t))
-          1.6)
+          2.0)
   (judge! "instance-site-type"
           #(dotimes [_ dispatch-n] (dp1 dispatch-t))
           #(dotimes [_ dispatch-n] (instance? DispatchT dispatch-t))
-          1.9)
+          2.6)
 
   ;; Building a reify must cost about what building a deftype costs. The
   ;; deftype's (T. a) then kept its resolved ctor at the call site (host-static.ss
@@ -874,11 +885,16 @@
           #(let [v gate-vec] (dotimes [i gate-n] (gate-f2 i v)))
           2.4)
   ;; (multimethod-call's reference is the var call, open-coded since: 3.81 ->
-  ;; 5.26 with the multimethod unchanged, and ~14 with its fix reverted.)
+  ;; 5.26 with the multimethod unchanged, and ~14 with its fix reverted. The
+  ;; reference got cheaper again since: with the inline cache bypassed, every
+  ;; call hashing into the methods table, it reads 37 against 5.1, macOS arm64
+  ;; 2026-11-22. On CI it reads 4.1-5.5 in most runs and 6.7-7.6 in a few, two
+  ;; of them the runs whose CPU moved instance-site-type (see there), which put
+  ;; it over the old 7.0 with nothing changed; 10 still fails the bypass by 3.7x.)
   (judge! "multimethod-call"
           #(dotimes [_ gate-n] (gate-plain :a))
           #(dotimes [_ gate-n] (gate-mm :a))
-          7.0)
+          10.0)
   (judge! "str-sb"
           #(let [b gate-sb] (dotimes [_ gate-n] (.toString ^StringBuilder b)))
           #(let [b gate-sb] (dotimes [_ gate-n] (str b)))

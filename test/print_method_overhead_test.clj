@@ -11,7 +11,19 @@
 ;;
 ;; Judged as a ratio in ONE process: the same map printed with no user method,
 ;; then with each kind of method installed, the arms interleaved and the order
-;; swapped every round, each arm its fastest sample on this thread's CPU clock.
+;; swapped every round, on this thread's CPU clock. Each round's two ratios are
+;; taken within that round, ~60ms apart, and the gate judges the MEDIAN round.
+;; It took each arm's fastest sample over all rounds and divided those, which
+;; holds only if every arm gets one clean sample; beside the rest of a shard on
+;; a 4-core runner none does, and the minima came from different moments: CI
+;; read class 0.82 / tag 1.25 in one measurement, 1.79 / 1.87 in another, and
+;; 0.65 / 0.70 in a third, on code that reads 1.05-1.10 everywhere else. A load
+;; swing lasting longer than a round moves the round's arms together and cancels
+;; in its ratio; a burst on one sample moves one round, which the median drops.
+;; The gate is also a QUIET-GATE (Makefile), run after the rest of its shard.
+;;
+;; The regression it exists for (the kind answer bypassed, every value's type
+;; tag computed and hashed, as before cf0f8fb55) reads ~1.2 here.
 
 (ns print-method-overhead-test)
 
@@ -44,19 +56,22 @@
       (/ ns 3.0))))
 
 (def ^:private arms [:none :class :tag])
-(def ^:private rounds 15)
+(def ^:private rounds 25)
 (def ^:private max-ratio 1.15)
 
-(defn- measure []
-  (loop [i 0 best {}]
-    (if (= i rounds)
-      best
-      (let [order (if (even? i) arms (reverse arms))]
-        (recur (inc i)
-               (reduce (fn [b arm] (update b arm (fnil min ##Inf) (sample arm))) best order))))))
+(defn- median [xs]
+  (let [v (vec (sort xs)) n (count v)]
+    (if (odd? n) (v (quot n 2)) (/ (+ (v (dec (quot n 2))) (v (quot n 2))) 2.0))))
 
-(defn- ratios [best]
-  {:class (/ (:class best) (:none best)) :tag (/ (:tag best) (:none best))})
+;; one ratio pair per round, each against the same round's :none
+(defn- measure []
+  (vec (for [i (range rounds)]
+         (let [order (if (even? i) arms (reverse arms))
+               t (reduce (fn [t arm] (assoc t arm (sample arm))) {} order)]
+           {:class (/ (:class t) (:none t)) :tag (/ (:tag t) (:none t))}))))
+
+(defn- ratios [rs]
+  {:class (median (map :class rs)) :tag (median (map :tag rs))})
 
 (defn -main [& _]
   ;; the methods must still reach their own values
