@@ -24,8 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `overlaps` and the JDK's `toString`. They take the locks OpenJDK takes, POSIX
   record locks on Unix and `LockFileEx` on Windows, so a JVM and a jolt process
   see each other's locks. `tryLock` answers nil when another process holds an
-  overlapping range, and `lock` waits for it, polling rather than queueing in
-  the kernel (recorded in known-divergences). Inside one process a second
+  overlapping range, and `lock` waits for it in the kernel as the JDK does
+  (`F_SETLKW`, a blocking `LockFileEx`), on a helper thread so a fiber parks
+  instead of holding its carrier; an interrupt or a close from another thread
+  ends the wait. Inside one process a second
   overlapping lock, through any channel on the file, is
   `OverlappingFileLockException`, and closing a channel releases its locks.
   An exclusive lock on a read-only channel is `NonWritableChannelException`

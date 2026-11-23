@@ -274,22 +274,6 @@
    :check :prose
    :why "the JVM's answer is the machine's default locale, so there is no fixed value to record"
    :note "Core has no default locale. Explicit locale ids resolve through the :date-names extension point (:fallback :default): an unregistered id falls back to ROOT rather than throwing."}
-  ;; FileChannel.lock() with another process holding the range: the JDK waits in
-  ;; the kernel (fcntl F_SETLKW on Unix, a blocking LockFileEx on Windows) and is
-  ;; granted the moment the range is free, in the kernel's queue order. jolt
-  ;; retries the non-blocking lock with a sleep that backs off from 1 to 50 ms
-  ;; (nio-file.ss fc-lock): a blocking foreign call would pin a fiber's carrier,
-  ;; and nothing could end it on interrupt or close, which the JDK does by
-  ;; signalling the blocked thread, a seam jolt doesn't have. So a grant can come
-  ;; up to 50 ms late, and a holder that drops and retakes the range within that
-  ;; window can keep a jolt waiter out where a JVM waiter would have queued.
-  {:category :host-model
-   :behavior "(.lock channel) while another process holds an overlapping lock"
-   :jvm "blocks in the kernel; granted as soon as the range is released, in queue order"
-   :jolt "polls the non-blocking lock, backing off 1..50 ms; granted on the next poll after release, with no queue position"
-   :check :prose
-   :why "needs a second process holding the lock and a timing measurement; test/chez/file-lock-smoke.sh pins the waiting and the eventual grant"
-   :note "Interrupt and close end the wait the JDK's way (FileLockInterruptionException, AsynchronousCloseException), and on a fiber the wait parks."}
   ;; Files/newOutputStream, newInputStream and newByteChannel with DELETE_ON_CLOSE
   ;; on Windows. The JDK opens with FILE_FLAG_DELETE_ON_CLOSE and the file goes
   ;; when the stream closes. jolt's streams sit on Chez's C-runtime file ports,
