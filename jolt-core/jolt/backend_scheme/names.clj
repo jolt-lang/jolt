@@ -238,7 +238,10 @@
                   "jolt-native-wrap-flv" "jolt-native-wrap-longs"
                   "jolt-native-entry" "jolt-native-register!" "make-flvector"
                   ;; a safe region's call: locks around a collect-safe call
-                  "disable-interrupts" "enable-interrupts" "sa-lock-object" "sa-unlock-object"}]
+                  "disable-interrupts" "enable-interrupts" "sa-lock-object" "sa-unlock-object"
+                  ;; the call reads its status inside the no-interrupt window and
+                  ;; hands the three values out
+                  "let-values"}]
     (into from-registry helpers)))
 
 ;; A munged name both Scheme readers would take for a NUMBER rather than an
