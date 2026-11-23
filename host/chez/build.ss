@@ -2018,6 +2018,9 @@
 
 ;; Walk an embed root recursively; return (resource-name . abspath) pairs, where
 ;; resource-name is the "/"-joined path under the root (what io/resource is asked for).
+;; Names are walked sorted: the resources are emitted into the build in this
+;; order, and the OS's directory order differs between filesystems and machines,
+;; so a build from the same sources would not come out the same.
 (define (bld-walk-files root rel acc)
   (let ((dir (if (string=? rel "") root (string-append root "/" rel))))
     (fold-left
@@ -2028,7 +2031,7 @@
               (bld-walk-files root relpath acc)
               (cons (cons relpath full) acc))))
       acc
-      (directory-list dir))))
+      (sort string<? (directory-list dir)))))
 
 ;; A file's bytes as a Scheme expression that rebuilds them. Text that is valid
 ;; UTF-8 goes out as (string->utf8 "…"), the compact spelling; anything else (an

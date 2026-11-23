@@ -2008,7 +2008,8 @@
 (define (jolt-host-call method target . args)
   (cond
     ((and (string=? method "isDirectory") (string? target)) (if (file-directory? target) #t #f))
-    ((and (string=? method "listFiles") (string? target)) (list->cseq (directory-list target)))
+    ;; in the OS's order, as java.io/nio list (Chez's directory-list is it reversed)
+    ((and (string=? method "listFiles") (string? target)) (list->cseq (reverse (directory-list target))))
     (else (record-method-dispatch target method (apply jolt-vector args)))))
 
 ;; --- var cells: late-bound global roots (Clojure vars) -----------------------

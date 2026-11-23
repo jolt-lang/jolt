@@ -1546,7 +1546,8 @@
 (for-each (lambda (c) (jch-register-supers! c '("java.lang.Enum")))
           '("java.text.Normalizer$Form" "java.util.concurrent.TimeUnit" "java.math.RoundingMode"
             "java.nio.file.FileVisitResult" "java.nio.file.FileVisitOption"
-            "java.nio.file.attribute.PosixFilePermission"))
+            "java.nio.file.attribute.PosixFilePermission" "java.nio.file.attribute.AclEntryType"
+            "java.nio.file.attribute.AclEntryPermission" "java.nio.file.attribute.AclEntryFlag"))
 (jch-register-supers! "java.util.GregorianCalendar" '())
 (jch-register-supers! "java.util.Locale" '())
 (jch-register-supers! "java.util.TimeZone" '())
@@ -1583,6 +1584,31 @@
 (jch-register-supers! "sun.nio.fs.UnixUserPrincipals$User" '("java.nio.file.attribute.UserPrincipal"))
 (jch-register-supers! "sun.nio.fs.UnixUserPrincipals$Group"
                       '("sun.nio.fs.UnixUserPrincipals$User" "java.nio.file.attribute.GroupPrincipal"))
+;; the dos:, acl: and user: views (nio-file.ss), each platform's classes
+(jch-register-supers! "java.nio.file.attribute.AttributeView" '())
+(jch-register-supers! "java.nio.file.attribute.FileAttributeView" '("java.nio.file.attribute.AttributeView"))
+(jch-register-supers! "java.nio.file.attribute.BasicFileAttributeView" '("java.nio.file.attribute.FileAttributeView"))
+(jch-register-supers! "java.nio.file.attribute.FileOwnerAttributeView" '("java.nio.file.attribute.FileAttributeView"))
+(jch-register-supers! "java.nio.file.attribute.DosFileAttributeView" '("java.nio.file.attribute.BasicFileAttributeView"))
+(jch-register-supers! "java.nio.file.attribute.AclFileAttributeView" '("java.nio.file.attribute.FileOwnerAttributeView"))
+(jch-register-supers! "java.nio.file.attribute.UserDefinedFileAttributeView" '("java.nio.file.attribute.FileAttributeView"))
+(jch-register-supers! "java.nio.file.attribute.DosFileAttributes" '("java.nio.file.attribute.BasicFileAttributes"))
+(jch-register-supers! "java.nio.file.attribute.UserPrincipalLookupService" '())
+(for-each (lambda (c) (jch-register-supers! c '("java.nio.file.attribute.DosFileAttributeView")))
+          '("sun.nio.fs.LinuxDosFileAttributeView" "sun.nio.fs.WindowsFileAttributeViews$Dos"))
+(for-each (lambda (c) (jch-register-supers! c '("java.nio.file.attribute.DosFileAttributes")))
+          '("sun.nio.fs.LinuxDosFileAttributeView$1" "sun.nio.fs.WindowsFileAttributes"))
+(for-each (lambda (c) (jch-register-supers! c '("java.nio.file.attribute.UserDefinedFileAttributeView")))
+          '("sun.nio.fs.LinuxUserDefinedFileAttributeView" "sun.nio.fs.BsdUserDefinedFileAttributeView"
+            "sun.nio.fs.WindowsUserDefinedFileAttributeView"))
+(jch-register-supers! "sun.nio.fs.WindowsAclFileAttributeView" '("java.nio.file.attribute.AclFileAttributeView"))
+(jch-register-supers! "sun.nio.fs.WindowsUserPrincipals$User" '("java.nio.file.attribute.UserPrincipal"))
+(jch-register-supers! "sun.nio.fs.WindowsUserPrincipals$Group"
+                      '("sun.nio.fs.WindowsUserPrincipals$User" "java.nio.file.attribute.GroupPrincipal"))
+(for-each (lambda (c) (jch-register-supers! c '("java.nio.file.attribute.UserPrincipalLookupService")))
+          '("sun.nio.fs.UnixFileSystem$LookupService$1" "sun.nio.fs.WindowsFileSystem$LookupService$1"))
+(jch-register-supers! "java.nio.file.attribute.AclEntry" '())
+(jch-register-supers! "java.nio.file.attribute.AclEntry$Builder" '())
 
 ;; ---- jhost value tag -> FQN (single value-discriminator registry) --------------
 ;; A value-layer shim value (make-jhost tag …) reports its JVM class by this map;

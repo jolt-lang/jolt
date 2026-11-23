@@ -49,8 +49,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   channel is `ClosedChannelException`, and a channel the program drops
   without closing gives its descriptor back once it is collected.
 
+- **The `dos:`, `acl:` and `user:` attribute views, matching each platform's
+  JDK 21 provider.** `FileSystem.supportedFileAttributeViews` answers what the
+  JDK's does: `basic owner posix unix dos user` on Linux, `basic owner posix
+  unix user` on macOS, `basic owner dos acl user` on Windows.
+  `UserDefinedFileAttributeView` (`list`, `size`, `read`, `write`, `delete`,
+  and `user:` names through `getAttribute`, `setAttribute` and
+  `readAttributes`) keeps values in `user.*` extended attributes on Linux and
+  macOS and in NTFS alternate data streams (`file:name`) on Windows, with the
+  JDK's messages for a missing attribute, a buffer too small and a name too
+  long. `DosFileAttributeView`, `DosFileAttributes` and `dos:readonly`,
+  `hidden`, `system` and `archive` read and set the DOS bits through
+  `GetFileAttributesW`/`SetFileAttributesW` on Windows and through Samba's
+  `user.DOSATTRIB` attribute on Linux, as the JDK does. On Windows
+  `AclFileAttributeView` reads and writes the owner and the DACL
+  (`GetFileSecurityW`/`SetFileSecurityW`), principals are
+  `WindowsUserPrincipals` named `DOMAIN\name` with the JDK's `toString`, and
+  `getOwner`/`setOwner` go through it, where `getOwner` used to answer
+  `$USER`. `AclEntry` with its builder, `AclEntryType`, `AclEntryPermission`
+  and `AclEntryFlag` are there on every platform, and the default filesystem
+  has a `UserPrincipalLookupService`. `Files/setAttribute` now goes through
+  the view the spec names, so `posix:permissions`, `posix:owner`,
+  `posix:group`, `unix:mode`, `unix:uid`, `unix:gid` and `owner:owner` set what
+  they name, and a name or view it does not have raises the JDK's
+  `IllegalArgumentException` or `UnsupportedOperationException` instead of
+  being ignored. windows-static runs the Windows half against `attrib`,
+  `icacls` and `dir /r`.
+
 ### Fixed
 
+- **`PosixFilePermissions/fromString` answers a `java.util.RegularEnumSet`,
+  iterating in ordinal order, as it does on every JDK, and refuses a string
+  that is not nine characters of each position's letter or `-` with
+  `IllegalArgumentException "Invalid mode"`.** It answered a `HashSet` and
+  read `s` and `t` as set bits. `getPosixFilePermissions` and
+  `PosixFileAttributes.permissions` stay `HashSet`s: that is what JDK 21
+  answers on Linux and macOS alike (JDK 25 changed them to `EnumSet`s).
+- `UserPrincipalNotFoundException` has a null message, as the JDK's does; it
+  carried the name.
+- A `jolt build` embeds resources in sorted order, and a native library search
+  settles on the same file whatever order the directory lists in. Both
+  followed the filesystem's order, so the same sources could build to a
+  different image on another machine.
 - **`(require 'x :reload-all)` of a namespace load-file'd from off the source
   roots throws.** The check from #1751 only covered `:reload`, so `:reload-all`
   kept the stale definitions in silence. The message is now RT.load's, `Could
@@ -241,6 +281,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Directory listings come in the order the OS hands entries out (readdir on
+  POSIX, `FindNextFileW` on Windows), as the JDK's do, instead of sorted:
+  `newDirectoryStream`, `walkFileTree`, `Files/list`, `Files/walk`,
+  `Files/find`, `File.list`, `File.listFiles`, `file-seq`, and babashka.fs's
+  `list-dir` and `glob` through them. Code that needs an order has to sort, as
+  on the JVM. Listing a directory no longer sorts it, so it is cheaper.
 - A hash map or set node keeps its entries in its own array, two slots each,
   with an entry bitmap and a branch bitmap, instead of a `(key . value)` pair
   per entry: 16 bytes less per entry and one pointer chase less per lookup.

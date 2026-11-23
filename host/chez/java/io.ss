@@ -762,7 +762,15 @@
           ((char=? (string-ref p i) #\/) (substring p (+ i 1) (string-length p)))
           (else (loop (- i 1))))))
 
-;; directory children, sorted (the __list-dir seed primitive). The children keep
+;; A directory's entry names in the order the OS hands them out: readdir on
+;; POSIX, FindNextFileW on Windows. That is the order the JDK lists in
+;; (File.list, newDirectoryStream, walkFileTree), and it is unspecified: a caller
+;; that needs an order sorts. Chez's directory-list conses each name onto the
+;; front as it reads, on both (c/io.c S_directory_list, S_find_files), so its
+;; answer is that order reversed.
+(define (os-directory-list p) (reverse (directory-list p)))
+
+;; directory children in the OS's order (the __list-dir seed primitive). The children keep
 ;; the FORM OF THE PARENT, like File.listFiles(), which builds each child as
 ;; new File(this, name): listing a relative directory yields relative children.
 ;; Resolving the base to an absolute path first made every child absolute, so a
@@ -779,7 +787,7 @@
                         (substring given 0 n))))
          (base (if (string=? trimmed "") p trimmed)))
     (map (lambda (e) (string-append (if (string=? base "/") "" base) "/" e))
-         (sort string<? (directory-list p)))))
+         (os-directory-list p))))
 (define (jolt-dir? path) (if (file-directory? (project-relative (file-path-of path))) #t #f))
 
 ;; absolute path string: a relative path resolves against user.dir — the same
@@ -2349,7 +2357,7 @@
                                                            "java.io.File")))))
       ;; .list -> the child NAMES (a String[]), nil if not a readable directory.
       ((string=? name "list")
-       (list (jfile-listing fp (lambda () (jolt-ref-array (sort string<? (directory-list fp))
+       (list (jfile-listing fp (lambda () (jolt-ref-array (os-directory-list fp)
                                                            "java.lang.String")))))
       ((string=? name "length")         (list (->num (file-byte-size fp))))
       ((string=? name "lastModified")   (list (->num (file-mtime-millis fp))))
