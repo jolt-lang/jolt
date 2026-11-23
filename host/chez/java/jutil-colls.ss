@@ -95,8 +95,17 @@
          (jutil-entry-equals? a b))
         ((jolt=2 (jutil-plain a) (jutil-plain b)) #t)
         (else #f)))
-(register-eq-arm! (lambda (a b) (or (and (jhost? a) (jutil-equiv-value? a))
-                                    (and (jhost? b) (jutil-equiv-value? b))))
+;; A shim is no IPersistentCollection, so Util.equiv asks a record, deftype or
+;; reify opposite one for its answer when it is on the left (its equiv when it is
+;; a collection, else its equals), and when it is a collection on the right
+;; (pcequiv). Those pairs belong to that type's own arm. Taking them here
+;; converted the shim to a persistent collection first, so a deftype whose equals
+;; says true, or a collection type's equiv, was never asked.
+(define (jutil-user-type? x) (or (jrec? x) (jreify? x)))
+(register-eq-arm! (lambda (a b) (or (and (jhost? a) (jutil-equiv-value? a)
+                                         (not (and (jutil-user-type? b) (eq-ipc? b))))
+                                    (and (jhost? b) (jutil-equiv-value? b)
+                                         (not (jutil-user-type? a)))))
                   jutil-equals?)
 
 ;; ---- hashCode -----------------------------------------------------------------
