@@ -165,15 +165,20 @@
   (let [[i n] bv
         lim (gensym "lim")]
     ;; plain lists, not syntax-quote: the dispatch matches unqualified let/loop
-    (analyze env
-             (with-meta
-               (list 'let [lim n]
-                     (list 'loop [i 0]
-                           (list 'if (list '< i lim)
-                                 (concat ['do] body [(list 'recur (list 'inc i))])
-                                 nil)))
-               (meta form))
-             tail)))
+    (let [r (analyze env
+                     (with-meta
+                       (list 'let [lim n]
+                             (list 'loop [i 0]
+                                   (list 'if (list '< i lim)
+                                         (concat ['do] body [(list 'recur (list 'inc i))])
+                                         nil)))
+                       (meta form))
+                     tail)]
+      ;; clojure.core/dotimes counts to (long n): 2.5 runs twice, where (< i 2.5)
+      ;; would run three times. Ask for the cast rather than guess it.
+      (when-not (= :long (-> r :bindings first :init :type))
+        (fail form "dotimes takes a long count; use (long n) for a double"))
+      r)))
 
 (def ^:private math-fns
   {'Math/sqrt 1 'Math/sin 1 'Math/cos 1 'Math/tan 1 'Math/exp 1 'Math/log 1

@@ -13,7 +13,7 @@
     1 (throw (ArrayIndexOutOfBoundsException.
               (str "Index " a " out of bounds for length " b)))
     2 (throw (ArithmeticException. "integer overflow"))
-    3 (throw (ArithmeticException. "Divide by zero"))
+    3 (throw (ArithmeticException. "/ by zero"))
     4 (throw (NegativeArraySizeException. (str a)))
     5 (throw (IllegalArgumentException. (str "Value out of range for long: " d)))
     6 (throw (OutOfMemoryError. "native region: allocation failed"))
@@ -31,7 +31,12 @@
 (defn sub [a b] (in-long (- a b)))
 (defn mul [a b] (in-long (* a b)))
 (defn neg [a] (in-long (- a)))
-(defn quot* [a b] (if (zero? b) (raise! 3 0 0 0.0) (in-long (quot a b))))
+;; Long/MIN_VALUE / -1 wraps to Long/MIN_VALUE on the JVM (Numbers.quotient is
+;; Java's long /), with no exception
+(defn quot* [a b]
+  (cond (zero? b) (raise! 3 0 0 0.0)
+        (and (= b -1) (= a Long/MIN_VALUE)) a
+        :else (quot a b)))
 (defn rem* [a b] (if (zero? b) (raise! 3 0 0 0.0) (rem a b)))
 (defn mod* [a b] (if (zero? b) (raise! 3 0 0 0.0) (mod a b)))
 
