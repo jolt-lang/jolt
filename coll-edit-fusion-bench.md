@@ -389,3 +389,127 @@ Replacing the duplicated 3-key and 4-key array-map `dissoc` clauses with the `am
 
 - Filtered full `SHARD-POOL` (205 of 208 targets, excluding the three host environmental failures `certify` [requires JDK 21], `lazyretain` [requires GNU `timeout`], and `filelock` [pre-existing `starved after 10000 cycles` failure on this host]): `200` parallel `-j8` + `devbootsmoke`/`gatebootsmoke` at `-j1` + `fastpathratio`/`stdlibratio`/`pmoverhead` at `-j1` — all **205/205** targets exited 0, including `selfhost`, `arraymap` (116/116 with the 466-case exhaustive `conj` matrix, 40,248-case exhaustive `dissoc` matrix, 1,500-trial randomized differential `dissoc` test, compiled fn allocation assertions, and 1-arg/5+/non-stable-position/record/sorted-map variadic clause tests; mutant-checked tests: the exhaustive `conj` matrix, the exhaustive `dissoc` matrix, and the 1-element value-position `conj` metadata test by removing `meta-carry-conj` from that clause and observing `arraymap` fail at 115/116), `sortedcoll` (145/145), `recfast` (518/518), `rrbprop` (11,170/11,170), `portcheck`, `deadhost`, `recordshadow`, `footprint`, `vfaslceiling`, `attributioncheck`, `gambitseedcheck`, `gambitgencheck`, and `gambittwins`.
 - Gambit did not run: `gambitcheck`, `gambitkernel`, `gambiteval`, `gambitboot`, `gambitunbound`, `gambitvars`, `gambitstatics`, and `gambitprofile` skipped because Gambit is not installed on this machine. All new identifiers in `collections.ss`, `records-coll.ss`, and `host-table.ss` were audited against the Gambit boot files, and `host/gambit/records-gambit.ss` was regenerated via `make gambitgen` and verified by `gambitgencheck`.
+
+## jolt-41
+
+Emit-time peephole in `jolt-core/jolt/backend_scheme/fused.clj` collapsing straight-line nested or threaded `assoc` chains totaling 2..4 pairs into one `(jolt-assoc m k1 v1 ...)` call (dispatching directly to the fixed `case-lambda` clauses shipped in `jolt-39`), sharing `pure-call-head?` from `jolt-core/jolt/passes/inline.clj` over `op-registry/pure-ops`.
+
+- **Parent commit measured against:** `9ae023f4f` (`perf/coll-edit-fusion`)
+- **Date:** 2026-11-24
+- **Machine:** Apple M3 Ultra (Virtual), macOS 15.7.3
+- **Chez:** 10.4.1 (`JOLT_CHEZ=/Users/admin/src/jolt/.cache/local/chezscheme-10.4.1/bin/scheme`)
+- **Build flags:** `bin/jolt build -m bench41 -o <out> --direct-link --opt`
+- **Nursery pin:** `JOLT_GC_TRIP_BYTES=16m` (isolates adaptive nursery doubling investigated in `jolt-44`)
+- **Semantics decisions relied on (`coll-edit-fusion-decisions.md`):** Decision 1 (pure-op calls in later operands may evaluate before an earlier edit; observable only when both throw) and Decision 3 (no identity guarantee under raw Scheme `call/cc` re-entry). A throw from a fused call may report the outermost call's line.
+- **Seed mint impact:** The peephole runs during `make remint` (converged in 3 passes, 0 forms skipped). Exactly **1** seed call site fused in `host/chez/seed/prelude.ss` (and `host/gambit/seed/prelude.ss`): `clojure.core/shuffle` (`jolt-core/clojure/core/21-coll.clj:23`, collapsing `(assoc (assoc v i (nth v j)) j t)` into `(jolt-assoc v i (jolt-nth/i v j) j t)`; `(jolt-assoc ` `3 -> 4`, `(jolt-assoc3 ` `89 -> 87`). **0** call sites fused in `host/chez/seed/image.ss` (`(jolt-assoc ` `61 -> 61`, `(jolt-assoc3 ` `249 -> 249`). Per the seed rule, seed files were restored before committing (`git checkout -- host/chez/seed host/gambit/seed`).
+- **Gambit:** not installed on this machine; `gambitseedcheck`, `gambitgencheck`, `gambittwins`, and `portcheck` passed on the reminted tree; Gambit-runtime gates (`gambitcheck`, `gambitkernel`, `gambiteval`, `gambitboot`, `gambitunbound`, `gambitvars`, `gambitstatics`, `gambitprofile`) did not run.
+
+### Corpus recount (50 repos, 15,313 `.clj`/`.cljc`/`.cljs` files, `/tmp/jolt-opt-corpus-20261123`)
+
+Scanned all 15,313 files with a standalone out-of-tree Clojure reader/scanner expanding `->` and applying the exact shipped operand rule (first step unrestricted; later steps restricted to locals, constants, or calls to `op-registry/pure-ops` / keyword lookups at valid arity). Both strict lexical-binding tracking (`lex`) and counting unqualified non-earmuffed macro-bound symbols as locals (`unq`) are reported:
+
+| Pattern | Syntactic | Eligible (`lex`) | Eligible (`unq`) | Strict local+const only (`lex` / `unq`) | Notes |
+|---|---:|---:|---:|---:|---|
+| `assoc` chain, 2 pairs | 298 | **170** | 198 | — | |
+| `assoc` chain, 3 pairs | 178 | **59** | 62 | — | |
+| `assoc` chain, 4 pairs | 99 | **67** | 70 | — | |
+| **`assoc` chain, 2..4 pairs total** | **575** | **296** | **330** | **195 / 206** | Decision 1 adds +101 (+52%) / +124 (+60%) sites; +48 syntactic chains have 5+ pairs (623 total, unfused) |
+| **`dissoc` -> `assoc` (1-key -> 1-pair, for `jolt-46`)** | **141** | **84** | **93** | 78 (`lex`) | `aleph/http.clj:483` (`(- end start)`) qualifies (`-` is pure) |
+| `dissoc` -> `assoc` (all arities, for `jolt-46`) | 317 | 168 | 193 | — | |
+| **`assoc` -> `dissoc` (1-pair -> 1-key, for `jolt-46`)** | **118** | **117** | **118** | 117 (`lex`) | |
+| `assoc` -> `dissoc` (all arities, for `jolt-46`) | 211 | 209 | 210 | — | |
+
+- **`clj-kondo/impl/analyzer.clj:1118`** (`(-> ctx (assoc :fn-args (:children arg-vec)) (assoc :body-children-count (count children)) (assoc :pre-post-map (some? pre-post-map)))`): **does not fuse** because `count` is not in `op-registry/pure-ops` (`:pure?` means pure and total for `inline.clj` duplication/discard, so `count` stays out) and chains with an ineligible later step are left unfused rather than partially split.
+
+### Emitted Scheme (before and after), emitted bytes, and compile time
+
+Real corpus site (`riemann/src/riemann/graphite.clj:160-161`, 2-step chain with pure keyword lookup) and 3-step grow (`chain3-grow`):
+
+```clojure
+;; riemann/graphite.clj:160-161
+(defn pool-opts [m opts]
+  (-> m
+      (assoc :size (:pool-size opts))
+      (assoc :regenerate-interval (:reconnect-interval opts))))
+
+;; 3-step grow (m4 -> 7)
+(defn chain3-grow [m x y z]
+  (-> m (assoc :k4 x) (assoc :k5 y) (assoc :k6 z)))
+```
+
+```scheme
+;; riemann/graphite.clj:160-161 BEFORE (143 bytes at call expr, 1,023 bytes full def):
+(let* ((_a$26 (jolt-assoc3 m _kc$20 (jolt-kw-get-site opts _kc$22 _kc$21)))
+       (_a$27 _kc$23)
+       (_a$28 (jolt-kw-get-site opts _kc$25 _kc$24)))
+  (jolt-assoc3 _a$26 _a$27 _a$28))
+
+;; riemann/graphite.clj:160-161 AFTER (139 bytes at call expr, 1,019 bytes full def):
+(let* ((_a$8 m)
+       (_a$9 _kc$2)
+       (_a$10 (jolt-kw-get-site opts _kc$4 _kc$3))
+       (_a$11 _kc$5)
+       (_a$12 (jolt-kw-get-site opts _kc$7 _kc$6)))
+  (jolt-assoc _a$8 _a$9 _a$10 _a$11 _a$12))
+
+;; chain3-grow BEFORE (67 bytes at call expr, 872 bytes full def):
+(jolt-assoc3 (jolt-assoc3 (jolt-assoc3 m _kc$46 x) _kc$47 y) _kc$48 z)
+
+;; chain3-grow AFTER (38 bytes at call expr, -29 bytes / -43%; 843 bytes full def):
+(jolt-assoc m _kc$36 x _kc$37 y _kc$38 z)
+```
+
+For `chain2-arith` (`(-> m (assoc :k0 x) (assoc :dt (- end start)))`), fusion also eliminates the ordering `let*` wrapper between the two `assoc` steps: call expression shrinks from **109 to 43 bytes (-66 bytes / -61%)** (925 -> 859 bytes full def).
+
+- **Compile time (`bench41`, `bin/jolt build --direct-link --opt`):** parent **22.003 s** vs candidate **21.984 s** (`JOLT_BUILD_PROFILE=1`: `emit app namespaces` 118 ms vs 116 ms, `emit: emit-top` 7 ms vs 7 ms, cumulative pre-Chez 307 ms vs 307 ms — no measurable overhead).
+
+### Commands
+
+```sh
+# Built before (detached worktree at 9ae023f4f) and after (reminted worktree):
+(cd /tmp/jolt-41-bench && JOLT_PWD="$PWD" /tmp/jolt-41-parent/bin/jolt build -m bench41 -o /tmp/jolt-41-bench/bench41-base --direct-link --opt)
+(cd /tmp/jolt-41-bench && JOLT_PWD="$PWD" "$REPO/bin/jolt" build -m bench41 -o /tmp/jolt-41-bench/bench41-cand --direct-link --opt)
+# Timed interleaved A1 -> B -> A2 (7 runs of 2,000,000 ops after 3 warmup runs, System/gc before each run):
+JOLT_GC_TRIP_BYTES=16m /tmp/jolt-41-bench/bench41-base 2000000
+JOLT_GC_TRIP_BYTES=16m /tmp/jolt-41-bench/bench41-cand 2000000
+JOLT_GC_TRIP_BYTES=16m /tmp/jolt-41-bench/bench41-base 2000000
+```
+
+### Benchmark receiver construction and asserted representations
+
+Every receiver in `bench41` asserts its runtime class at startup via `(.getName ^Class (class obj))`:
+
+- `m3`: `{:k0 0 :k1 1 :k2 2}` — `clojure.lang.PersistentArrayMap` (3 keys, literal)
+- `m4`: `{:k0 0 :k1 1 :k2 2 :k3 3}` — `clojure.lang.PersistentArrayMap` (4 keys, literal; `(chain3-grow m4 4 5 6)` also asserted `clojure.lang.PersistentArrayMap` at 7 keys)
+- `m12`: `(reduce (fn [m i] (assoc m (keyword (str "k" i)) i)) {} (range 12))` — `clojure.lang.PersistentArrayMap` (12 keyword keys, array-mode)
+- `opts`: `{:pool-size 16 :reconnect-interval 5000}` — `clojure.lang.PersistentArrayMap` (2 keys, literal)
+- `hm24`: `(apply hash-map (mapcat (fn [i] [(keyword (str "k" i)) i]) (range 24)))` — `clojure.lang.PersistentHashMap` (24 keyword keys, hash-mode miss control)
+- `v32`: `(vec (range 32))` — `clojure.lang.PersistentVector` (32 elements, tail-full vector miss control)
+- `rec`: `(->Rec 1 2 3)` from `(defrecord Rec [a b c])` — `bench41.Rec` (record miss control, declared-field and ext-map rows)
+
+### Ad hoc AOT results (median ns/op of 7 runs x 2,000,000 ops, `JOLT_GC_TRIP_BYTES=16m`, A1 -> B -> A2)
+
+| Row | Parent A1 (ns/op) | Candidate B (ns/op) | Parent A2 (ns/op) | Speedup (avg A / B) | Notes |
+|---|---:|---:|---:|---:|---|
+| `chain2-m3-replace` | 37.02 | **13.05** | 36.20 | **2.81x** | 2-step `assoc` replacing 2 existing keys on 3-key array map |
+| `chain2-m3-new` | 43.58 | **16.26** | 43.03 | **2.66x** | 2-step `assoc` adding 2 new keys on 3-key array map |
+| `chain3-m3-replace` | 56.82 | **15.49** | 55.13 | **3.61x** | 3-step `assoc` replacing all 3 keys on 3-key array map |
+| `chain2-m4-grow6` | 44.85 | **17.40** | 44.78 | **2.58x** | 2-step `assoc` growing 4-key array map to 6 keys |
+| `chain3-m4-grow7` | 68.40 | **31.28** | 68.77 | **2.19x** | 3-step `assoc` growing 4-key array map to 7 keys |
+| `chain4-m4-grow8` | 93.82 | **39.27** | 93.76 | **2.39x** | 4-step `assoc` growing 4-key array map to 8 keys |
+| `chain2-m12-new` | 62.03 | **30.67** | 62.23 | **2.03x** | 2-step `assoc` adding 2 new keys on 12-keyword array map |
+| `chain2-nil` | 43.22 | **6.21** | 44.93 | **7.10x** | 2-step `assoc` on `nil` (direct array map construction) |
+| `chain2-pure-arith` | 39.14 | **15.91** | 39.44 | **2.47x** | 2-step with pure `(- end start)` later operand (Decision 1) |
+| `chain2-riemann-shape` | 50.59 | **21.77** | 49.41 | **2.30x** | 2-step with pure `(:reconnect-interval opts)` later operand |
+| `ctrl-hash24-chain2` | 85.95 | 86.55 | 87.04 | 1.00x | miss control: 2-step on 24-key hash-mode map |
+| `ctrl-hash24-chain3` | 140.00 | 141.40 | 141.52 | 1.00x | miss control: 3-step on 24-key hash-mode map |
+| `ctrl-vec32-chain3` | 95.01 | **87.51** | 94.08 | **1.08x** | miss control: 3-step on 32-elem vector (1 `meta-carry` vs 3) |
+| `ctrl-rec-fields-c3` | 75.68 | **68.63** | 76.33 | **1.11x** | miss control: 3-step on record declared fields (1 `meta-carry` vs 3) |
+| `ctrl-rec-ext-c2` | 76.84 | **73.84** | 76.78 | **1.04x** | miss control: 2-step on record ext keys (1 `meta-carry` vs 2) |
+
+### Gate status
+
+- **Reminted worktree (filtered full `SHARD-POOL`, 205 of 208 targets):** excluded the three pre-existing host environmental failures (`certify` [requires JDK 21], `lazyretain` [requires GNU `timeout`], and `filelock` [pre-existing `starved after 10000 cycles` failure]). Ran `200` parallel targets (`-j8`) + `devbootsmoke`/`gatebootsmoke` (`-j1`) + `fastpathratio`/`stdlibratio`/`pmoverhead` (`-j1`) — all **205/205** targets exited 0, including `selfhost`, `gambitseedcheck`, `gambitgencheck`, `gambittwins`, `emittedheads` (293 heads, 0 shadowable), `inline` (376/376 with 30 new assertions: 12 positive emitted-head tests, 11 negative tests including `kondo:1118` `count`, `:clear-caps`, and 5-step / 3+2 no-tiling, 3 evaluation-order tests, `loop-maps` and `types.clj` record-field-demotion regressions, 7-receiver result equivalence, and 400-trial randomized differential test), `irvalidate`, `arraymap` (116/116), `recfast` (518/518), `recfold` (13/13), `oparity` (304/304), `directlink` (32/32), `cts`, `unit`, `corpus`, `footprint`, `vfaslceiling`, `portcheck`, `deadhost`, `recordshadow`, and `attributioncheck`.
+- **Mutant-checked tests (`test/chez/inline-test.ss`):** M1 (disable `emit-assoc-chain` -> 14 emitted-head tests fail, `362/376`), M2 (drop `:clear-caps` check -> both `:clear-caps` emission tests fail + `^:once` capture-retry runtime test throws NPE), M3 (drop `*unfused-assoc-nodes*` suppression -> 5-step no-tiling test fails, `375/376`), M4 (drop `later-pure?` check -> all 7 impure negative tests + throw-before-effectful-operand test fail + `^:once` retry throws).
+- **Committed tree (seeds restored per the seed rule):** `selfhost`, `gambitseedcheck`, and `inline` (14 emitted-head assertions, `362/376`) fail strictly for seed staleness until `make remint` (or `jolt-45`); `emittedheads` and `attributioncheck` pass on the committed tree.
+- **Gambit did not run:** `gambitboot`, `gambitcheck`, `gambiteval`, `gambitkernel`, `gambitprofile`, `gambitstatics`, `gambitunbound`, and `gambitvars` skipped because Gambit is not installed on this machine.
