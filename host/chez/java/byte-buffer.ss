@@ -204,7 +204,7 @@
 ;;
 ;; The float a pattern holds is a Float (a jfloat, converters.ss), so
 ;; (.getFloat b) after (.putFloat b 0.1) prints 0.1 and equals (float 0.1).
-(define (nb-bits->flt b) (make-jfloat (bits->flt b)))
+(define (nb-bits->flt b) (flt-bits->jfloat b))
 
 ;; --- element kinds -------------------------------------------------------------
 ;; What a stored unsigned W-octet integer reads as, and what an argument stores.
@@ -229,7 +229,7 @@
   (case kind
     ((char) (nb-char-code v))
     ;; putFloat/putDouble store floatToRawIntBits/doubleToRawLongBits
-    ((float) (flt->raw-bits (jolt-need-num v)))
+    ((float) (jolt-float-raw-bits v (lambda (x) (jolt-unchecked-float->flonum (jolt-need-num x)))))
     ((double) (dbl->raw-bits (jolt-need-num v)))
     (else (nb-int v))))
 ;; A value as an element of a host typed array of KIND.

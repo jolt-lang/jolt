@@ -358,13 +358,32 @@
 (define math-long-methods
   '("floorDiv" "floorMod" "addExact" "subtractExact" "multiplyExact"
     "incrementExact" "decrementExact" "negateExact"))
+;; The long methods have only int and long overloads, so anything that is not an
+;; integer in the long range (a double, a Float, a ratio, a BigDecimal, a BigInt
+;; past the long range, a char, nil) matches none of them, as on the JVM.
+(define (math-long-arg? x)
+  (or (fixnum? x)
+      (and (number? x) (exact? x) (integer? x)
+           (<= -9223372036854775808 x 9223372036854775807))))
+(define (math-no-long-overload name n)
+  (throw-jvm 'IllegalArgumentException
+             (string-append "No matching method " name " found taking "
+                            (number->string n) " args")))
 (define (math-checked entry)
-  (let ((f (cdr entry)))
-    (if (procedure? f)
-        (let ((coerce (if (member (car entry) math-long-methods) jolt-need-num ->dbl)))
-          (cons (car entry)
-                (host-arity-like f (lambda args (apply f (map coerce args))))))
-        entry)))
+  (let ((f (cdr entry)) (name (car entry)))
+    (cond
+      ((not (procedure? f)) entry)
+      ((member name math-long-methods)
+       ;; every long method takes one or two arguments
+       (cons name
+             (host-arity-like f
+               (case-lambda
+                 ((a) (if (math-long-arg? a) (f a) (math-no-long-overload name 1)))
+                 ((a b) (if (and (math-long-arg? a) (math-long-arg? b))
+                            (f a b)
+                            (math-no-long-overload name 2)))
+                 (args (math-no-long-overload name (length args)))))))
+      (else (cons name (host-arity-like f (lambda args (apply f (map ->dbl args)))))))))
 ;; --- java.lang.Math's float overloads ------------------------------------------
 ;; A Float argument picks Math's float overload where there is one, so the answer
 ;; is a Float computed at single precision: (Math/ulp (float 2.5)) is the gap to
@@ -548,9 +567,38 @@
                          (else (exact->inexact (* (+ (expt 2 23) mant) (expt 2 (- field 150))))))))
           (if (>= b (expt 2 31)) (- mag) mag)))))
 (define (jolt-float->int-bits x) (unsigned->signed (flt->bits (jolt-float->flonum x)) 32))
-(define (jolt-float->raw-int-bits x) (unsigned->signed (flt->raw-bits (jolt-float->flonum x)) 32))
+;; A signaling float NaN. A float is held as the double it widens to, and the
+;; JVM's widening (f2d) quiets a signaling NaN, so (double f) has to answer the
+;; quiet one; but floatToRawIntBits of the float itself still sees the signaling
+;; bits. The jfloat holds the quiet double, so every widening and every
+;; arithmetic op reads what the JVM's would at no cost, and its exact bits are
+;; kept beside it here, keyed by the jfloat, for the raw reads. Only
+;; intBitsToFloat (and a ByteBuffer or DataInput read) makes one.
+(define sig-float-bits (make-weak-eq-hashtable))
+(define sig-float-mu (make-mutex))
+(define (flt-signaling-nan-bits? b)
+  (and (= (bitwise-and b #x7f800000) #x7f800000)
+       (not (= (bitwise-and b #x7fffff) 0))
+       (= (bitwise-and b #x400000) 0)))
+;; the Float an unsigned 32-bit pattern holds
+(define (flt-bits->jfloat b)
+  (if (flt-signaling-nan-bits? b)
+      (let ((f (make-jfloat (bits->flt (bitwise-ior b #x400000)))))
+        (jolt-with-mutex sig-float-mu (hashtable-set! sig-float-bits f b))
+        f)
+      (make-jfloat (bits->flt b))))
+;; floatToRawIntBits of X as an unsigned pattern, a signaling NaN's own bits.
+;; TO-FLONUM narrows anything that is not a Float: the checked cast for the
+;; Float method, the unchecked one for a ByteBuffer store (a double past
+;; Float/MAX_VALUE is an infinity there, as (float) is).
+(define (jolt-float-raw-bits x to-flonum)
+  (or (and (jfloat? x) (nan? (jfloat-fl x))
+           (jolt-with-mutex sig-float-mu (hashtable-ref sig-float-bits x #f)))
+      (flt->raw-bits (to-flonum x))))
+(define (jolt-float->raw-int-bits x)
+  (unsigned->signed (jolt-float-raw-bits x jolt-float->flonum) 32))
 (define (jolt-int-bits->float n)
-  (make-jfloat (bits->flt (modulo (exact (jolt-need-num n)) (expt 2 32)))))
+  (flt-bits->jfloat (modulo (exact (jolt-need-num n)) (expt 2 32))))
 
 ;; Double.compare: numeric order, except that -0.0 sorts below 0.0 and NaN above
 ;; everything, itself included equal to itself; that tie-break is the bit

@@ -35,7 +35,7 @@
             [jolt.native.stack :as stack]))
 
 (def err-codes
-  {:oob 1 :overflow 2 :div-zero 3 :neg-size 4 :long-range 5 :oom 6 :fixnum-store 7 :mod-zero 8})
+  {:oob 1 :overflow 2 :div-zero 3 :neg-size 4 :long-range 5 :oom 6 :fixnum-store 7 :mod-zero 9})
 
 ;; A borrowed long-array is a Chez fxvector: each slot a fixnum, the value times
 ;; 8 (scheme.h Sfixnum/Sfixnum_value). jolt widens the backing once a value

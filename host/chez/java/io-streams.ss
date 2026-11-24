@@ -292,12 +292,17 @@
 ;; nil one: InputStream.read(byte[]) and most read(byte[],int,int)s take its
 ;; length first; FileInputStream's native read and PushbackInputStream's own
 ;; null test throw with no message.
+(define (in-stream-native-null? self)
+  (or (in-stream-pushback self)
+      (equal? (stream-class self) "java.io.FileInputStream")
+      ;; a DataInputStream sharing such a stream's port hands the null on to it
+      (let ((st (jhost-state self)))
+        (and (fx>? (vector-length st) dis-native-null-slot)
+             (vector-ref st dis-native-null-slot)))))
 (define (in-stream-read-buf self rest)
   (let ((buf (car rest)))
     (when (jolt-nil? buf)
-      (if (and (pair? (cdr rest))
-               (or (in-stream-pushback self)
-                   (equal? (stream-class self) "java.io.FileInputStream")))
+      (if (and (pair? (cdr rest)) (in-stream-native-null? self))
           (throw-jvm 'NullPointerException jolt-nil)
           (raf-null-array!)))
     buf))
@@ -1900,6 +1905,10 @@
                    (string-append "Cannot invoke \"java.io.InputStream." sig
                                   "\" because \"this.in\" is null"))
         inner)))
+;; Past the class slot, on a DataInputStream that shares its stream's port: #t
+;; when that stream refuses read(nil, off, len) with no message (in-stream-read-buf),
+;; which the JDK's DataInputStream reaches by handing the call on.
+(define dis-native-null-slot 10)
 (define (dis-pending self) (vector-ref (jhost-state self) 8))
 (define (dis-pending-set! self b) (vector-set! (jhost-state self) 8 b))
 ;; read(): a byte 0..255, or -1
@@ -1960,10 +1969,12 @@
              (not (in-stream-replay inner))
              (not (piped-pipe inner))
              (not (in-stream-sequence-close inner)))
-        (make-jhost "in-stream"
-                    (vector (vector-ref (jhost-state inner) 0)
-                            (vector-ref (jhost-state inner) 1)
-                            (vector-ref (jhost-state inner) 2)))
+        (let ((v (make-vector (fx+ dis-native-null-slot 1) #f)))
+          (vector-set! v 0 (vector-ref (jhost-state inner) 0))
+          (vector-set! v 1 (vector-ref (jhost-state inner) 1))
+          (vector-set! v 2 (vector-ref (jhost-state inner) 2))
+          (vector-set! v dis-native-null-slot (and (in-stream-native-null? inner) #t))
+          (make-jhost "in-stream" v))
         (let* ((self #f)
                (port (make-custom-binary-input-port
                        "data-source"

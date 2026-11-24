@@ -1268,6 +1268,13 @@
         ((eqv? b 0) (jolt-div0-throw))
         ((and (integer? a) (integer? b)) (remainder a b))
         (else (- a (* b (truncate (/ a b)))))))
+;; quot/rem whose operands the JVM types as primitive longs where jolt's numeric
+;; pass does not prove :long (a let-bound literal, (count xs); jolt.passes.numeric
+;; jvm-long-expr?): the generic op, but a zero divisor is Java's "/ by zero".
+(define-syntax jolt-pquot
+  (syntax-rules () ((_ ea eb) (let ((a ea) (b eb)) (if (eq? b 0) (jolt-l-div0-throw) (jolt-quot a b))))))
+(define-syntax jolt-prem
+  (syntax-rules () ((_ ea eb) (let ((a ea) (b eb)) (if (eq? b 0) (jolt-l-div0-throw) (jolt-rem a b))))))
 (define (jolt-mod a b)
   (cond ((not (and (number? a) (number? b))) (jolt-mod-slow a b))
         ((and (integer? a) (integer? b) (not (flonum? a)) (not (flonum? b)))
