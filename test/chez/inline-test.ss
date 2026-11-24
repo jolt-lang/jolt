@@ -2388,6 +2388,432 @@
                      (= (:c cda) 3) (nil? (:a cda)) (= @lda [[:without :a] [:assoc :c 3]])
                      (= (:c cad) 3) (nil? (:a cad)) (= @lad [[:assoc :c 3] [:without :a]])))")))
 
+;; --- emit-time mixed assoc/update chain fusion (jolt-43) ---------------------
+;; Eligible 2..4-pair mixed assoc/update chains on distinct literal keyword keys
+;; emit guarded (pmap? / jolt-nil + jolt-loop-map-update?) multi-pair jolt-assoc
+;; with the original unfused chain in the fallback lane (Chez direct-link only).
+(for-each
+  (lambda (pair)
+    (let* ((label (car pair))
+           (form (cadr pair))
+           (e (code-part (emitf "u" form))))
+      (ok (string-append "assoc-update chain fuses: " label)
+          (and (= 1 (count-sub e "(jolt-loop-map-update? "))
+               (= 1 (count-sub e "(pmap? "))
+               (>= (count-sub e "(jolt-assoc ") 1)))))
+  '(("assoc+update 2-step (athens shape)"
+     "(fn [state op] (-> state (assoc :last-op op) (update :op-count inc)))")
+    ("update+assoc 2-step"
+     "(fn [m x] (-> m (update :a inc) (assoc :b x)))")
+    ("update+update 2-step"
+     "(fn [m] (-> m (update :a inc) (update :b dec)))")
+    ("update+update+update 3-step (re-frame shape)"
+     "(fn [state id parent-id epoch]
+        (-> state
+            (update :seen-ids conj id)
+            (update :pending-children dec parent-id)
+            (update :cascade-epochs conj epoch)))")
+    ("assoc+update+assoc+update 4-step"
+     "(fn [m x y] (-> m (assoc :a x) (update :b inc) (assoc :c y) (update :d conj x)))")
+    ("4x update chain"
+     "(fn [m] (-> m (update :a inc) (update :b inc) (update :c inc) (update :d inc)))")
+    ("multi-pair assoc + update (3 total pairs)"
+     "(fn [m x y] (-> m (assoc :a x :b y) (update :c inc)))")
+    ("update + multi-pair assoc (4 total pairs)"
+     "(fn [m x y z] (-> m (update :a inc) (assoc :b x :c y :d z)))")
+    ("pure later assoc value and extra update arg"
+     "(fn [m o end start] (-> m (update :a inc) (assoc :dt (- end start)) (update :b + (:n o))))")
+    ("impure first step + pure later steps"
+     "(fn [f g h x] (-> (f) (update :a (g) (h)) (assoc :b (+ x 1))))")
+    ("arbitrary updater fn expression in later step"
+     "(fn [m mk] (-> m (assoc :a 1) (update :b (mk))))")
+    ("anonymous fn updater"
+     "(fn [m] (-> m (assoc :a 1) (update :b (fn [v] (+ (or v 0) 2)))))")
+    ("keyword updater"
+     "(fn [m] (-> m (assoc :a 1) (update :b :sub)))")
+    ("multi-extra-arg update (6 total args)"
+     "(fn [m a b c] (-> m (assoc :x 1) (update :y + a b c)))")
+    ("variadic-arity update (7 total args)"
+     "(fn [m a b c d] (-> m (assoc :x 1) (update :y + a b c d)))")))
+
+;; Chez direct-link builds only: plain (non-direct-link) mode emits ordinary calls.
+(set-direct-link-flag! #f)
+(let ((e1 (code-part (emitf "u" "(fn [state op] (-> state (assoc :last-op op) (update :op-count inc)))")))
+      (e2 (code-part (emitf "u" "(fn [m x] (-> m (update :a inc) (update :b conj x)))"))))
+  (ok "assoc-update chain does not fuse when direct-link is off"
+      (and (= 0 (count-sub e1 "(jolt-loop-map-update? "))
+           (= 0 (count-sub e1 "(pmap? "))
+           (= 0 (count-sub e1 "(jolt-assoc "))
+           (= 0 (count-sub e2 "(jolt-loop-map-update? "))
+           (= 0 (count-sub e2 "(pmap? "))
+           (= 0 (count-sub e2 "(jolt-assoc ")))))
+(set-direct-link-flag! #t)
+
+;; Precedence among the three collection-edit peepholes in fused.clj.
+(let ((e-u-aa (code-part (emitf "u" "(fn [m] (-> m (update :a inc) (assoc :b 1) (assoc :c 2)))")))
+      (e-u-aa-dup (code-part (emitf "u" "(fn [m] (-> m (update :a inc) (assoc :a 1) (assoc :b 2)))")))
+      (e-aa-u-dup (code-part (emitf "u" "(fn [m] (-> m (assoc :a 1) (assoc :b 2) (update :a inc)))")))
+      (e-d-a-u (code-part (emitf "u" "(fn [m] (-> m (dissoc :a) (assoc :b 1) (update :c inc)))")))
+      (e-d-a-u-dup (code-part (emitf "u" "(fn [m] (-> m (dissoc :a) (assoc :b 1) (update :b inc)))")))
+      (e-u-a-d (code-part (emitf "u" "(fn [m] (-> m (update :a inc) (assoc :b 1) (dissoc :c)))")))
+      (e-u-a-d-dup (code-part (emitf "u" "(fn [m] (-> m (update :a inc) (assoc :a 1) (dissoc :c)))")))
+      (e-nested (code-part (emitf "u" "(fn [m x] (-> m (update :a inc) (assoc :a (-> x (assoc :p 1) (update :q inc)))))"))))
+  (ok "assoc-update chain takes precedence over trailing assoc-chain"
+      (and (= 1 (count-sub e-u-aa "(jolt-loop-map-update? "))
+           (= 1 (count-sub e-u-aa "(jolt-assoc "))))
+  (ok "rejected mixed chain with trailing pure assocs still lets assoc-chain fuse outer assocs"
+      (and (= 0 (count-sub e-u-aa-dup "(jolt-loop-map-update? "))
+           (= 1 (count-sub e-u-aa-dup "(jolt-assoc "))
+           (= 0 (count-sub e-u-aa-dup "(jolt-assoc3 "))))
+  (ok "rejected mixed chain with leading pure assocs still lets assoc-chain fuse inner assocs"
+      (and (= 0 (count-sub e-aa-u-dup "(jolt-loop-map-update? "))
+           (= 1 (count-sub e-aa-u-dup "(jolt-assoc "))
+           (= 0 (count-sub e-aa-u-dup "(jolt-assoc3 "))))
+  (ok "assoc-update chain takes precedence over inner dissoc->assoc pair"
+      (and (= 1 (count-sub e-d-a-u "(jolt-loop-map-update? "))
+           (= 1 (count-sub e-d-a-u "(jolt-assoc "))
+           (= 0 (count-sub e-d-a-u "(jolt-dissoc1-assoc1 "))))
+  (ok "rejected mixed chain over dissoc->assoc still lets dissoc->assoc fuse"
+      (and (= 0 (count-sub e-d-a-u-dup "(jolt-loop-map-update? "))
+           (= 1 (count-sub e-d-a-u-dup "(jolt-dissoc1-assoc1 "))))
+  (ok "assoc-update chain takes precedence over outer assoc->dissoc pair"
+      (and (= 1 (count-sub e-u-a-d "(jolt-loop-map-update? "))
+           (= 1 (count-sub e-u-a-d "(jolt-assoc "))
+           (= 0 (count-sub e-u-a-d "(jolt-assoc1-dissoc1 "))))
+  (ok "rejected mixed chain under dissoc still lets assoc->dissoc fuse"
+      (and (= 0 (count-sub e-u-a-d-dup "(jolt-loop-map-update? "))
+           (= 1 (count-sub e-u-a-d-dup "(jolt-assoc1-dissoc1 "))))
+  (ok "independent eligible mixed chain inside an unfused outer chain still fuses"
+      (and (= 1 (count-sub e-nested "(jolt-loop-map-update? "))
+           (= 1 (count-sub e-nested "(jolt-assoc ")))))
+
+;; Ineligible mixed chains must NOT emit the mixed guard/fusion (and must not tile).
+(for-each
+  (lambda (pair)
+    (let* ((label (car pair))
+           (form (cadr pair))
+           (e (code-part (emitf "u" form))))
+      (ok (string-append "assoc-update chain does not fuse: " label)
+          (and (= 0 (count-sub e "(jolt-loop-map-update? "))
+               (= 0 (count-sub e "(pmap? "))))))
+  '(("repeated key assoc+update"
+     "(fn [m] (-> m (assoc :a 1) (update :a inc)))")
+    ("repeated key update+assoc"
+     "(fn [m] (-> m (update :a inc) (assoc :a 1)))")
+    ("repeated key update+update"
+     "(fn [m] (-> m (update :a inc) (update :a dec)))")
+    ("repeated key across 3 steps"
+     "(fn [m] (-> m (update :a inc) (assoc :b 1) (update :a dec)))")
+    ("repeated key inside multi-pair assoc"
+     "(fn [m] (-> m (assoc :a 1 :a 2) (update :b inc)))")
+    ("non-keyword local key in update"
+     "(fn [m k] (-> m (assoc :a 1) (update k inc)))")
+    ("non-keyword local key in assoc"
+     "(fn [m k] (-> m (assoc k 1) (update :b inc)))")
+    ("non-keyword string key"
+     "(fn [m] (-> m (assoc \"a\" 1) (update :b inc)))")
+    ("non-keyword integer key (vector index)"
+     "(fn [v] (-> v (assoc 0 1) (update 1 inc)))")
+    ("shadowed update local"
+     "(fn [update m] (-> m (assoc :a 1) (update :b inc)))")
+    ("shadowed assoc local"
+     "(fn [assoc m] (-> m (assoc :a 1) (update :b inc)))")
+    ("5-step update chain (> 4 pairs, no tiling)"
+     "(fn [m] (-> m (update :a inc) (update :b inc) (update :c inc) (update :d inc) (update :e inc)))")
+    ("assoc 3-pair + 2x update (5 pairs, no tiling)"
+     "(fn [m] (-> m (assoc :a 1 :b 2 :c 3) (update :d inc) (update :e inc)))")
+    ("effectful later assoc value"
+     "(fn [m f] (-> m (update :a inc) (assoc :b (f))))")
+    ("effectful later update extra arg"
+     "(fn [m f] (-> m (assoc :a 1) (update :b + (f))))")
+    ("pure head with effectful nested arg in later update"
+     "(fn [m f] (-> m (assoc :a 1) (update :b + (+ (f) 1))))")
+    ("non-pure count later update extra arg"
+     "(fn [m xs] (-> m (assoc :a 1) (update :b + (count xs))))")
+    ("non-pure division later assoc value"
+     "(fn [m a b] (-> m (update :a inc) (assoc :b (/ a b))))")
+    ("global var later update extra arg"
+     "(fn [m] (-> m (assoc :a 1) (update :b + assoc-chain-glob)))")
+    ("later assoc value with :clear-caps (^:once)"
+     "(fn [m y] (^:once fn* [] (-> m (update :a inc) (assoc :b y))))")
+    ("later update extra arg with :clear-caps (^:once)"
+     "(fn [m y] (^:once fn* [] (-> m (assoc :a 1) (update :b + y))))")
+    ("later update pure-call arg with :clear-caps (^:once)"
+     "(fn [m y] (^:once fn* [] (-> m (assoc :a 1) (update :b + (+ y 1)))))")
+    ("cond-> conditional chain"
+     "(fn [m p] (cond-> m true (assoc :a 1) p (update :b inc)))")
+    ("single update step"
+     "(fn [m] (update m :a inc))")
+    ("pure assoc chain (uses assoc-chain without guard)"
+     "(fn [m x y] (-> m (assoc :a x) (assoc :b y)))")))
+
+;; Runtime tests: compiled mixed chains across shapes, fallbacks, with-redefs, throws, order.
+(ev "(defn mu-au2 [m x] (-> m (assoc :a x) (update :b inc)))")
+(ev "(defn mu-ua2 [m x] (-> m (update :a inc) (assoc :b x)))")
+(ev "(defn mu-uu2 [m] (-> m (update :a inc) (update :b dec)))")
+(ev "(defn mu-au3 [m x y] (-> m (assoc :a x) (update :b + y) (assoc :c (+ x y))))")
+(ev "(defn mu-uuu3 [m a b c] (-> m (update :a conj a) (update :b + b) (update :c conj c)))")
+(ev "(defn mu-mix4 [m x y] (-> m (assoc :a x) (update :b inc) (assoc :c y) (update :d conj x)))")
+(ev "(defn mu-nil2 [m x] (-> m (assoc :a x) (update :b (fnil inc 0))))")
+(ev "(defn mu-multi-extra [m a b c d] (-> m (assoc :x a) (update :y (fnil + 0) a b c d)))")
+(ev "(defn mu-athens [state op] (-> state (assoc :last-op op) (update :op-count inc)))")
+(ev "(defn mu-dec-pending [pending parent-id]
+       (if parent-id
+         (let [n (get pending parent-id 0)]
+           (cond (> n 1) (assoc pending parent-id (dec n))
+                 (= n 1) (dissoc pending parent-id)
+                 :else pending))
+         pending))")
+(ev "(defn mu-reframe [state id parent-id epoch]
+       (-> state
+           (update :seen-ids conj id)
+           (update :pending-children mu-dec-pending parent-id)
+           (update :cascade-epochs conj epoch)))")
+
+(ok "assoc-update 2/3/4-step shapes, multi-extra-arg, athens, and re-frame produce exact results"
+    (eq? #t (ev "(let [m {:a 10 :b 20 :c 30 :d []}
+                       athens-s {:id :q :stages {} :last-op :init :op-count 5}
+                       rf-s {:cascade-ids #{:r} :seen-ids #{:r} :cascade-epochs []
+                             :pending-children {:r 2 :p 1} :unmatched-epochs []}]
+                   (and
+                     (= (mu-au2 m 99) {:a 99 :b 21 :c 30 :d []})
+                     (= (mu-ua2 m 99) {:a 11 :b 99 :c 30 :d []})
+                     (= (mu-uu2 m) {:a 11 :b 19 :c 30 :d []})
+                     (= (mu-au3 m 3 4) {:a 3 :b 24 :c 7 :d []})
+                     (= (mu-uuu3 {:a #{} :b 10 :c []} :k 5 :v) {:a #{:k} :b 15 :c [:v]})
+                     (= (mu-mix4 m 7 8) {:a 7 :b 21 :c 8 :d [7]})
+                     (= (mu-nil2 nil 42) {:a 42 :b 1})
+                     (= (mu-nil2 {:a 1 :b 10} 2) {:a 2 :b 11})
+                     (= (mu-multi-extra {:y 10} 1 2 3 4) {:y 20 :x 1})
+                     (= (mu-multi-extra nil 1 2 3 4) {:x 1 :y 10})
+                     (= (mu-athens athens-s [:add :s1]) {:id :q :stages {} :last-op [:add :s1] :op-count 6})
+                     (= (mu-reframe rf-s :e2 :r {:id :e2})
+                        {:cascade-ids #{:r} :seen-ids #{:r :e2} :cascade-epochs [{:id :e2}]
+                         :pending-children {:r 1 :p 1} :unmatched-epochs []})
+                     (= (mu-reframe rf-s :e2 :p {:id :e2})
+                        {:cascade-ids #{:r} :seen-ids #{:r :e2} :cascade-epochs [{:id :e2}]
+                         :pending-children {:r 2} :unmatched-epochs []})))")))
+
+;; Fallback lane: with-redefs and alter-var-root on clojure.core/update.
+(ok "with-redefs on clojure.core/update takes fallback and returns redefined result"
+    (eq? #t (ev "(let [calls (atom 0)
+                       orig update
+                       redef-res (with-redefs [update (fn [m k f & args]
+                                                        (swap! calls inc)
+                                                        (assoc m k :redefined))]
+                                   [(mu-au2 {:a 1 :b 2} 9)
+                                    (mu-uu2 {:a 1 :b 2})
+                                    (mu-nil2 nil 5)])
+                       after-res (mu-au2 {:a 1 :b 2} 9)]
+                   (and (= @calls 4)
+                        (= redef-res [{:a 9 :b :redefined}
+                                      {:a :redefined :b :redefined}
+                                      {:a 5 :b :redefined}])
+                        (= after-res {:a 9 :b 3})))")))
+
+(ok "alter-var-root on clojure.core/update takes fallback and restores cleanly"
+    (eq? #t (ev "(let [orig (var-get #'clojure.core/update)
+                       calls (atom 0)]
+                   (try
+                     (alter-var-root #'clojure.core/update
+                                     (constantly (fn [m k f & args]
+                                                   (swap! calls inc)
+                                                   (assoc m k :altered))))
+                     (let [r (mu-ua2 {:a 1 :b 2} 7)]
+                       (and (= @calls 1) (= r {:a :altered :b 7})))
+                     (finally
+                       (alter-var-root #'clojure.core/update (constantly orig)))))")))
+
+;; Throwing updaters & short-circuiting of later steps.
+(ok "throwing updater in step 0 or step 1 propagates and skips later steps"
+    (eq? #t (ev "(let [log (atom [])
+                       f0 (fn [m]
+                            (-> m
+                                (update :a (fn [_] (swap! log conj :s0) (throw (ex-info \"boom0\" {}))))
+                                (update :b (fn [x] (swap! log conj :s1) (inc x)))))
+                       f1 (fn [m]
+                            (-> m
+                                (assoc :a (do (swap! log conj :a0) 1))
+                                (update :b (fn [_] (swap! log conj :b1) (throw (ex-info \"boom1\" {}))))
+                                (update :c (fn [x] (swap! log conj :c2) (inc x)))))
+                       e0 (try (f0 {:a 1 :b 2}) nil (catch Exception e (ex-message e)))
+                       l0 @log
+                       _  (reset! log [])
+                       e1 (try (f1 {:a 1 :b 2 :c 3}) nil (catch Exception e (ex-message e)))
+                       l1 @log]
+                   (and (= e0 \"boom0\") (= l0 [:s0])
+                        (= e1 \"boom1\") (= l1 [:a0 :b1])))")))
+
+;; Evaluation order: base evaluated once (hit and miss), source order across steps, ^:once retry.
+(ok "assoc-update chain evaluates base once on hit/miss and preserves source order"
+    (eq? #t (ev "(let [log (atom [])
+                       run (fn [mk]
+                             (-> (do (swap! log conj :base) (mk))
+                                 (assoc :a (do (swap! log conj :a) 1))
+                                 (update :b (fn [v] (swap! log conj [:u v]) (inc (or v 0))))))
+                       r-hit (run (fn [] {:b 10}))
+                       l-hit @log
+                       _     (reset! log [])
+                       r-rec (run (fn [] (->ChainRec 0 10)))
+                       l-rec @log
+                       _     (reset! log [])
+                       v-threw (try
+                                 (run (fn [] [1 2]))
+                                 false
+                                 (catch IllegalArgumentException _ true))
+                       l-vec @log]
+                   (and (= r-hit {:b 11 :a 1}) (= l-hit [:base :a [:u 10]])
+                        (= r-rec (->ChainRec 1 11)) (= l-rec [:base :a [:u 10]])
+                        v-threw (= l-vec [:base :a])))")))
+
+(ok "assoc-update chain does not clear ^:once capture in later step before earlier throw"
+    (eq? #t (ev "(let [make-f (fn [m y]
+                                (^:once fn* [fail?]
+                                  (-> (if fail? [1] m)
+                                      (assoc :a 1)
+                                      (update :b + y))))
+                       f (make-f {:b 10} 32)
+                       threw (try (f true) false (catch IllegalArgumentException _ true))
+                       res (f false)]
+                   (and threw (= {:b 42 :a 1} res)))")))
+
+;; Local shadowing of emitted guard heads.
+(ok "user locals named pmap? / jolt-loop-map-update? do not shadow emitted guard heads"
+    (clj= (ev "(let [pmap? 10 jolt-loop-map-update? 5]
+                 (-> {:a 1 :b 2}
+                     (assoc :a pmap?)
+                     (update :b + jolt-loop-map-update?)))")
+          (ev "{:a 10 :b 7}")))
+
+;; Non-pmap fallbacks (pvec, defrecord, sorted-map, custom Associative) + nil + hash-map + array-map + meta + identical?.
+(ok "assoc-update chain matches unfused across nil, array-map, hash-map, pvec, defrecord, sorted-map, custom Associative"
+    (eq? #t (ev "(let [am (with-meta {:a 1 :b 2 :c 3} {:m :am})
+                       hm (with-meta (hash-map :a 1 :b 2 :c 3) {:m :hm})
+                       r  (with-meta (->ChainRec 1 2) {:m :r})
+                       sm (with-meta (sorted-map :c 3 :b 2 :a 1) {:m :sm})
+                       lc (atom [])
+                       ca (ChainCustom. {:a 1 :b 2} lc)
+                       cr (mu-au2 ca 9)
+                       noop-fn (fn [m] (-> m (assoc :a 1) (update :b identity)))
+                       pvec-threw (try (mu-au2 [1 2] 9) false (catch IllegalArgumentException _ true))]
+                   (and
+                     ;; nil
+                     (= (mu-nil2 nil 5) {:a 5 :b 1})
+                     ;; array-map: value, key order, meta, no-op identical?
+                     (= (mu-au2 am 9) {:a 9 :b 3 :c 3})
+                     (= (vec (keys (mu-au2 am 9))) [:a :b :c])
+                     (= (meta (mu-au2 am 9)) {:m :am})
+                     (identical? am (noop-fn am))
+                     ;; hash-map: value, class, meta
+                     (= (mu-au2 hm 9) {:a 9 :b 3 :c 3})
+                     (= (class (mu-au2 hm 9)) (class hm))
+                     (= (meta (mu-au2 hm 9)) {:m :hm})
+                     ;; pvec fallback throws on keyword key
+                     pvec-threw
+                     ;; defrecord fallback: declared fields, ext keys, class, meta
+                     (= (mu-au2 r 9) (->ChainRec 9 3))
+                     (instance? ChainRec (mu-au2 r 9))
+                     (= (meta (mu-au2 r 9)) {:m :r})
+                     (= (mu-mix4 (assoc r :d []) 9 8) (assoc (->ChainRec 9 3) :c 8 :d [9]))
+                     ;; sorted-map fallback: order + meta
+                     (= (mu-au2 sm 9) {:a 9 :b 3 :c 3})
+                     (= (keys (mu-au2 sm 9)) '(:a :b :c))
+                     (= (meta (mu-au2 sm 9)) {:m :sm})
+                     ;; custom Associative fallback
+                     (= [(:a cr) (:b cr)] [9 3])
+                     (= @lc [[:a 9] [:b 3]])))")))
+
+;; Regressions: loop-maps and types.clj record field demotion still work with mixed chains.
+(let* ((loop-src "(fn [n] (loop [i 0 m {:a 0 :b 0}]
+                            (if (< i n)
+                              (recur (inc i) (-> m (assoc :a i) (update :b inc)))
+                              m)))")
+       (e (code-part (emitf "u" loop-src))))
+  (ok "loop-maps still scalar-replaces mixed assoc/update loop without firing fused rule"
+      (and (has? e "(amap-slots->pmap ")
+           (= 0 (count-sub e "(pmap? "))
+           (= 0 (count-sub e "(jolt-assoc "))
+           (clj= (ev (string-append "(" loop-src " 5)")) (ev "{:a 4 :b 5}")))))
+
+(ev "(defrecord MixedDemoteRec [a b])")
+(let* ((u ((var-deref "jolt.passes.types" "new-unit")))
+       (ctx (make-analyze-ctx "u"))
+       (parse1 (lambda (s)
+                 (let-values (((f _) (rdr-read-form s 0 (string-length s))))
+                   (jolt-ce-analyze ctx f))))
+       (tweak-src "(defn mdr-tweak [m] (-> m (assoc :a \"str\") (update :b inc)))")
+       (nodes (jolt-vector
+                (parse1 "(defn mdr-mk [] (->MixedDemoteRec 1.0 2.0))")
+                (parse1 tweak-src)))
+       (ft-box (jolt-get u (keyword #f "field-types"))))
+  ((var-deref "jolt.passes.types" "set-record-shapes!") u (chez-record-shapes-map))
+  ((var-deref "jolt.passes.types" "set-protocol-methods!") u (chez-protocol-methods-map))
+  ((var-deref "jolt.passes.types" "wp-infer!") u nodes)
+  (let* ((ftypes ((var-deref "clojure.core" "deref") ft-box))
+         (demoted (jolt-get ftypes "u/->MixedDemoteRec"))
+         (tweak-emitted (code-part (emitf "u" tweak-src))))
+    (ok "types.clj record field demotion still fires on mixed assoc/update while tweak fuses"
+        (and (jolt-nil? demoted)
+             (= 1 (count-sub tweak-emitted "(jolt-loop-map-update? "))
+             (= 1 (count-sub tweak-emitted "(jolt-assoc "))))))
+
+;; Randomized differential test over compiled fused mixed chains around counts 8 and 64,
+;; covering nil, array-map, hash-map, metadata, missing keys, promotion, and no-op identical?.
+(ev "(defn mu-rand2 [m x f] (-> m (assoc :k0 x) (update :k3 f)))")
+(ev "(defn mu-rand3 [m x f g] (-> m (update :k1 f) (assoc :k64 x) (update :k65 g)))")
+(ev "(defn mu-rand4 [m x y f g] (-> m (assoc :k0 x) (update :k2 f) (assoc :k63 y) (update :k64 g)))")
+(let ((f2 (var-deref "u" "mu-rand2"))
+      (f3 (var-deref "u" "mu-rand3"))
+      (f4 (var-deref "u" "mu-rand4"))
+      (upd (var-deref "clojure.core" "update"))
+      (fn-id (ev "identity"))
+      (fn-inc (ev "(fnil inc 0)"))
+      (fn-add (ev "(fn [v] (+ (or v 0) 7))"))
+      (state 430043))
+  (define (rng n)
+    (set! state (bitwise-and (+ (* state 1103515245) 12345) #x7fffffff))
+    (modulo (quotient state 65536) n))
+  (define (build-map n kw-only?)
+    (let loop ((i 0) (m empty-pmap))
+      (if (= i n)
+          (jolt-with-meta m (ev "{:tag :mu-rand}"))
+          (let ((k (if (or kw-only? (> i 0))
+                       (keyword #f (string-append "k" (number->string i)))
+                       "s0")))
+            (loop (+ i 1) (jolt-assoc3 m k i))))))
+  (let ((sizes '(0 3 6 7 8 9 62 63 64 65))
+        (all-ok #t))
+    (let trial ((t 0))
+      (when (and (< t 400) all-ok)
+        (let* ((sz (list-ref sizes (rng (length sizes))))
+               (kw-only? (zero? (rng 2)))
+               (m (if (and (= sz 0) (zero? (rng 3))) jolt-nil (build-map sz kw-only?)))
+               (arity (+ 2 (rng 3)))
+               (noop? (and (pmap? m) kw-only? (>= sz 4) (= arity 2) (zero? (rng 6))))
+               (k0 (keyword #f "k0")) (k1 (keyword #f "k1")) (k2 (keyword #f "k2"))
+               (k3 (keyword #f "k3")) (k63 (keyword #f "k63"))
+               (k64 (keyword #f "k64")) (k65 (keyword #f "k65"))
+               (x (if noop? (jolt-get m k0) (rng 50)))
+               (y (rng 50))
+               (u1 (if noop? fn-id (if (zero? (rng 2)) fn-inc fn-add)))
+               (u2 (if (zero? (rng 2)) fn-inc fn-add))
+               (got (case arity
+                      ((2) (f2 m x u1))
+                      ((3) (f3 m x u1 u2))
+                      ((4) (f4 m x y u1 u2))))
+               (want (case arity
+                       ((2) (upd (jolt-assoc3 m k0 x) k3 u1))
+                       ((3) (upd (jolt-assoc3 (upd m k1 u1) k64 x) k65 u2))
+                       ((4) (upd (jolt-assoc3 (upd (jolt-assoc3 m k0 x) k2 u1) k63 y) k64 u2)))))
+          (unless (and (clj= got want)
+                       (eq? (pmap-array? got) (pmap-array? want))
+                       (clj= (jolt-vec (jolt-keys got)) (jolt-vec (jolt-keys want)))
+                       (clj= (jolt-meta got) (jolt-meta want))
+                       (or (not noop?) (eq? got m)))
+            (set! all-ok #f))
+          (trial (+ t 1)))))
+    (ok "randomized differential assoc-update chains (400 trials around 8/64, nil, meta, no-op)" all-ok)))
+
 (set-optimize! #f)
 (set-direct-link-flag! #f)
 

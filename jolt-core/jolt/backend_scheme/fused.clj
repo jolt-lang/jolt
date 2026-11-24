@@ -13,6 +13,7 @@
              :refer [cur direct-link? fresh-label
                      node-line register-callsite! seed-mint? static-callee target
                      with-site]]
+            [jolt.backend-scheme.names :refer [munge-name]]
             [jolt.backend-scheme.hoist :refer [*const-pool* hoist-seed-root]]
             [jolt.backend-scheme.calls :refer [emit-call native-op node-inline-chain ordered-call plain-call]]
             [jolt.backend-scheme.lambda :refer [*step-variant*]]))
@@ -276,11 +277,162 @@
        (not (:clear-caps node))
        (= "jolt-dissoc2" (native-op (:fn node) (count (:args node))))))
 
+;; Emit-time peephole for straight-line mixed assoc/update chains on distinct
+;; literal keyword keys (2..4 total pairs, at least one update step).
+;; Chez direct-link builds only (needs the linked clojure.core/update root).
+;; Precedence among the three collection-edit peepholes in emit-fused-invoke:
+;;   1. emit-assoc-update-chain (mixed chains with >=1 update, 2..4 distinct kw pairs)
+;;   2. emit-assoc-chain        (pure assoc chains, 2..4 pairs, all modes)
+;;   3. emit-dissoc-assoc-pair  (single dissoc/assoc pairs, all modes; defers to
+;;                               emit-assoc-chain and eligible emit-assoc-update-chain)
+;; Rejected mixed chains suppress partial mixed tiling via *unfused-update-nodes*
+;; while still allowing pure assoc chains or dissoc/assoc pairs on sub-expressions.
+(def ^:private ^:dynamic *unfused-update-nodes* nil)
+
+(defn- kw-const? [node]
+  (and (= :const (:op node)) (keyword? (:val node)) (not (:clear-caps node))))
+
+(defn- update-call? [node]
+  (let [f (:fn node)
+        args (:args node)]
+    (and (= :invoke (:op node))
+         (not (:clear-caps node))
+         (not (:loop-map-update node))
+         (not (or (:proto node) (:devirt-type node) (:prim-op node)))
+         (= :var (:op f))
+         (= "clojure.core" (:ns f))
+         (= "update" (:name f))
+         (not (:clear-caps f))
+         (>= (count args) 3)
+         (string? (seed-callable? nil "clojure.core" "update" (count args))))))
+
+(defn- mixed-step-kind [node]
+  (cond
+    (update-call? node) :update
+    (assoc-call? node) :assoc
+    :else nil))
+
+(defn- assoc-update-chain [node]
+  (loop [cur node steps []]
+    (if (mixed-step-kind cur)
+      (recur (first (:args cur)) (conj steps cur))
+      [cur (vec (rseq steps))])))
+
+(defn- assoc-update-entries [steps]
+  (let [res (reduce
+              (fn [{:keys [i out seen]} step]
+                (let [first? (zero? i)]
+                  (if (update-call? step)
+                    (let [args (:args step)
+                          k-node (nth args 1)
+                          f-node (nth args 2)
+                          extras (subvec args 3)]
+                      (if (and (kw-const? k-node)
+                               (not (contains? seen (:val k-node)))
+                               (or first? (every? pure-edit-operand? extras)))
+                        {:i (inc i)
+                         :out (conj out {:kind :update :step step :k-node k-node :f-node f-node :extras extras})
+                         :seen (conj seen (:val k-node))}
+                        (reduced nil)))
+                    (let [kvs (subvec (:args step) 1)
+                          step-res (reduce
+                                     (fn [[o s] [k-node v-node]]
+                                       (if (and (kw-const? k-node)
+                                                (not (contains? s (:val k-node)))
+                                                (or first? (pure-edit-operand? v-node)))
+                                         [(conj o {:kind :assoc :k-node k-node :v-node v-node})
+                                          (conj s (:val k-node))]
+                                         (reduced nil)))
+                                     [out seen]
+                                     (partition 2 kvs))]
+                      (if step-res
+                        {:i (inc i) :out (first step-res) :seen (second step-res)}
+                        (reduced nil))))))
+              {:i 0 :out [] :seen #{}}
+              steps)]
+    (when (and res (<= 2 (count (:out res)) 4))
+      (:out res))))
+
+(defn- eligible-assoc-update-chain? [node]
+  (and (chez-linked-fast-path?)
+       (mixed-step-kind node)
+       (not (some #(identical? node %) *unfused-update-nodes*))
+       (mixed-step-kind (first (:args node)))
+       (let [[_ steps] (assoc-update-chain node)]
+         (boolean (and (some update-call? steps)
+                       (assoc-update-entries steps))))))
+
+(defn- trivial-step-val? [node]
+  (and (not (:clear-caps node)) (#{:local :const} (:op node))))
+
+(defn- emit-assoc-update-fast [emit node m-name entries tail?]
+  (let [n (count entries)]
+    (loop [i 0 binds [] kv-args []]
+      (if (= i n)
+        (let [call (emit-fused-site-call node tail? "jolt-assoc" (into [m-name] kv-args))]
+          (if (seq binds)
+            (str "(let* (" (str/join " " (map (fn [[t e]] (str "(" t " " e ")")) binds)) ") " call ")")
+            call))
+        (let [entry (nth entries i)
+              k-str (emit (:k-node entry))]
+          (if (= :assoc (:kind entry))
+            (let [v-node (:v-node entry)
+                  v-str (emit v-node)]
+              (if (or (trivial-step-val? v-node) (and (empty? binds) (= i (dec n))))
+                (recur (inc i) binds (conj kv-args k-str v-str))
+                (let [t (fresh-label "_mu$")]
+                  (recur (inc i) (conj binds [t v-str]) (conj kv-args k-str t)))))
+            (let [step (:step entry)
+                  read-node {:op :const :literal-binding (str "(jolt-get " m-name " " k-str ")")}
+                  call-node {:op :invoke :fn (:f-node entry)
+                             :args (into [read-node] (:extras entry))
+                             :line (:line step)
+                             :inline-chain (:inline-chain step)}
+                  v-str (emit call-node)]
+              (if (and (empty? binds) (= i (dec n)))
+                (recur (inc i) binds (conj kv-args k-str v-str))
+                (let [t (fresh-label "_mu$")]
+                  (recur (inc i) (conj binds [t v-str]) (conj kv-args k-str t)))))))))))
+
+(defn- emit-assoc-update-chain [emit node tail?]
+  (when (and (chez-linked-fast-path?)
+             (mixed-step-kind node)
+             (not (some #(identical? node %) *unfused-update-nodes*))
+             (mixed-step-kind (first (:args node))))
+    (let [[base steps] (assoc-update-chain node)]
+      (when (some update-call? steps)
+        (if-let [entries (assoc-update-entries steps)]
+          (let [linked (seed-callable? nil "clojure.core" "update" 3)
+                bind-m? (not (and (= :local (:op base)) (not (:clear-caps base))))
+                m-name (if bind-m? (fresh-label "_mu$") (munge-name (:name base)))
+                m-ref {:op :const :literal-binding m-name}
+                fast (emit-assoc-update-fast emit node m-name entries tail?)
+                [fallback-node fallback-steps]
+                (reduce (fn [[inner acc] step]
+                          (let [s (assoc-in step [:args 0] inner)]
+                            [s (conj acc s)]))
+                        [m-ref []]
+                        steps)
+                fallback (binding [*unfused-update-nodes* (into (or *unfused-update-nodes* []) fallback-steps)
+                                   *unfused-assoc-nodes* (into (or *unfused-assoc-nodes* []) fallback-steps)
+                                   session/*tail?* tail?]
+                           (emit fallback-node))
+                guard (str "(and (or (pmap? " m-name ") (eq? " m-name " jolt-nil))"
+                           " (jolt-loop-map-update? " linked "))")
+                body (str "(if " guard " " fast " " fallback ")")]
+            (if bind-m?
+              (str "(let ((" m-name " " (emit base) ")) " body ")")
+              body))
+          (binding [*unfused-update-nodes* (into (or *unfused-update-nodes* []) steps)
+                    session/*tail?* tail?]
+            (emit node)))))))
+
 ;; Emit-time peephole for adjacent single-key dissoc / single-pair assoc pairs.
 ;; Collapses (assoc (dissoc m dk) ak av) -> (jolt-dissoc1-assoc1 m dk ak av) and
 ;; (dissoc (assoc m ak av) dk) -> (jolt-assoc1-dissoc1 m ak av dk) under the same
 ;; operand rule as emit-assoc-chain. Where both rules could match (e.g. an assoc
-;; chain adjacent to a dissoc), emit-assoc-chain keeps precedence.
+;; chain or eligible mixed assoc/update chain adjacent to a dissoc), the chain
+;; rules keep precedence.
 (defn- emit-dissoc-assoc-pair [emit node tail?]
   (cond
     (and (assoc1-call? node)
@@ -296,12 +448,14 @@
     (let [[inner dk] (:args node)]
       (when (and (assoc1-call? inner)
                  (not (assoc-call? (first (:args inner))))
+                 (not (eligible-assoc-update-chain? inner))
                  (pure-edit-operand? dk))
         (let [[m ak av] (:args inner)]
           (emit-assoc-native emit node "jolt-assoc1-dissoc1" [m ak av dk] tail?))))))
 
 (defn emit-fused-invoke [emit node tail?]
-  (or (emit-assoc-chain emit node tail?)
+  (or (emit-assoc-update-chain emit node tail?)
+      (emit-assoc-chain emit node tail?)
       (emit-dissoc-assoc-pair emit node tail?)
       (emit-vector-filter-map emit node tail?)
       (emit-assoc-in-chain emit node tail?)
