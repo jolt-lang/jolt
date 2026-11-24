@@ -200,6 +200,26 @@
            (jolt-transient-n-set! t (fx+ n 1)))
           (else (tmap-promote! t) (thash-put! t k v))))
       (thash-put! t k v)))
+
+;; The compiler's confined builder starts with an empty array map. Its owner
+;; supplies an upper bound on the final count and relinquishes it at freeze.
+;; The buffer has room through the *persistent* keyword threshold, but the
+;; type of each new key still determines when promotion happens.
+(define (pmap-builder-new max-count)
+  (make-jolt-transient 'map
+    (make-vector (fx* 2 (fxmin max-count array-map-limit-kw)) #f) 0 #t #f))
+(define (pmap-builder-put! t k v)
+  (if (tmap-array? t)
+      (let* ((buf (jolt-transient-buf t)) (n (jolt-transient-n t)) (len (fx* 2 n))
+             (i (amap-index buf len k)))
+        (cond
+          ((fx>=? i 0) (vector-set! buf (fx+ i 1) v))
+          ((pmap-array-keep? n k)
+           (vector-set! buf len k)
+           (vector-set! buf (fx+ len 1) v)
+           (jolt-transient-n-set! t (fx+ n 1)))
+          (else (tmap-promote! t) (thash-put! t k v))))
+      (thash-put! t k v)))
 ;; TransientArrayMap.doWithout moves the LAST entry into the removed slot (array
 ;; compaction), so removal is order-visible.
 (define (tmap-del! t k)

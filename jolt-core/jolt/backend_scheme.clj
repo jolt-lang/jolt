@@ -13,7 +13,7 @@
   jolt.backend-scheme.* namespaces it requires, and those of them that need to
   lower a child take `emit` as an argument."
   (:require [clojure.string :as str]
-            [jolt.host :refer [seed-callable? protocol-call-key form-char? form-literal?]]
+            [jolt.host :refer [protocol-call-key form-char? form-literal?]]
             [jolt.passes.types :as types]
             [jolt.passes.numeric :as numeric]
             [jolt.op-registry :as op-registry]
@@ -23,7 +23,7 @@
              :refer [*array-vecs* *callsites* *dbg-scope* *dl-self* *known-procs*
                      *letrec-binders* *qualifying-ns* *recur-target* *site-call* *tail?*
                      *trace-frame* *trace-site* *variadic-reg-suppressed?* clone-site-key
-                     ctor-shapes cur dbg-hidden? dbg-record dbg-record1
+                     cur dbg-hidden? dbg-record dbg-record1
                      direct-link-callable? direct-link-fn?
                      direct-link? direct-linkable? fresh-label marker-safe-fqn?
                      node-line note-tail-call! prelude-mode? record-shape-for-class
@@ -38,10 +38,10 @@
              :refer [bit-fx-ops direct-field-accessor emit-bit-fx-call emit-call
                      emit-devirt-call emit-fl-aget emit-fl-aset
                      emit-host-static-call emit-numeric emit-pic-call
-                     emit-rec-type-check emit-record-ctor ifn-kind lookup-restore
-                     native-op node-inline-chain ordered-call plain-call
-                     site-literal site-restore sited-tail-call stdlib-var?
-                     struct-field-index]]
+                     emit-rec-type-check emit-record-ctor emit-seed-callable-invoke
+                     ifn-kind lookup-restore native-op node-inline-chain ordered-call
+                     plain-call record-ctor-shape site-literal site-restore
+                     sited-tail-call stdlib-var? struct-field-index]]
             [jolt.backend-scheme.literals :as literals :refer [emit-const]]
             [jolt.backend-scheme.once :refer [once-clear-stmts with-once-clears]]
             [jolt.backend-scheme.fnsrc :as fnsrc
@@ -666,42 +666,13 @@
            (direct-link-fn? (:ns fnode) (:name fnode))
            (direct-link-callable? (:ns fnode) (:name fnode) (count args)))
       (order-args (fn [as] (emit-call tail? (dl-name (:ns fnode) (:name fnode)) as tl ich)))
-      ;; closed-world direct call to a SEED var — clojure.core and the other
-      ;; namespaces the runtime image boots with. Such a var is preloaded ahead
-      ;; of every app def and never emitted by this build, so the def binds its
-      ;; root procedure once at load and the site applies it directly: no
-      ;; var-cell-deref (7 ns), no jolt-invokeN (5 ns) — true? went 16 -> 4 ns.
-      ;; jolt.host/seed-callable? applies the same closed-world rule an app def
-      ;; gets (not ^:dynamic/^:redef, not redefined by the app) plus "root is a
-      ;; procedure whose arity mask admits this arity", so a keyword/map/multi-
-      ;; method-valued var and a wrong-arity call keep jolt-invoke below.
-      ;; seed-callable? answers the callee's jv$ binding name for a var the seed
-      ;; minted direct-linked (def-var-linked!), and the site applies that
-      ;; top-level variable: the same one load, and a later def / alter-var-root
-      ;; / with-redefs of the var writes through to it (rt.ss var-root-set!), so
-      ;; the site follows a redefinition. A seed var the runtime defined itself
-      ;; (a Scheme def-var!) has no binding to name; its root is hoisted once at
-      ;; load, and a redefinition is invisible to that site, as under the JVM's
-      ;; direct linking. `jolt run` never direct-links. Off while MINTING the
-      ;; seed: the vars this arm would bind are the ones being emitted.
-      (and (direct-link?) (not (seed-mint?))
-           (seed-callable? nil (:ns fnode) (:name fnode) (count args)))
-      (let [sc (seed-callable? nil (:ns fnode) (:name fnode) (count args))
-            head (if (string? sc) sc (hoist-seed-root (:ns fnode) (:name fnode)))]
-        (order-args (fn [as] (emit-call tail? head as tl ich))))
-      ;; record ctor with matching arity: inline the native per-arity ctor
-      ;; (make-jrecN) directly — desc + ext + one inline slot per field —
-      ;; eliminating jolt-invoke / var-deref / rest-list / ctor call / hashtable
-      ;; lookup AND the field vector. After per-site desc-cell warmup the hot
-      ;; path is: cell read -> make-jrecN — one allocation, no lookups, no
-      ;; dispatch. The shape comes from the unit's record-shapes (set-record-shapes!).
-      (let [shape (get (ctor-shapes) (str (:ns fnode) "/" (:name fnode)))]
-        (and shape (= (count (get shape :fields)) (count args)) (<= (count args) 6)))
-      (emit-record-ctor (get (ctor-shapes) (str (:ns fnode) "/" (:name fnode))) arg-nodes args)
-      ;; a late-bound :var call head can hold a procedure OR a non-applicable
-      ;; value the RT dispatches (multimethod, keyword/coll IFn) — route via
-      ;; jolt-invoke (transparent for a procedure).
-      :else (emit-jolt-invoke c))))
+      :else
+      ;; closed-world direct call to a seed var, or record ctor with matching
+      ;; arity (make-jrecN), else late-bound dispatch via jolt-invoke.
+      (or (emit-seed-callable-invoke fnode args tail? tl ich order-args)
+          (when-let [shape (record-ctor-shape fnode (count args))]
+            (emit-record-ctor shape arg-nodes args))
+          (emit-jolt-invoke c)))))
 
 ;; a :local callee: a known procedure (the letrec-bound self-name of a named
 ;; fn — i.e. self-recursion) is a real Scheme proc, so call it directly with
@@ -1689,6 +1660,9 @@
              *trace-frame* nil]
      (emit (:expr node)))))
 
+(defn- emit-const-node [node]
+  (or (:literal-binding node) (emit-const (:val node))))
+
 (defn- emit-binding-form [node]
   (case (:op node)
     :let (emit-let node)
@@ -1698,7 +1672,7 @@
 
 (defn emit* [node]
   (case (:op node)
-    :const (emit-const (:val node))
+    :const (emit-const-node node)
     :local (munge-name (:name node))
     ;; late-bound var: read the cell's current root at use time. A value-position
     ;; ref to a clojure.core fn the RT provides lowers to the RT procedure.

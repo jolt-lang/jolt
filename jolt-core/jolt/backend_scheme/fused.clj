@@ -1,18 +1,21 @@
 (ns jolt.backend-scheme.fused
-  "Fused call lowering on Chez: explicit filter/map into empty vectors and
-  guarded sibling assoc-in chains.
+  "Fused call lowering on Chez: explicit filter/map into empty vectors,
+  guarded sibling assoc-in chains, and confined reduce-kv map builders.
   Each emitter checks linkage and emits a runtime fallback when a linked root
   or runtime domain guard fails."
   (:require [clojure.string :as str]
             [jolt.host :refer [seed-callable?]]
             [jolt.ir :as ir]
+            [jolt.passes.facts :as facts]
             [jolt.passes.transducers :as transducers]
+            [jolt.backend-scheme.names :refer [dl-name munge-name]]
             [jolt.backend-scheme.session :as session
-             :refer [*trace-site* direct-link? fresh-label node-line
-                     register-callsite! seed-mint? static-callee target
+             :refer [*trace-site* cur direct-link? direct-linkable? fresh-label
+                     node-line register-callsite! seed-mint? static-callee target
                      trace-frames? with-site]]
-            [jolt.backend-scheme.hoist :refer [*const-pool* hoist-seed-root]]
-            [jolt.backend-scheme.calls :refer [emit-call node-inline-chain plain-call]]))
+            [jolt.backend-scheme.hoist :refer [*const-pool* hoist-const-per-site hoist-seed-root]]
+            [jolt.backend-scheme.calls :refer [emit-call native-op node-inline-chain plain-call]]
+            [jolt.backend-scheme.lambda :refer [*step-variant*]]))
 
 (defn- emit-fused-site-call [node tail? proc args]
   (let [line (or (node-line node) 0)]
@@ -195,6 +198,86 @@
                    " (if (and " result " (not " stop ")) " result
                    " (let ((" base-name " (or " result " " base-name "))) " fallback ")))"))))))))
 
+(def ^:private builder-symbol-calls
+  [["symbol?" [1] "jolt-symbol?"]
+   ["namespace" [1] "jolt-namespace"]
+   ["name" [1] "jolt-name"]
+   ["keyword" [1 2] "jolt-keyword"]])
+
+(defn- emit-builder-symbol-guard []
+  (let [core "clojure.core"]
+    (when (every? (fn [[nm arities _]]
+                    (and (not (direct-linkable? core nm))
+                         (every? #(and (nil? (native-op {:op :var :ns core :name nm} %))
+                                       (true? (seed-callable? nil core nm %)))
+                                 arities)))
+                  builder-symbol-calls)
+      ;; These calls use roots hoisted at load time. The ordinary callback
+      ;; and the guard must consult the same hoists.
+      (plain-call "and"
+        (map (fn [[nm _ proc]] (plain-call "eq?" [(hoist-seed-root core nm) proc]))
+             builder-symbol-calls)))))
+
+(defn- builder-replace-step
+  "The reducer's arity with a fourth parameter, the linked replace callable
+  the fast step read, which its replace call applies in place of a root read."
+  [arity]
+  (let [taken (set (map munge-name (:params arity)))
+        proc (first (remove #(contains? taken (munge-name %)) (repeatedly #(fresh-label "_kv$"))))]
+    (-> arity
+        (update :params #(conj (vec %) proc))
+        (assoc-in [:body :args 2 :fn :root-binding] (munge-name proc)))))
+
+(defn- reduce-kv-replace-root [kind]
+  (when (= kind :string-replace)
+    (let [root (seed-callable? nil "clojure.string" "replace" 3)]
+      (when (and (string? root)
+                 (not (direct-linkable? "clojure.string" "replace"))
+                 (= root (dl-name "clojure.string" "replace")))
+        root))))
+
+(defn- reduce-kv-fast-call [kind call temps replace-root match replacement step]
+  (case kind
+    :copy (call "jolt-reduce-kv-build-copy" temps)
+    :symbol-keys (call "jolt-reduce-kv-build-symbol-keys" temps)
+    :string-replace
+    (when step
+      (call "jolt-reduce-kv-build-string-replace"
+            (into temps [(str "(lambda () " replace-root ")") match replacement step])))))
+
+(defn- emit-reduce-kv-plan [emit node tail? kind literals replace-root symbol-guard]
+  (let [[match replacement] (when replace-root (mapv #(hoist-const-per-site (emit %)) literals))
+        ;; The first ordinary step after a root change and the rest
+        ;; of the callback must receive the very same literal objects.
+        arg-nodes (cond-> (:args node)
+                    replace-root (assoc-in [0 :arities 0 :body :args 2 :args 1 :literal-binding] match)
+                    replace-root (assoc-in [0 :arities 0 :body :args 2 :args 2 :literal-binding] replacement))
+        ;; On a root change the runtime applies the reducer's own body,
+        ;; emitted once more by emit-fn with the callable it read, to
+        ;; the persistent prefix. Its trace is the literal's.
+        variant (atom (when replace-root {:rewrite builder-replace-step}))
+        args (into [(binding [*step-variant* variant] (emit (first arg-nodes)))]
+                   (map emit) (rest arg-nodes))
+        temps (mapv (fn [_] (fresh-label "_kv$")) args)
+        binds (str/join " " (map (fn [nm arg] (str "(" nm " " arg ")")) temps args))
+        source-guard (plain-call "jolt-reduce-kv-builder-source?" [(peek temps)])
+        guard (if symbol-guard (plain-call "and" [source-guard symbol-guard]) source-guard)
+        call (fn [proc as] (emit-fused-site-call node tail? proc as))
+        fast (reduce-kv-fast-call kind call temps replace-root match replacement (:step @variant))
+        ordinary (call "jolt-reduce-kv" temps)]
+    (if fast
+      (str "(let* (" binds ") (if " guard " " fast " " ordinary "))")
+      (str "(let* (" binds ") " ordinary ")"))))
+
+(defn- emit-reduce-kv-builder [emit node tail?]
+  (when (and (= "reduce-kv" (:name (:fn node))) (chez-linked-fast-path?))
+    (when-let [{:keys [kind literals]} (facts/closed-reducer-plan (cur) node)]
+      (let [replace-root (reduce-kv-replace-root kind)
+            symbol-guard (when (= kind :symbol-keys) (emit-builder-symbol-guard))]
+        (when (or (= kind :copy) symbol-guard replace-root)
+          (emit-reduce-kv-plan emit node tail? kind literals replace-root symbol-guard))))))
+
 (defn emit-fused-invoke [emit node tail?]
   (or (emit-vector-filter-map emit node tail?)
-      (emit-assoc-in-chain emit node tail?)))
+      (emit-assoc-in-chain emit node tail?)
+      (emit-reduce-kv-builder emit node tail?)))

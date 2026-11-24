@@ -302,6 +302,27 @@
 (test-vars)
 (test-equality)
 
+;; converters.ss's keyword-split-index under Gambit's unhygienic syntax-rules:
+;; its operand runs once, and sees the caller's bindings of the names the macro
+;; uses inside; jolt-keyword splits by it. test/chez/transient-test.ss runs the
+;; same rows on Chez.
+(define (test-keyword-split)
+  (printf "== keyword-split-index operand ==\n")
+  (for-each
+    (lambda (row)
+      (let ((s (car row)) (a 'a) (loop 'loop) (i 'i) (evals 0))
+        (let* ((got (keyword-split-index
+                      (begin (set! evals (+ evals 1))
+                             (if (equal? (list a loop i) '(a loop i)) s "captured/x"))))
+               (k (jolt-keyword s))
+               (ns (keyword-t-ns k)))
+          (check (string-append "keyword split: " s)
+              (list got evals (if (string? ns) ns #f) (keyword-t-name k))
+              (cons (cadr row) (cons 1 (if (cadr row) (cddr row) (list #f s))))))))
+    '(("" #f "") ("/" #f "/") ("//" #f "//") ("/a" #f "/a") ("a/" #f "a/")
+      ("a//" 1 "a" "/") ("a/b/c" 1 "a" "b/c") ("é/😀" 1 "é" "😀") ("n/ " 1 "n" " "))))
+(test-keyword-split)
+
 ;; Forcing a lazy cell once a thread exists takes seq.ss's claim path
 ;; (cell-force-claimed! for a cell, force-claimed! for a node), which the single-threaded rows above never reach: every
 ;; shim that path needs on this host has to be present, and two threads on the

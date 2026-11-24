@@ -25,6 +25,62 @@
 (is "source map unchanged"    "(let [m {:a 1} _ (persistent! (assoc! (transient m) :b 2))] (= m {:a 1}))" "true")
 (is "source vector unchanged" "(let [v [1 2] _ (persistent! (conj! (transient v) 3))] (= v [1 2]))" "true")
 
+;; Feed the same ordered entries to both inserters. Neither persistent map
+;; equality nor count alone detects a wrong promotion or a collision reorder.
+(define (check-private-builder label keys expect-array?)
+  (let ((t (pmap-builder-new (length keys))))
+    (let loop ((ks keys) (i 0) (m empty-pmap))
+      (if (null? ks)
+          (let ((built (jolt-persistent! t)) (visit (lambda (a k v) (cons (cons k v) a))))
+            (ok label
+                (and (eq? expect-array? (pmap-array? built))
+                     (eq? (pmap-array? m) (pmap-array? built))
+                     (= (pmap-cnt m) (pmap-cnt built))
+                     (equal? (pmap-kv-reduce m visit '()) (pmap-kv-reduce built visit '())))))
+          (begin (pmap-builder-put! t (car ks) i)
+                 (loop (cdr ks) (+ i 1) (pmap-assoc m (car ks) i)))))))
+(define (builder-test-keys kw? n)
+  (map (lambda (i) (let ((s (number->string i))) (if kw? (keyword #f s) s))) (iota n)))
+(check-private-builder "8 string keys stay in array mode" (builder-test-keys #f 8) #t)
+(check-private-builder "9 string keys promote in persistent order" (builder-test-keys #f 9) #f)
+(check-private-builder "64 keyword keys stay in array mode" (builder-test-keys #t 64) #t)
+(check-private-builder "65 keyword keys promote in persistent order" (builder-test-keys #t 65) #f)
+(check-private-builder "keyword keeps 8 string keys in array mode"
+  (append (builder-test-keys #f 8) (builder-test-keys #t 1)) #t)
+(check-private-builder "later string promotes a mixed array with a collision bucket"
+  (append '("Aa" "BB") (builder-test-keys #f 6) (builder-test-keys #t 1) '("9" "Aa")) #f)
+(ok "private insertion retains the first equal key through overwrite and promotion"
+    (let* ((stored (string-copy "Aa")) (probe (string-copy stored))
+           (t (pmap-builder-new 12)) (value (vector 'value)))
+      (pmap-builder-put! t stored #f)
+      (pmap-builder-put! t "BB" #f)
+      (pmap-builder-put! t probe value)
+      (for-each (lambda (k) (pmap-builder-put! t k #t)) (builder-test-keys #f 7))
+      (pmap-builder-put! t probe value)
+      (let* ((result (jolt-persistent! t)) (entry (pmap-entry-at result probe)))
+        (and (= (key-hash stored) (key-hash "BB"))
+             (not (eq? stored probe)) (not (pmap-array? result))
+             (eq? (car entry) stored) (eq? (cdr entry) value)))))
+
+;; The builder's symbol keys and jolt-keyword split a name with converters.ss's
+;; keyword-split-index. Its operand runs once, and sees the caller's bindings
+;; of the names the macro uses inside. The Gambit kernel test
+;; (host/gambit/kernel-test.ss) runs the same rows.
+(define (ok-equal name actual expected) (ok name (equal? actual expected)))
+(for-each
+  (lambda (row)
+    (let ((s (car row)) (a 'a) (loop 'loop) (i 'i) (evals 0))
+      (let* ((got (keyword-split-index
+                    (begin (set! evals (+ evals 1))
+                           (if (equal? (list a loop i) '(a loop i)) s "captured/x"))))
+             (k (jolt-keyword s))
+             (ns (keyword-t-ns k)))
+        (ok-equal (string-append "keyword split: " s)
+            (list got evals (if (string? ns) ns #f) (keyword-t-name k))
+            (cons (cadr row) (cons 1 (if (cadr row) (cddr row) (list #f s))))))))
+  '(("" #f "") ("/" #f "/") ("//" #f "//") ("/a" #f "/a") ("a/" #f "a/")
+    ("a//" 1 "a" "/") ("a/b/c" 1 "a" "b/c") ("é/😀" 1 "é" "😀") ("n/ " 1 "n" " ")))
+
 ;; --- edges the implementation must keep -------------------------------------
 (is "nil key"            "(get (persistent! (assoc! (transient {}) nil :v)) nil)" ":v")
 (is "collection key"     "(get (persistent! (assoc! (transient {}) [1 2] :v)) [1 2])" ":v")
