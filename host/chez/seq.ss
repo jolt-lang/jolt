@@ -1824,10 +1824,12 @@
 
 ;; (jolt-nil-invoke-error sig): the NullPointerException for calling nil
 ;; through the IFn method SIG ("invoke(Object)", "applyTo(clojure.lang.ISeq)").
+;; The JVM's helpful-NPE text goes on to name the local the fn came in
+;; (because "g" is null); the runtime does not know it, so the message stops
+;; at the method, which is also how the JVM words it when there is no local.
 (define (jolt-nil-invoke-error sig)
   (jolt-throw (jolt-host-throwable "java.lang.NullPointerException"
-                (string-append "Cannot invoke \"clojure.lang.IFn." sig
-                               "\" because \"f\" is null"))))
+                (string-append "Cannot invoke \"clojure.lang.IFn." sig "\""))))
 ;; IFn's invoke overload for N arguments: N Objects, past twenty the variadic
 ;; overload's twenty and an Object[] rest.
 (define (jolt-ifn-invoke-sig n)
@@ -1887,9 +1889,8 @@
                   (string-append "Attempting to call unbound fn: #'"
                                  (jolt-var-unbound-ns f) "/" (jolt-var-unbound-name f)))))
     ;; calling nil: the JVM's call goes through a null IFn reference, so it is a
-    ;; NullPointerException, never a cast error. Its helpful-NPE text names the
-    ;; invoke overload by arity and the local the fn came in; every clojure.core
-    ;; path that calls a fn value (update, swap!, reduce, apply) holds it in f.
+    ;; NullPointerException, never a cast error, naming the invoke overload for
+    ;; the arity.
     ((jolt-nil? f) (jolt-nil-invoke-error (jolt-ifn-invoke-sig (length args))))
     ;; calling a non-fn: a ClassCastException naming the operator's CLASS (like
     ;; the JVM's "class clojure.lang.LazySeq cannot be cast to ... IFn" — never
