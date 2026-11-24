@@ -13,6 +13,24 @@
 
 (define jolt-vector-filter-map-comp
   (capture-optional-guard-procedure "clojure.core" "comp"))
+
+;; Guard the linked root read at each scalar update site.
+(define jolt-loop-map-update?
+  (let ((standard (capture-optional-guard-procedure "clojure.core" "update")))
+    (lambda (f)
+      (eq? f standard))))
+
+;; A version is the original map or a memo shared by continuations of the
+;; same write. Competing or resumed escapes publish one persistent map.
+(define (jolt-loop-map-memo) (box #f))
+(define (jolt-loop-map-value version)
+  (if (box? version) (unbox version) version))
+(define (jolt-loop-map-save! memo m)
+  (if (sa-box-cas! memo #f m) m (unbox memo)))
+
+;; Inspect the same seed procedure the ordinary destructurer would invoke.
+(define (jolt-loop-map-standard-seq? proc)
+  (eq? proc jolt-seq?))
 ;;
 ;; A few clojure.core predicates are implemented in the overlay by inspecting a
 ;; tagged value's :jolt/type key (e.g. (get x :jolt/type)). That key doesn't

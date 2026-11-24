@@ -71,7 +71,7 @@
 ;; such locals are prefixed. Matches the spec: special-form heads are not
 ;; shadowable, but a value local may legally be named `if`.
 (def ^:private scheme-reserved
-  #{"if" "begin" "lambda" "let" "let*" "letrec" "letrec*" "quote" "quasiquote"
+  #{"if" "begin" "lambda" "let" "let*" "letrec" "letrec*" "let-values" "quote" "quasiquote"
     "unquote" "set!" "define" "define-syntax" "cond" "case" "when" "unless"
     "and" "or" "do" "else" "guard" "parameterize" "delay" "values"})
 
@@ -97,6 +97,8 @@
 (def ^:private rt-emitted-names
   (let [from-registry op-registry/registry-emitted-names
         helpers #{"jolt-nil" "jolt-invoke" "jolt-invoke0" "jolt-invoke1"
+                  "jolt-loop-map-update?" "jolt-loop-map-memo" "jolt-loop-map-value" "jolt-loop-map-save!"
+                  "jolt-loop-map-standard-seq?"
                   "jolt-invoke2" "jolt-invoke3" "jolt-invoke4"
                   "jolt-invoke-t0" "jolt-invoke-t1" "jolt-invoke-t2" "jolt-invoke-t3" "jolt-invoke-t4"
                   "jolt-var-fn" "jolt-site-kept" "jolt-guard-body" "jolt-caught?" "jolt-caught-val" "call/1cc" "jolt-wind-inline"

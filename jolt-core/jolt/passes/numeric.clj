@@ -206,6 +206,7 @@
     (cond
       (= op :recur) [(mapv (fn [a] (nth (an a tenv) 0)) (get node :args))]
       (= op :let) (recur-kinds (get node :body) (nth (let-scope node tenv) 0))
+      (= op :let-values) (recur-kinds (:body node) (apply dissoc tenv (:names node)))
       (= op :if) (concat (recur-kinds (get node :then) tenv) (recur-kinds (get node :else) tenv))
       (= op :do) (recur-kinds (get node :ret) tenv)
       :else [])))
@@ -638,6 +639,10 @@
 (defn- an [node tenv]
   (let [op (get node :op)]
     (cond
+      ;; Local storage does not make a source map lookup a primitive numeric
+      ;; operand. An explicit cast or typed boundary outside this read still
+      ;; supplies its own kind.
+      (:boxed-map-read node) [nil (map-ir-children #(nth (an % tenv) 1) node)]
       (= op :const) [(if (float-lit? node) :double nil) node]
       ;; a bigdec (M) literal seeds the :bigdec kind so call-position arithmetic
       ;; over it (and let-bound copies of it) dispatches to the bigdec engine.
@@ -646,6 +651,10 @@
       (= op :coerce) (an-coerce node tenv)
       (= op :invoke) (an-invoke node tenv)
       (= op :let) (an-let node tenv)
+      (= op :let-values)
+      (let [scope (reduce #(rebind-boxed (dissoc %1 %2) %2 false) tenv (:names node))
+            [kind body] (an (:body node) scope)]
+        [kind (assoc node :init (nth (an (:init node) tenv) 1) :body body)])
       (and *kind-probe?* (or (= op :loop) (= op :fn))) [nil node]
       (= op :loop) (an-loop node tenv)
       (= op :if) (an-if node tenv)
