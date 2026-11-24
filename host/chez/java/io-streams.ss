@@ -2033,16 +2033,16 @@
           (old self)))))
 ;; FilterInputStream hands mark, reset and markSupported to this.in too; over a
 ;; null one each is the JDK's NPE
-(for-each
-  (lambda (name sig)
-    (wrap-host-method! "in-stream" name
-      (lambda (old)
-        (lambda (self . args)
-          (when (and (data-in-stream? self) (jolt-nil? (in-stream-data-inner self)))
-            (dis-inner self sig))
-          (apply old self args)))))
-  '("mark" "reset" "markSupported")
-  '("mark(int)" "reset()" "markSupported()"))
+(define (dis-null-in-check! self sig)
+  (when (and (data-in-stream? self) (jolt-nil? (in-stream-data-inner self)))
+    (dis-inner self sig)))
+(wrap-host-method! "in-stream" "mark"
+  (lambda (old)
+    (lambda (self . args) (dis-null-in-check! self "mark(int)") (apply old self args))))
+(wrap-host-method! "in-stream" "reset"
+  (lambda (old) (lambda (self) (dis-null-in-check! self "reset()") (old self))))
+(wrap-host-method! "in-stream" "markSupported"
+  (lambda (old) (lambda (self) (dis-null-in-check! self "markSupported()") (old self))))
 
 ;; DataOutputStream. Unbuffered, as the JDK's is: each write goes straight on to
 ;; the wrapped stream through its own write, with the call the JDK makes, and is

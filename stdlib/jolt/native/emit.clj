@@ -459,7 +459,7 @@ static _Thread_local jn_out jn_tls;
 #define JN_FLV_DATA(x) ((double *)((uintptr_t)(x) + 9))
 /* Math.pow is Java's, not C's: a NaN exponent, or a base of magnitude 1 to an
    infinite power, is NaN where C's pow answers 1 */
-static inline double jn_pow(double x, double y) {
+static inline __attribute__((unused)) double jn_pow(double x, double y) {
   if (isnan(y) || (isinf(y) && fabs(x) == 1.0)) return NAN;
   return pow(x, y);
 }
