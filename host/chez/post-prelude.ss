@@ -394,8 +394,9 @@
 ;; A native closure for the same reason sequential? below is one: the overlay
 ;; spelling routes every call through four more overlay fn invocations, and
 ;; counted? sits on core's own count/into fast paths.
+;; Installed as host-table.ss's jolt-counted? too, which core's own paths call.
 (let ((prev (var-deref "clojure.core" "counted?")))
-  (def-var! "clojure.core" "counted?"
+  (set! jolt-counted?
     (lambda (x)
       (cond ((pvec? x) #t)              ; vectors, subvec views, map entries
             ((pmap? x) #t)
@@ -411,7 +412,8 @@
              #f)
             ;; sorted colls, records and deftypes declaring Counted stay with the
             ;; overlay, which answers them through map?/set?/instance?.
-            (else (jolt-invoke1 prev x))))))
+            (else (jolt-invoke1 prev x)))))
+  (def-var! "clojure.core" "counted?" jolt-counted?))
 
 ;; ident?: the overlay's (or (keyword? x) (symbol? x)) pays two overlay var
 ;; calls (~130ns) for two native predicates; dispatch-heavy code (honeysql's

@@ -1101,6 +1101,12 @@
                                   " cannot be cast to class java.lang.Number")))))
 (define (jolt-div0-throw)
   (jolt-throw (jolt-host-throwable "java.lang.ArithmeticException" "Divide by zero")))
+;; Java's own integer division by zero: quot and rem over primitive longs
+;; (Numbers.quotient(long, long) is Java's /), the unchecked int ops and
+;; Math.floorDiv/floorMod. Everything that goes through Numbers' Object
+;; overloads, mod and / included, says "Divide by zero" above.
+(define (jolt-l-div0-throw)
+  (jolt-throw (jolt-host-throwable "java.lang.ArithmeticException" "/ by zero")))
 
 ;; Checked coercions for host operations that would otherwise hand a wrong-typed
 ;; value straight to a Chez primitive. The condition Chez raises carries no class,
@@ -1262,6 +1268,13 @@
         ((eqv? b 0) (jolt-div0-throw))
         ((and (integer? a) (integer? b)) (remainder a b))
         (else (- a (* b (truncate (/ a b)))))))
+;; quot/rem whose operands the JVM types as primitive longs where jolt's numeric
+;; pass does not prove :long (a let-bound literal, (count xs); jolt.passes.numeric
+;; jvm-long-expr?): the generic op, but a zero divisor is Java's "/ by zero".
+(define-syntax jolt-pquot
+  (syntax-rules () ((_ ea eb) (let ((a ea) (b eb)) (if (eq? b 0) (jolt-l-div0-throw) (jolt-quot a b))))))
+(define-syntax jolt-prem
+  (syntax-rules () ((_ ea eb) (let ((a ea) (b eb)) (if (eq? b 0) (jolt-l-div0-throw) (jolt-rem a b))))))
 (define (jolt-mod a b)
   (cond ((not (and (number? a) (number? b))) (jolt-mod-slow a b))
         ((and (integer? a) (integer? b) (not (flonum? a)) (not (flonum? b)))
@@ -1629,10 +1642,10 @@
 ;; MIN_VALUE, as on the JVM.
 (define-syntax unc-divi
   (syntax-rules ()
-    ((_ ea eb) (let ((a ea) (b eb)) (if (eq? b 0) (jolt-div0-throw) (unc-i32 (quotient a b)))))))
+    ((_ ea eb) (let ((a ea) (b eb)) (if (eq? b 0) (jolt-l-div0-throw) (unc-i32 (quotient a b)))))))
 (define-syntax unc-remi
   (syntax-rules ()
-    ((_ ea eb) (let ((a ea) (b eb)) (if (eq? b 0) (jolt-div0-throw) (unc-i32 (remainder a b)))))))
+    ((_ ea eb) (let ((a ea) (b eb)) (if (eq? b 0) (jolt-l-div0-throw) (unc-i32 (remainder a b)))))))
 (define-syntax unc-addi (syntax-rules () ((_ a b) (unc-i32 (+ a b)))))
 (define-syntax unc-subi (syntax-rules () ((_ a b) (unc-i32 (- a b)))))
 (define-syntax unc-inci (syntax-rules () ((_ a) (unc-i32 (+ a 1)))))
@@ -1717,9 +1730,24 @@
 (define-l-binop jolt-l=  fx=?  =)
 (define-l-binop jolt-l-min fxmin min)
 (define-l-binop jolt-l-max fxmax max)
-(define-l-binop jolt-l-quot fxquotient quotient)
-(define-l-binop jolt-l-rem  fxremainder remainder)
-(define-l-binop jolt-l-mod  fxmodulo modulo)
+;; The division ops test the divisor too: Chez's fx ops raise their own
+;; condition on a zero, where each of these raises the JVM's message. quot and
+;; rem over primitive longs are Java's / and %; mod is a clojure.core fn taking
+;; Objects, so its zero goes through Numbers' "Divide by zero" even on longs;
+;; Math.floorMod is Java's again.
+(define-syntax define-l-divop
+  (syntax-rules ()
+    ((_ name fxop genop div0)
+     (define-syntax name
+       (syntax-rules ()
+         ((_ a b) (let ((x a) (y b))
+                    (if (and (fixnum? x) (fixnum? y) (not (eq? y 0)))
+                        (fxop x y)
+                        (if (eqv? y 0) (div0) (genop x y))))))))))
+(define-l-divop jolt-l-quot fxquotient quotient jolt-l-div0-throw)
+(define-l-divop jolt-l-rem  fxremainder remainder jolt-l-div0-throw)
+(define-l-divop jolt-l-mod  fxmodulo modulo jolt-div0-throw)
+(define-l-divop jolt-l-floor-mod fxmodulo modulo jolt-l-div0-throw)
 ;; java.lang.Math over proven-:long operands (jolt.passes.numeric math-lng-ops).
 ;; Most members reuse the ops above — Math.floorMod IS Scheme's modulo, and the
 ;; Exact family is the checked +/-/* whose overflow arm raises ArithmeticException,
@@ -1731,6 +1759,7 @@
 ;; Gambit unit (which includes this file and shims the fx spellings to generic
 ;; arithmetic) with no new shim.
 (define (jolt-floor-quotient a b)
+  (when (eqv? b 0) (jolt-l-div0-throw))
   (let ((q (quotient a b)))
     (if (and (not (eqv? 0 (remainder a b)))
              (if (negative? b) (positive? a) (negative? a)))
@@ -1744,6 +1773,15 @@
 ;; emitted head cannot be shadowed by a user local.
 (define-syntax jolt-l-abs
   (syntax-rules () ((_ a) (abs a))))
+;; Math.pow over proven doubles. Java's pow is not C's: a NaN exponent is NaN
+;; even for a base of 1.0, and so is a base of magnitude 1.0 to an infinite
+;; power, where flexpt (C's pow) answers 1.0. Every other special case agrees.
+(define-syntax jolt-fl-pow
+  (syntax-rules ()
+    ((_ ea eb) (let ((a ea) (b eb))
+                 (if (or (nan? b) (and (infinite? b) (fl= (flabs a) 1.0)))
+                     +nan.0
+                     (flexpt a b))))))
 (define-syntax jolt-l-inc (syntax-rules () ((_ a) (jolt-l-checked (+ a 1)))))
 (define-syntax jolt-l-dec (syntax-rules () ((_ a) (jolt-l-checked (- a 1)))))
 
@@ -1822,6 +1860,25 @@
        (unless (fx=? n 1)
          (jolt-arity-error-name name n))))))
 
+;; (jolt-nil-invoke-error sig): the NullPointerException for calling nil
+;; through the IFn method SIG ("invoke(Object)", "applyTo(clojure.lang.ISeq)").
+;; The JVM's helpful-NPE text goes on to name the local the fn came in
+;; (because "g" is null); the runtime does not know it, so the message stops
+;; at the method, which is also how the JVM words it when there is no local.
+(define (jolt-nil-invoke-error sig)
+  (jolt-throw (jolt-host-throwable "java.lang.NullPointerException"
+                (string-append "Cannot invoke \"clojure.lang.IFn." sig "\""))))
+;; IFn's invoke overload for N arguments: N Objects, past twenty the variadic
+;; overload's twenty and an Object[] rest.
+(define (jolt-ifn-invoke-sig n)
+  (let loop ((i (fxmin n 20)) (acc '()))
+    (if (fx>? i 0)
+        (loop (fx- i 1) (cons "Object" acc))
+        (let ((ps (if (fx>? n 20) (append acc '("Object[]")) acc)))
+          (string-append "invoke("
+                         (if (null? ps) ""
+                             (fold-left (lambda (a b) (string-append a ", " b)) (car ps) (cdr ps)))
+                         ")")))))
 (define (jolt-invoke f . args)
   (cond
     ((procedure? f) (let ((n (length args)))
@@ -1869,6 +1926,10 @@
      (jolt-throw (jolt-host-throwable "java.lang.IllegalStateException"
                   (string-append "Attempting to call unbound fn: #'"
                                  (jolt-var-unbound-ns f) "/" (jolt-var-unbound-name f)))))
+    ;; calling nil: the JVM's call goes through a null IFn reference, so it is a
+    ;; NullPointerException, never a cast error, naming the invoke overload for
+    ;; the arity.
+    ((jolt-nil? f) (jolt-nil-invoke-error (jolt-ifn-invoke-sig (length args))))
     ;; calling a non-fn: a ClassCastException naming the operator's CLASS (like
     ;; the JVM's "class clojure.lang.LazySeq cannot be cast to ... IFn" — never
     ;; the value, whose printed form may be unbounded: ((range)) must throw, not
@@ -3004,6 +3065,8 @@
                      (append head
                              (list (make-lazy-rest
                                     (fold-right cseq-realized (cdr peeled) spill))))))))
+      ;; apply of nil reaches IFn.applyTo on a null reference
+      ((jolt-nil? f) (jolt-nil-invoke-error "applyTo(clojure.lang.ISeq)"))
       ;; a type's own applyTo takes ONE seq of every argument (nil when there are
       ;; none), so the tail is not realized here either.
       ((jolt-apply-to-method f)

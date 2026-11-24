@@ -45,6 +45,7 @@ comparator->cmp
 compile-ns
 condition-message
 content-key
+counted?
 cpu-nanos
 ctx-for-ns
 current-fiber

@@ -1879,6 +1879,28 @@
            :jvm "2"
            :jolt "1"}
    :note "Distinct objects of every other kind stay distinct keys."}
+  ;; A BigInt inside the long range is the same fixnum as a long here (the
+  ;; integer collapse above), so a let-bound 5N divides like a primitive long.
+  {:category :integer-box-model
+   :behavior "(let [a 5N b 0] (rem a b))"
+   :jvm "ArithmeticException \"Divide by zero\" (a BigInt takes the Object overload)"
+   :jolt "ArithmeticException \"/ by zero\""
+   :check {:expr "(try (let [a 5N b 0] (rem a b)) (catch ArithmeticException e (.getMessage e)))"
+           :jvm "\"Divide by zero\""
+           :jolt "\"/ by zero\""}
+   :note "Only the message; 5N past the long range is a bignum and takes the Object path as on the JVM."}
+  ;; Math's exact methods have int and long overloads. Clojure's reflector picks
+  ;; the int one for boxed Integers (and for Longs that fit), where the int
+  ;; overflows; an int here is the same fixnum as a long, so the long overload
+  ;; answers.
+  {:category :integer-box-model
+   :behavior "(Math/addExact (identity (int 2147483647)) (identity (int 1)))"
+   :jvm "ArithmeticException \"integer overflow\""
+   :jolt "2147483648"
+   :check {:expr "(try (Math/addExact (identity (int 2147483647)) (identity (int 1))) (catch ArithmeticException e (.getMessage e)))"
+           :jvm "\"integer overflow\""
+           :jolt "2147483648"}
+   :note "A call the JVM compiles against long arguments (literals, ^long locals) takes the long overload there too and agrees. Reflection over boxed Longs also picks the int overload on the JVM, truncating: (Math/addExact (identity Long/MAX_VALUE) (identity 1)) is 0 there, long overflow here."}
 ]
  :entries
  [;; sorted-map/sorted-set are a B+tree, not PersistentTreeMap's red-black tree,

@@ -39,6 +39,8 @@
 (define hc-kw-long (keyword #f "long"))
 (define hc-kw-float (keyword #f "float"))
 (define hc-kw-jolt-num-ret (keyword "jolt" "num-ret"))
+(define hc-kw-jvm-long-ret (keyword #f "jvm-long-ret"))
+(define hc-kw-arglists (keyword #f "arglists"))
 (define hc-kw-inst  (keyword #f "#inst"))
 (define hc-kw-uuid  (keyword #f "#uuid"))
 (define hc-kw-bigdec (keyword #f "bigdec"))
@@ -554,6 +556,22 @@
 ;; a hint: jolt.ffi/defcfn sets :float on a binding whose C result is a float,
 ;; which the binding always answers as a java.lang.Float. A ^float tag is not
 ;; read, since on the JVM it is only a hint and coerces nothing.
+;; Whether every arity's arglist carries ^long, (defn f ^long [x] ...): the JVM
+;; then compiles a call to f as answering a primitive long, which decides the
+;; overload a quot/rem over the call takes (jolt.passes.numeric jvm-long-expr?).
+;; Only that message reads it; the call's value is typed by :num-ret alone.
+(define (hc-cell-jvm-long-ret? cell)
+  (let* ((m (and cell (var-cell-meta cell)))
+         (al (and m (jolt-get m hc-kw-arglists))))
+    (and al (not (jolt-nil? al))
+         (let loop ((s (jolt-seq al)) (any #f))
+           (if (or (not s) (jolt-nil? s))
+               any
+               (let* ((v (seq-first s))
+                      (vm (jolt-meta v))
+                      (t (and vm (not (jolt-nil? vm)) (jolt-get vm hc-kw-tag)))
+                      (n (cond ((symbol-t? t) (symbol-t-name t)) ((string? t) t) (else #f))))
+                 (and (equal? n "long") (loop (jolt-seq (seq-more s)) #t))))))))
 (define (hc-cell-num-ret cell)
   (let ((m (and cell (var-cell-meta cell))))
     (and m (let ((declared (jolt-get m hc-kw-jolt-num-ret)))
@@ -661,7 +679,10 @@
                                     hc-kw-ns (var-cell-ns cell)
                                     hc-kw-name (var-cell-name cell)))
                (nr (hc-cell-num-ret cell))
-               (base (if nr (jolt-assoc base hc-kw-num-ret nr) base)))
+               (base (if nr (jolt-assoc base hc-kw-num-ret nr) base))
+               (base (if (and (not nr) (hc-cell-jvm-long-ret? cell))
+                         (jolt-assoc base hc-kw-jvm-long-ret #t)
+                         base)))
           ;; :private — a ^:private var of ANOTHER namespace, which the analyzer
           ;; refuses to reference ("var: a/hidden is not public"), as the JVM's
           ;; Compiler.resolveIn / isMacro do. (var a/hidden) still takes it.

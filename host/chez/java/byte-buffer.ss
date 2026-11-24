@@ -197,14 +197,14 @@
   (nb-store-copy! (nb-array-octets src) soff (bb-backing b) (fx+ (bb-off b) idx) n))
 
 ;; --- IEEE 754 encodings ----------------------------------------------------
-;; The bit patterns are math.ss's dbl->bits, bits->dbl, flt->bits, bits->flt and
+;; The bit patterns are math.ss's dbl->raw-bits, bits->dbl, flt->raw-bits, bits->flt and
 ;; flt-mag->bits (exact arithmetic, the same on every target; math.ss is loaded
 ;; on both). What
 ;; is this file's own is how a FLOAT reads back.
 ;;
 ;; The float a pattern holds is a Float (a jfloat, converters.ss), so
 ;; (.getFloat b) after (.putFloat b 0.1) prints 0.1 and equals (float 0.1).
-(define (nb-bits->flt b) (make-jfloat (bits->flt b)))
+(define (nb-bits->flt b) (flt-bits->jfloat b))
 
 ;; --- element kinds -------------------------------------------------------------
 ;; What a stored unsigned W-octet integer reads as, and what an argument stores.
@@ -228,8 +228,9 @@
 (define (nb-encode kind v)
   (case kind
     ((char) (nb-char-code v))
-    ((float) (flt->bits (jolt-need-num v)))
-    ((double) (dbl->bits (jolt-need-num v)))
+    ;; putFloat/putDouble store floatToRawIntBits/doubleToRawLongBits
+    ((float) (jolt-float-raw-bits v (lambda (x) (jolt-unchecked-float->flonum (jolt-need-num x)))))
+    ((double) (dbl->raw-bits (jolt-need-num v)))
     (else (nb-int v))))
 ;; A value as an element of a host typed array of KIND.
 (define (nb-array-elem kind v)

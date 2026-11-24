@@ -706,9 +706,18 @@
 ;; a source no bigger than this goes into an empty sorted coll by plain conj
 (define bt-into-conj-max 8)
 ;; FROM's element count when it is O(1) to know, else #f. The common colls are
-;; answered here; anything else asks counted? (lists, queues, a vector's seq, a
-;; record, a deftype declaring Counted) and then count.
+;; answered here; anything else asks the runtime's Counted test (lists, queues,
+;; a vector's seq, a record, a deftype declaring Counted) and then count.
+;;
+;; jolt-counted?: that test, the one clojure.core/counted? answers with. Core's
+;; own paths call it rather than the var, as the JVM's direct-linked core does,
+;; so a user's with-redefs of counted? never reaches into or sorted-coll
+;; building. post-prelude.ss installs the native version once the overlay's
+;; arms exist; until then it asks the overlay's var.
 (define bt-counted?-cell (jolt-var "clojure.core" "counted?"))
+(define jolt-counted?
+  (lambda (x) (jolt-truthy? (jolt-invoke1 (var-cell-deref bt-counted?-cell) x))))
+(def-var! "jolt.host" "counted?" (lambda (x) (jolt-counted? x)))
 (define (bt-known-count from)
   (cond ((pvec? from) (pvec-cnt from))
         ((pmap? from) (pmap-cnt from))
@@ -718,7 +727,7 @@
         ((cseq? from) (and (cseq-counted? from) (jolt-count from)))
         ((empty-list-t? from) 0)
         ((or (jolt-nil? from) (jolt-lazyseq? from) (string? from)) #f)
-        ((jolt-truthy? (jolt-invoke1 (var-cell-deref bt-counted?-cell) from))
+        ((jolt-counted? from)
          (let ((n (jolt-count from))) (and (fixnum? n) (fx>=? n 0) n)))
         (else #f)))
 ;; (into sorted-coll [xform] from): conj after conj's result, built as a batch.

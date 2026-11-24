@@ -20,6 +20,10 @@
     7 (throw (IllegalArgumentException.
               (str "native region: " a " does not fit a borrowed long-array, which"
                    " holds fixnums (-2^60 to 2^60-1); widen the array outside the region")))
+    ;; a recursive helper ran out of the thread's C stack
+    8 (throw (StackOverflowError.))
+    ;; mod by zero: clojure.core/mod takes Objects, so Numbers' message
+    9 (throw (ArithmeticException. "Divide by zero"))
     (throw (IllegalStateException. (str "native region: unknown failure code " code)))))
 
 (defn- in-long [r]
@@ -38,7 +42,7 @@
         (and (= b -1) (= a Long/MIN_VALUE)) a
         :else (quot a b)))
 (defn rem* [a b] (if (zero? b) (raise! 3 0 0 0.0) (rem a b)))
-(defn mod* [a b] (if (zero? b) (raise! 3 0 0 0.0) (mod a b)))
+(defn mod* [a b] (if (zero? b) (raise! 9 0 0 0.0) (mod a b)))
 
 (defn index
   "RT.intCast of an array index: outside the int range is an overflow."
