@@ -61,10 +61,7 @@ jobs:
         # TMPDIR on the runner's disk: from ubuntu-26.04, /tmp is a tmpfs with a
         # size limit, and the build gates' mktemp dirs (shakelocal keeps two
         # binaries per app until it exits) ran it out with EDQUOT.
-        run: |
-          # TEMP DIAGNOSTIC (revert before merge): stream output, watch memory.
-          (while sleep 30; do echo "MEMWATCH $(date -u +%T) $(free -m | sed -n 2p)"; ps -eo rss,etimes,args --sort=-rss | head -4 | cut -c1-200 | sed 's/^/MEMWATCH   /'; done) &
-          TMPDIR="$RUNNER_TEMP" make CHEZ=/opt/chez/bin/chez GAMBIT_PREFIX=/opt/gambit -j"$(nproc)" ci-shard SHARD-SET=test SHARD=${{ matrix.shard }} SHARDS=4
+        run: TMPDIR="$RUNNER_TEMP" make CHEZ=/opt/chez/bin/chez GAMBIT_PREFIX=/opt/gambit -j"$(nproc)" -Oline ci-shard SHARD-SET=test SHARD=${{ matrix.shard }} SHARDS=4
 
   # The check that says the whole gate passed, under the name the single job
   # had, so anything that waits on "test" (a required status check, a person)
