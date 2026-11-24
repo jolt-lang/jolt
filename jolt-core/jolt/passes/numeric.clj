@@ -297,42 +297,54 @@
 (def ^:private long-range-max 9223372036854775807)
 (def ^:private long-range-min -9223372036854775808)
 
+(declare jvm-long-expr?)
+
+;; Math members and parse methods that answer a primitive long or int
+(defn- jvm-long-static? [fnode args tenv]
+  (let [c (get fnode :class) m (get fnode :member)]
+    (or (and (contains? #{"Long" "java.lang.Long"} c) (= m "parseLong"))
+        (and (contains? #{"Integer" "java.lang.Integer"} c) (= m "parseInt"))
+        (and (contains? #{"Math" "java.lang.Math"} c)
+             (or (= m "round")
+                 (and (contains? #{"abs" "min" "max" "floorDiv" "floorMod"} m)
+                      (seq args) (every? (fn [a] (jvm-long-expr? a tenv)) args)))))))
+
+;; clojure.core calls the JVM compiles to a primitive long or int
+(defn- jvm-long-core? [nm args tenv]
+  (let [n (count args)]
+    (or (and (contains? #{"count" "alength"} nm) (= n 1))
+        (and (contains? jvm-long-ops nm) (pos? n)
+             (every? (fn [a] (jvm-long-expr? a tenv)) args)))))
+
+(defn- jvm-long-invoke? [node tenv]
+  (let [fnode (get node :fn) args (get node :args)]
+    (or (= :long (get node :num-kind))
+        (some? (get node :lng-op))
+        (some? (get node :v-alength))
+        (= :long (get fnode :num-ret))
+        (true? (get fnode :jvm-long-ret))
+        (and (= :var (get fnode :op)) (= "clojure.core" (get fnode :ns))
+             (jvm-long-core? (get fnode :name) args tenv))
+        (and (= :host-static (get fnode :op)) (jvm-long-static? fnode args tenv)))))
+
+(defn- jvm-long-const? [node]
+  (let [v (get node :val)]
+    (and (number? v) (integer? v) (<= long-range-min v long-range-max))))
+
 (defn- jvm-long-expr?
   "Whether the JVM compiler would type the (annotated) node a primitive long or int."
   [node tenv]
-  (let [op (get node :op)]
-    (cond
-      (= op :const) (let [v (get node :val)]
-                      (and (number? v) (integer? v) (<= long-range-min v long-range-max)))
-      (= op :local) (let [nm (get node :name)]
-                      (or (= :long (get tenv nm))
-                          (contains? (or (get tenv :jvm-long-locals) #{}) nm)))
-      (= op :coerce) (contains? jvm-long-casts (get node :cast-fn))
-      (= op :if) (and (jvm-long-expr? (get node :then) tenv) (jvm-long-expr? (get node :else) tenv))
-      (= op :do) (jvm-long-expr? (get node :ret) tenv)
-      (= op :host-call) (= :long (interop-fx-kind (get node :target-type) (get node :method)))
-      (= op :invoke)
-      (let [fnode (get node :fn) args (get node :args) n (count args)
-            all? (fn [] (every? (fn [a] (jvm-long-expr? a tenv)) args))]
-        (or (= :long (get node :num-kind))
-            (some? (get node :lng-op))
-            (some? (get node :v-alength))
-            (= :long (get fnode :num-ret))
-            (get fnode :jvm-long-ret)
-            (and (= :var (get fnode :op)) (= "clojure.core" (get fnode :ns))
-                 (let [nm (get fnode :name)]
-                   (or (and (= nm "count") (= n 1))
-                       (and (= nm "alength") (= n 1))
-                       (and (contains? jvm-long-ops nm) (pos? n) (all?)))))
-            (and (= :host-static (get fnode :op))
-                 (let [c (get fnode :class) m (get fnode :member)]
-                   (or (and (contains? #{"Long" "java.lang.Long"} c) (= m "parseLong"))
-                       (and (contains? #{"Integer" "java.lang.Integer"} c) (= m "parseInt"))
-                       (and (contains? #{"Math" "java.lang.Math"} c)
-                            (or (= m "round")
-                                (and (contains? #{"abs" "min" "max" "floorDiv" "floorMod"} m)
-                                     (pos? n) (all?)))))))))
-      :else false)))
+  (case (get node :op)
+    :const (jvm-long-const? node)
+    :local (let [nm (get node :name)]
+             (or (= :long (get tenv nm))
+                 (contains? (or (get tenv :jvm-long-locals) #{}) nm)))
+    :coerce (contains? jvm-long-casts (get node :cast-fn))
+    :if (and (jvm-long-expr? (get node :then) tenv) (jvm-long-expr? (get node :else) tenv))
+    :do (jvm-long-expr? (get node :ret) tenv)
+    :host-call (= :long (interop-fx-kind (get node :target-type) (get node :method)))
+    :invoke (jvm-long-invoke? node tenv)
+    false))
 
 (defn- arity-env [tenv a]
   (let [nh (into {} (get a :nhints))
