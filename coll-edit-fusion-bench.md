@@ -751,7 +751,7 @@ Every receiver in `bench46` asserts its runtime class at startup via `(.getName 
 
 ## jolt-43
 
-Emit-time peephole (`emit-assoc-update-chain`) in `jolt-core/jolt/backend_scheme/fused.clj` (with `pmap?` registered in `rt-emitted-names` in `jolt-core/jolt/backend_scheme/names.clj`) collapsing straight-line 2..4-pair chains mixing `assoc` and `update` on distinct literal keyword keys into a single guarded multi-pair `(jolt-assoc m k1 v1 ...)` call (reaching `jolt-39`'s fixed `case-lambda` clauses). Chez direct-link builds only (`chez-linked-fast-path?` + `seed-callable?` on `clojure.core/update`; plain/non-direct-link and Gambit builds emit ordinary calls).
+Emit-time peephole (`emit-assoc-update-chain`) in `jolt-core/jolt/backend_scheme/fused.clj` (with `pmap?` registered in `rt-emitted-names` in `jolt-core/jolt/backend_scheme/names.clj`) collapsing straight-line 2..4-pair chains mixing `assoc` and `update` on distinct literal keyword keys into a single guarded multi-pair `(jolt-assoc m k1 v1 ...)` call (reaching `jolt-39`'s fixed `case-lambda` clauses). The rule fires in default release builds as well as `--opt` builds, because direct-link is on by default (`chez-linked-fast-path?` + `seed-callable?` on `clojure.core/update`), and does not fire in `--dev`, `--no-direct-link`, or Gambit builds.
 
 - **Parent commit measured against:** `60de4931e` (`perf/coll-edit-fusion`)
 - **Date:** 2026-11-24
@@ -760,10 +760,10 @@ Emit-time peephole (`emit-assoc-update-chain`) in `jolt-core/jolt/backend_scheme
 - **Build flags:** `bin/jolt build -m <ns> -o <out> --direct-link --opt`
 - **Nursery pin:** `JOLT_GC_TRIP_BYTES=16m` (isolates adaptive nursery doubling investigated in `jolt-44`)
 - **Precedence among the three rules in `fused.clj`:**
-  1. `emit-assoc-update-chain` (mixed chains containing `>=1` `update`, 2..4 distinct literal keyword pairs, Chez direct-link only)
+  1. `emit-assoc-update-chain` (mixed chains containing `>=1` `update`, 2..4 distinct literal keyword pairs, Chez direct-link builds — default release and `--opt` — only)
   2. `emit-assoc-chain` (pure `assoc` chains, 2..4 pairs, all modes)
   3. `emit-dissoc-assoc-pair` (single `dissoc`/`assoc` pairs, all modes; defers to `emit-assoc-chain` and eligible `emit-assoc-update-chain`)
-  Rejected mixed chains suppress partial mixed tiling via `*unfused-update-nodes*` while still allowing pure `assoc` chains or `dissoc`/`assoc` pairs on sub-expressions.
+  Rejected mixed chains re-emit with their steps flagged `:mixed-unfused`, preventing partial mixed tiling while still allowing pure `assoc` chains or `dissoc`/`assoc` pairs on sub-expressions. Inside a fallback lane, `*mixed-fallback?*` suppresses mixed fusion so nested mixed chains fuse only in the fast lane.
 - **Semantics decisions relied on (`coll-edit-fusion-decisions.md`):** Decision 1 (`pure-edit-operand?` / `pure-call-head?` without `:clear-caps` for later `assoc` values and extra `update` arguments), Decision 2 (one `clojure.core/update` root check at chain entry via `jolt-loop-map-update?`, honouring `with-redefs` and `alter-var-root` around the call; does not notice an updater redefining `update` mid-chain), and Decision 3 (no identity guarantee under raw Scheme `call/cc` re-entry). Smaller relaxations: all-no-op chains return the `identical?` receiver; a throw from the final `jolt-assoc` may report the outermost call's line; fallback runs the original unfused calls unchanged.
 - **Seed mint impact:** `make remint` converged in 3 passes (0 forms skipped). **0** call sites fused in `host/chez/seed/prelude.ss` and **0** in `host/chez/seed/image.ss` (gated on `(not (seed-mint?))` via `chez-linked-fast-path?`). Per the seed rule, seed files were restored before committing (`git checkout -- host/chez/seed host/gambit/seed`).
 - **Gambit:** not installed on this machine; `portcheck`, `gambitseedcheck`, `gambitgencheck`, and `gambittwins` passed on the reminted tree; Gambit-runtime gates (`gambitboot`, `gambitcheck`, `gambiteval`, `gambitkernel`, `gambitprofile`, `gambitstatics`, `gambitunbound`, `gambitvars`) did not run.
@@ -794,7 +794,9 @@ Scanned all 15,551 files with a standalone out-of-tree scanner matching maximal 
 | **Eligible (shipped operand rule, Decision 1)** | **420** | **316** 2-pair, **72** 3-pair, **32** 4-pair (283 update-only, 68 `assoc`+`update`, 40 `update`+`assoc`, 29 mixed 3..4-step) |
 | Eligible (strict local+const only) | 387 | Decision 1 adds +33 sites (+8.5%) |
 
-### Emitted Scheme (before and after), call-site bytes, and compile time
+### Emitted Scheme (before and after), code-size growth, nesting, and compile time
+
+A fused mixed `assoc`/`update` call site is larger than the unfused call site because the emitter outputs the entry guard and both the fast lane and the full unfused fallback lane.
 
 Real corpus sites (`athens/src/cljc/event_sync/core.cljc:19-24` and `re-frame/src/re_frame/router.cljc:483-490`, with `decrement-pending-child` direct-linked):
 
@@ -814,30 +816,52 @@ Real corpus sites (`athens/src/cljc/event_sync/core.cljc:19-24` and `re-frame/sr
 ```
 
 ```scheme
-;; athens BEFORE (211 bytes at call expr, 940 bytes full def):
-(let* ((_a$32 (jolt-assoc3 state _kc$30 op)) (_a$33 _kc$31) (_a$34 jolt-inc))
-  (let ((_lp$35 jv$clojure.core/update))
-    (if (#3%procedure? _lp$35) (_lp$35 _a$32 _a$33 _a$34) (jolt-invoke _lp$35 _a$32 _a$33 _a$34))))
+;; athens BEFORE (211 bytes at call expr, 937 bytes full def):
+(let* ((_a$11 (jolt-assoc3 state _kc$9 op)) (_a$12 _kc$10) (_a$13 jolt-inc))
+  (let ((_lp$14 jv$clojure.core/update))
+    (if (#3%procedure? _lp$14) (_lp$14 _a$11 _a$12 _a$13) (jolt-invoke _lp$14 _a$11 _a$12 _a$13))))
 
-;; athens AFTER (382 bytes at call expr, +171 bytes [98B guard + 67B fast + 211B fallback + 6B if]; 1,111 bytes full def):
+;; athens AFTER (380 bytes at call expr, +169 bytes [92B guard + 70B fast + 211B fallback + 7B if]; 1,106 bytes full def):
 (if (and (or (pmap? state) (eq? state jolt-nil)) (jolt-loop-map-update? jv$clojure.core/update))
-    (jolt-assoc state _kc$35 op _kc$36 (jolt-n-inc (jolt-get state _kc$36)))
-    (let* ((_a$37 (jolt-assoc3 state _kc$35 op)) (_a$38 _kc$36) (_a$39 jolt-inc))
-      (let ((_lp$40 jv$clojure.core/update))
-        (if (#3%procedure? _lp$40) (_lp$40 _a$37 _a$38 _a$39) (jolt-invoke _lp$40 _a$37 _a$38 _a$39)))))
+    (jolt-assoc state _kc$10 op _kc$9 (jolt-n-inc (jolt-get state _kc$9)))
+    (let* ((_a$11 (jolt-assoc3 state _kc$10 op)) (_a$12 _kc$9) (_a$13 jolt-inc))
+      (let ((_lp$14 jv$clojure.core/update))
+        (if (#3%procedure? _lp$14) (_lp$14 _a$11 _a$12 _a$13) (jolt-invoke _lp$14 _a$11 _a$12 _a$13)))))
 
-;; re-frame BEFORE (594 bytes at call expr, 1,560 bytes full def)
-;; re-frame AFTER (1,041 bytes at call expr, +447 bytes [98B guard + 343B fast + 594B fallback + 6B if]; 2,007 bytes full def):
+;; re-frame BEFORE (592 bytes at call expr, 1,564 bytes full def)
+;; re-frame AFTER (1,091 bytes at call expr, +499 bytes [92B guard + 400B fast + 592B fallback + 7B if]; 2,063 bytes full def):
 (if (and (or (pmap? state) (eq? state jolt-nil)) (jolt-loop-map-update? jv$clojure.core/update))
-    (let* ((_mu$10 (jolt-conj2 (jolt-get state _kc$9) id))
-           (_mu$14 (let ((_lp$12 jv$u/decrement-pending-child) (_la$13 (jolt-get state _kc$11)))
-                     (if (#3%procedure? _lp$12) (_lp$12 _la$13 parent-id) (jolt-invoke _lp$12 _la$13 parent-id))))
-           (_mu$16 (jolt-conj2 (jolt-get state _kc$15) epoch)))
-      (jolt-assoc state _kc$9 _mu$10 _kc$11 _mu$14 _kc$15 _mu$16))
+    (let* ((_a$27 state)
+           (_a$28 _kc$22)
+           (_a$29 (jolt-conj2 (jolt-get state _kc$22) id))
+           (_a$30 _kc$23)
+           (_a$31 (let ((_lp$25 jv$u/decrement-pending-child) (_la$26 (jolt-get state _kc$23)))
+                    (if (#3%procedure? _lp$25) (_lp$25 _la$26 parent-id) (jolt-invoke _lp$25 _la$26 parent-id))))
+           (_a$32 _kc$24)
+           (_a$33 (jolt-conj2 (jolt-get state _kc$24) epoch)))
+      (jolt-assoc _a$27 _a$28 _a$29 _a$30 _a$31 _a$32 _a$33))
     <unfused 3-step update chain>)
 ```
 
-- **Compile time (`bench43`, `bin/jolt build --direct-link --opt`):** parent **21.34 s** vs candidate **21.15 s** (`JOLT_BUILD_PROFILE=1`: `emit app namespaces` 107 ms vs 109 ms, `emit: emit-top` 8 ms vs 11 ms, cumulative 168 ms vs 173 ms — no measurable compile-time overhead).
+- **Code-size growth per site (Scheme text and Chez `compile-file` `.so` at `optimize-level 3`):**
+  - 2-step `(fn [m f] (-> m (assoc :a 1) (update :b f)))`: `+176` bytes Scheme text (`375 -> 551`), `+517` bytes object code (`1,847 -> 2,364`; `+510` bytes at depth 1 in the nesting harness: `1,847 -> 2,357`).
+  - `athens` (`defn update-op`): `+169` bytes Scheme text (`937 -> 1,106`; call expr `211 -> 380`), `+731` bytes object code (`4,807 -> 5,538`; standalone `fn` `+686` bytes, `1,908 -> 2,594`).
+  - `re-frame` (`defn accept-trace-epoch`, `decrement-pending-child` direct-linked): `+499` bytes Scheme text (`1,564 -> 2,063`; call expr `592 -> 1,091`), `+1,008` bytes object code (`5,463 -> 6,471`; standalone `fn` `+928` bytes, `2,463 -> 3,391`).
+  - 4-step `mixed4` standalone `fn`: `+361` bytes Scheme text (`689 -> 1,050`), `+959` bytes object code (`2,313 -> 3,272`).
+  - Whole `bench43` AOT `--direct-link --opt` build (`app-0.ss` / `app-0.ss.so` across all 18 fused guard sites, including inlined benchmark loops): `+11,355` bytes Scheme text (`92,621 -> 103,976`, avg `+631` bytes/site) and `+4,504` bytes compiled object code (`63,386 -> 67,890`, avg `+250` bytes/site).
+
+- **Nested mixed chains (`*mixed-fallback?*` guard, depths 1 to 6):** Nested updater `fn` literals `(fn [m f] (-> m (assoc :a 1) (update :b (fn [v2] ...))))` emitted via `code-part` and compiled with Chez `compile-file` (`optimize-level 3`). Without `*mixed-fallback?*`, every nested chain fused in both lanes of every enclosing chain (`2^d - 1` guards); binding `*mixed-fallback?*` around the fallback emit restricts fusion to the fast lane (`d` guards):
+
+| Depth | Unfused (B) | Fused after fix (B) | Guards (after) | Fused before fix (B, guards) | Compiled `.so` unfused -> fused after fix (B) |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 390 | 551 | 1 | 551 (1) | 1,847 -> 2,357 (+510) |
+| 2 | 675 | 1,244 | 2 | 1,409 (3) | 2,254 -> 3,234 (+980) |
+| 3 | 964 | 2,234 | 3 | 3,139 (7) | 2,469 -> 3,867 (+1,398) |
+| 4 | 1,253 | 3,505 | 4 | 6,587 (15) | 2,603 -> 4,479 (+1,876) |
+| 5 | 1,540 | 5,063 | 5 | 13,483 (31) | 2,747 -> 5,230 (+2,483) |
+| 6 | 1,827 | 6,908 | 6 | 27,327 (63) | 2,879 -> 6,119 (+3,240) |
+
+- **Compile time (`bench43`, `bin/jolt build --direct-link --opt`, `JOLT_BUILD_PROFILE=1`):** parent `emit app namespaces` 111 ms (`emit: emit-top` 9 ms, cumulative pre-Chez 300 ms) vs candidate `emit app namespaces` 112 ms (`emit: emit-top` 10 ms, cumulative pre-Chez 299 ms) — no measurable compile-time overhead.
 
 ### Commands
 
@@ -870,23 +894,25 @@ Every receiver in `bench43` asserts its runtime class at startup via `(.getName 
 
 ### Ad hoc AOT results (median ns/op of 7 runs × 2,000,000 ops, `JOLT_GC_TRIP_BYTES=16m`, A1 -> B -> A2)
 
+Re-measured after the review simplification and `*mixed-fallback?*` patch against reminted parent `60de4931e`; every row stayed within `0.1%–4.0%` of the pre-patch measurements (no row moved by more than 5%).
+
 | Row | Parent A1 (ns/op) | Candidate B (ns/op) | Parent A2 (ns/op) | Speedup (avg A / B) | Notes |
 |---|---:|---:|---:|---:|---|
-| `athens-4key` | 52.96 | **23.26** | 52.66 | **2.27x** | `athens/event_sync/core.cljc:22` on 4-key real state |
-| `reframe-5key-dec` | 177.86 | **135.88** | 179.96 | **1.32x** | `re-frame/router.cljc:487` (`decrement-pending-child` `assoc` branch) |
-| `reframe-5key-dissoc` | 190.53 | **136.01** | 189.15 | **1.40x** | `re-frame/router.cljc:487` (`decrement-pending-child` `dissoc` branch) |
-| `reframe-5key-nilp` | 140.45 | **101.41** | 142.35 | **1.39x** | `re-frame/router.cljc:487` (`parent-id` = `nil`) |
-| `ua-m4` | 48.98 | **22.23** | 50.90 | **2.25x** | 2-step `update`+`assoc` on 4-key array map |
-| `uu-m4` | 60.73 | **27.39** | 59.27 | **2.19x** | 2-step `update`+`update` on 4-key array map |
-| `mixed4-m4` | 102.40 | **34.01** | 98.12 | **2.95x** | 4-step `assoc`+`update`+`assoc`+`update` on 4-key array map |
-| `mixed4-m12` | 122.01 | **49.20** | 118.78 | **2.45x** | 4-step mixed chain on 12-keyword array map |
-| `mixed2-nil` | 125.27 | **90.92** | 124.32 | **1.37x** | 2-step `assoc`+`update` (`inc0 = (fnil inc 0)`) on `nil` |
-| `ctrl-hash24-ua` | 111.44 | **107.08** | 113.87 | **1.05x** | hash-mode 24-key map (takes fast lane, saves `update` dispatch) |
-| `ctrl-hash24-mixed4` | 252.87 | **242.18** | 251.28 | **1.04x** | hash-mode 24-key map, 4-step mixed |
-| `ctrl-rec-field` | 79.82 | 79.38 | 79.17 | 1.00x | miss control: `defrecord` declared fields (misses `pmap?` inline) |
-| `ctrl-rec-ext` | 125.67 | 125.93 | 124.91 | 0.99x | miss control: `defrecord` ext keys (misses `pmap?` inline) |
-| `ctrl-sorted-ua` | 355.43 | 356.09 | 353.27 | 0.99x | miss control: `sorted-map` (misses `pmap?` inline) |
-| `ctrl-custom-ua` | 190.29 | 191.26 | 190.81 | 1.00x | miss control: custom `Associative` `deftype` (misses `pmap?` inline) |
+| `athens-4key` | 53.59 | **24.06** | 52.94 | **2.21x** | `athens/event_sync/core.cljc:22` on 4-key real state |
+| `reframe-5key-dec` | 180.67 | **133.60** | 180.69 | **1.35x** | `re-frame/router.cljc:487` (`decrement-pending-child` `assoc` branch) |
+| `reframe-5key-dissoc` | 186.84 | **137.45** | 187.61 | **1.36x** | `re-frame/router.cljc:487` (`decrement-pending-child` `dissoc` branch) |
+| `reframe-5key-nilp` | 141.62 | **103.40** | 141.73 | **1.37x** | `re-frame/router.cljc:487` (`parent-id` = `nil`) |
+| `ua-m4` | 49.71 | **22.39** | 50.10 | **2.23x** | 2-step `update`+`assoc` on 4-key array map |
+| `uu-m4` | 59.16 | **26.47** | 59.67 | **2.24x** | 2-step `update`+`update` on 4-key array map |
+| `mixed4-m4` | 101.64 | **34.20** | 99.62 | **2.94x** | 4-step `assoc`+`update`+`assoc`+`update` on 4-key array map |
+| `mixed4-m12` | 119.30 | **51.19** | 120.36 | **2.34x** | 4-step mixed chain on 12-keyword array map |
+| `mixed2-nil` | 126.27 | **88.00** | 130.06 | **1.46x** | 2-step `assoc`+`update` (`inc0 = (fnil inc 0)`) on `nil` |
+| `ctrl-hash24-ua` | 111.40 | **106.91** | 111.22 | **1.04x** | hash-mode 24-key map (takes fast lane, saves `update` dispatch) |
+| `ctrl-hash24-mixed4` | 252.98 | **243.76** | 252.68 | **1.04x** | hash-mode 24-key map, 4-step mixed |
+| `ctrl-rec-field` | 79.64 | 81.22 | 79.39 | 0.98x | miss control: `defrecord` declared fields (misses `pmap?` inline) |
+| `ctrl-rec-ext` | 126.46 | 128.22 | 126.13 | 0.98x | miss control: `defrecord` ext keys (misses `pmap?` inline) |
+| `ctrl-sorted-ua` | 353.41 | 355.85 | 352.53 | 0.99x | miss control: `sorted-map` (misses `pmap?` inline) |
+| `ctrl-custom-ua` | 193.51 | 191.86 | 190.56 | 1.00x | miss control: custom `Associative` `deftype` (misses `pmap?` inline) |
 
 ### Allocation checks (compiled Clojure fns, `bytes-allocated` over 1,000 iterations)
 
@@ -1071,7 +1097,7 @@ Every receiver in `bench43` asserts its runtime class at startup via `(.getName 
 
 ### Gate status
 
-- **Reminted worktree (filtered full `SHARD-POOL`, 205 of 208 targets):** excluded the three pre-existing host environmental failures (`certify` [requires JDK 21], `lazyretain` [requires GNU `timeout`], and `filelock` [pre-existing `starved after 10000 cycles` failure]). Ran `200` parallel targets (`-j8`) + `devbootsmoke`/`gatebootsmoke` (`-j1`) + `fastpathratio`/`stdlibratio`/`pmoverhead` (`-j1`) — all **205/205** targets exited 0, including `selfhost`, `gambitseedcheck`, `gambitgencheck`, `gambittwins`, `emittedheads` (295 heads, 0 shadowable), `inline` (483/483, including 60 new `jolt-43` positive/non-direct-link/precedence/negative/`with-redefs`/`alter-var-root`/throwing/eval-order/`^:once`/shadowing/receiver-fallback/`loop-maps`/`types.clj`/400-trial randomized differential tests), `irvalidate`, `arraymap` (130/130), `recfast` (518/518), `recfold` (13/13), `oparity`, `directlink`, `cts` (6094 pass, matches baseline), `unit`, `corpus`, `footprint`, `vfaslceiling`, `portcheck`, `deadhost`, `recordshadow`, and `attributioncheck`.
-- **Mutant-checked tests (`test/chez/inline-test.ss`):** Parent commit `60de4931e` fails all 20 new emitted-head/precedence/demotion-fusion assertions (`463/483`); M1 (drop duplicate-key check) fails 9 assertions (`474/483`); M2 (drop `jolt-loop-map-update?` root guard) fails 22 assertions (`461/483`, including both `with-redefs` and `alter-var-root` fallback tests); M3 (drop `(or (pmap? ...) (eq? ... jolt-nil))` receiver guard) fails emitted-head + eval-order tests and throws on `[1 2]`; M4 (drop `*unfused-update-nodes*` suppression) fails 3 no-tiling assertions (`480/483`); M5 (drop `pure-edit-operand?` on later steps) fails all 9 impure/`:clear-caps` negative assertions (`474/483`).
-- **Committed tree (seeds restored per the seed rule):** `selfhost`, `gambitseedcheck`, `emittedheads` (`"pmap?"` absent from committed seed's `rt-emitted-names`), and `inline` (54 emitted-head/precedence assertions, `429/483`, covering `jolt-41`, `jolt-46`, and `jolt-43`) fail strictly for seed staleness until `make remint` (or `jolt-45`); `attributioncheck` passes on the committed tree.
+- **Reminted worktree (filtered full `SHARD-POOL`, 205 of 208 targets):** excluded the three pre-existing host environmental failures (`certify` [requires JDK 21], `lazyretain` [requires GNU `timeout`], and `filelock` [pre-existing `starved after 10000 cycles` failure]). Ran `200` parallel targets (`-j8`) + `devbootsmoke`/`gatebootsmoke` (`-j1`) + `fastpathratio`/`stdlibratio`/`pmoverhead` (`-j1`) — all **205/205** targets exited 0, including `selfhost`, `gambitseedcheck`, `gambitgencheck`, `gambittwins`, `emittedheads` (295 heads, 0 shadowable), `inline` (484/484, including 61 `jolt-43` tests: positive/non-direct-link/precedence/nesting/negative/`with-redefs`/`alter-var-root`/throwing/eval-order/`^:once`/shadowing/receiver-fallback/`loop-maps`/`types.clj`/400-trial randomized differential tests), `irvalidate`, `arraymap` (130/130), `recfast` (518/518), `recfold` (13/13), `oparity` (304/304), `directlink` (32/32), `cts` (6094 pass, matches baseline), `unit`, `corpus`, `footprint`, `vfaslceiling`, `portcheck`, `deadhost`, `recordshadow`, and `attributioncheck`.
+- **Mutant-checked tests (`test/chez/inline-test.ss`):** Parent commit `60de4931e` fails all 20 emitted-head/precedence/demotion-fusion assertions (`463/483` pre-patch); M1 (drop duplicate-key check) fails 9 assertions (`474/483`); M2 (drop `jolt-loop-map-update?` root guard) fails 22 assertions (`461/483`, including both `with-redefs` and `alter-var-root` fallback tests); M3 (drop `(or (pmap? ...) (eq? ... jolt-nil))` receiver guard) fails emitted-head + eval-order tests and throws on `[1 2]`; M4 (drop no-tiling suppression) fails 3 no-tiling assertions (`480/483`); M5 (drop `pure-edit-operand?` on later steps) fails all 9 impure/`:clear-caps` negative assertions (`474/483`); M6 (nesting mutant: drop `*mixed-fallback?*` around the fallback emit while marking outer fallback steps `:mixed-unfused`, remint) fails the new nesting test (`chain nested in a fused chain's updater fuses once, not once per enclosing lane`, `483/484`) and blows depth-6 emitted bytes up to `27,327` bytes (`63` guards) vs `6,908` bytes (`6` guards) with the fix.
+- **Committed tree (seeds restored per the seed rule):** `selfhost`, `gambitseedcheck`, `emittedheads` (`"pmap?"` absent from committed seed's `rt-emitted-names`), and `inline` (emitted-head/precedence/nesting assertions covering `jolt-41`, `jolt-46`, and `jolt-43`) fail strictly for seed staleness until `make remint` (or `jolt-45`); `attributioncheck` passes on the committed tree.
 - **Gambit did not run:** `gambitboot`, `gambitcheck`, `gambiteval`, `gambitkernel`, `gambitprofile`, `gambitstatics`, `gambitunbound`, and `gambitvars` skipped because Gambit is not installed on this machine.
