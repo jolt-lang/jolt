@@ -2487,6 +2487,13 @@
       (and (= 1 (count-sub e-nested "(jolt-loop-map-update? "))
            (= 1 (count-sub e-nested "(jolt-assoc ")))))
 
+;; A chain nested in an updater or operand of a fused chain is emitted in both
+;; lanes of the outer chain. It fuses only in the fast lane, so emitted size
+;; stays linear in nesting depth instead of doubling per level.
+(let ((e (code-part (emitf "u" "(fn [m f] (-> m (assoc :a 1) (update :b (fn [v] (-> v (assoc :p 1) (update :q f))))))"))))
+  (ok "chain nested in a fused chain's updater fuses once, not once per enclosing lane"
+      (= 2 (count-sub e "(jolt-loop-map-update? "))))
+
 ;; Ineligible mixed chains must NOT emit the mixed guard/fusion (and must not tile).
 (for-each
   (lambda (pair)

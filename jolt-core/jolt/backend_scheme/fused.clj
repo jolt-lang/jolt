@@ -238,11 +238,13 @@
            (and (inline/pure-call-head? node)
                 (every? pure-edit-operand? (:args node))))))
 
-(defn- assoc-chain [node]
-  (loop [cur node steps []]
-    (if (assoc-call? cur)
+(defn- edit-chain
+  "[base steps] for the nested calls under NODE that satisfy STEP?, innermost first."
+  [step? node]
+  (loop [cur node steps ()]
+    (if (step? cur)
       (recur (first (:args cur)) (conj steps cur))
-      [cur (vec (rseq steps))])))
+      [cur (vec steps)])))
 
 (defn- emit-assoc-native [emit node proc arg-nodes tail?]
   (let [args (mapv emit arg-nodes)
@@ -255,7 +257,7 @@
   (when (and (assoc-call? node)
              (not (some #(identical? node %) *unfused-assoc-nodes*))
              (assoc-call? (first (:args node))))
-    (let [[base steps] (assoc-chain node)
+    (let [[base steps] (edit-chain assoc-call? node)
           kv-nodes (into [] (mapcat #(subvec (:args %) 1)) steps)
           total-pairs (quot (count kv-nodes) 2)
           later-pure? (every? (fn [step]
@@ -280,152 +282,98 @@
 ;; Emit-time peephole for straight-line mixed assoc/update chains on distinct
 ;; literal keyword keys (2..4 total pairs, at least one update step).
 ;; Chez direct-link builds only (needs the linked clojure.core/update root).
-;; Precedence among the three collection-edit peepholes in emit-fused-invoke:
-;;   1. emit-assoc-update-chain (mixed chains with >=1 update, 2..4 distinct kw pairs)
-;;   2. emit-assoc-chain        (pure assoc chains, 2..4 pairs, all modes)
-;;   3. emit-dissoc-assoc-pair  (single dissoc/assoc pairs, all modes; defers to
-;;                               emit-assoc-chain and eligible emit-assoc-update-chain)
-;; Rejected mixed chains suppress partial mixed tiling via *unfused-update-nodes*
-;; while still allowing pure assoc chains or dissoc/assoc pairs on sub-expressions.
-(def ^:private ^:dynamic *unfused-update-nodes* nil)
+;; Precedence in emit-fused-invoke: this rule, then emit-assoc-chain, then
+;; emit-dissoc-assoc-pair (which defers to both chain rules). A rejected mixed
+;; chain is re-emitted with its steps flagged :mixed-unfused, so no prefix of
+;; it fuses (no tiling) while the other two rules still see it. Inside a
+;; fallback lane nothing is fused: it is the miss path, and fusing there would
+;; emit every nested chain in both lanes of every enclosing chain.
+(def ^:private ^:dynamic *mixed-fallback?* false)
 
 (defn- kw-const? [node]
-  (and (= :const (:op node)) (keyword? (:val node)) (not (:clear-caps node))))
+  (and (= :const (:op node)) (keyword? (:val node))))
 
 (defn- update-call? [node]
   (let [f (:fn node)
-        args (:args node)]
+        n (count (:args node))]
     (and (= :invoke (:op node))
          (not (:clear-caps node))
-         (not (:loop-map-update node))
-         (not (or (:proto node) (:devirt-type node) (:prim-op node)))
-         (= :var (:op f))
-         (= "clojure.core" (:ns f))
-         (= "update" (:name f))
-         (not (:clear-caps f))
-         (>= (count args) 3)
-         (string? (seed-callable? nil "clojure.core" "update" (count args))))))
+         (= :var (:op f)) (= "clojure.core" (:ns f)) (= "update" (:name f))
+         (>= n 3)
+         (string? (seed-callable? nil "clojure.core" "update" n)))))
 
-(defn- mixed-step-kind [node]
-  (cond
-    (update-call? node) :update
-    (assoc-call? node) :assoc
-    :else nil))
+(defn- mixed-step? [node]
+  (and (not (:mixed-unfused node))
+       (or (update-call? node) (assoc-call? node))))
 
-(defn- assoc-update-chain [node]
-  (loop [cur node steps []]
-    (if (mixed-step-kind cur)
-      (recur (first (:args cur)) (conj steps cur))
-      [cur (vec (rseq steps))])))
+(defn- step-entries
+  "One entry per pair STEP writes, or nil when a later step has an operand
+  that may not be evaluated ahead of the earlier edits."
+  [first? step]
+  (let [operands (rest (:args step))
+        ok? #(or first? (pure-edit-operand? %))]
+    (if (update-call? step)
+      (let [[k f & extras] operands]
+        (when (every? ok? extras) [{:k k :f f :extras extras :step step}]))
+      (when (every? ok? (take-nth 2 (rest operands)))
+        (mapv (fn [[k v]] {:k k :v v}) (partition 2 operands))))))
 
-(defn- assoc-update-entries [steps]
-  (let [res (reduce
-              (fn [{:keys [i out seen]} step]
-                (let [first? (zero? i)]
-                  (if (update-call? step)
-                    (let [args (:args step)
-                          k-node (nth args 1)
-                          f-node (nth args 2)
-                          extras (subvec args 3)]
-                      (if (and (kw-const? k-node)
-                               (not (contains? seen (:val k-node)))
-                               (or first? (every? pure-edit-operand? extras)))
-                        {:i (inc i)
-                         :out (conj out {:kind :update :step step :k-node k-node :f-node f-node :extras extras})
-                         :seen (conj seen (:val k-node))}
-                        (reduced nil)))
-                    (let [kvs (subvec (:args step) 1)
-                          step-res (reduce
-                                     (fn [[o s] [k-node v-node]]
-                                       (if (and (kw-const? k-node)
-                                                (not (contains? s (:val k-node)))
-                                                (or first? (pure-edit-operand? v-node)))
-                                         [(conj o {:kind :assoc :k-node k-node :v-node v-node})
-                                          (conj s (:val k-node))]
-                                         (reduced nil)))
-                                     [out seen]
-                                     (partition 2 kvs))]
-                      (if step-res
-                        {:i (inc i) :out (first step-res) :seen (second step-res)}
-                        (reduced nil))))))
-              {:i 0 :out [] :seen #{}}
-              steps)]
-    (when (and res (<= 2 (count (:out res)) 4))
-      (:out res))))
+(defn- mixed-chain
+  "For a node heading a mixed chain: [base steps entries], with entries nil
+  when the chain must stay unfused. nil for any other node."
+  [node]
+  (when (and (chez-linked-fast-path?) (not *mixed-fallback?*)
+             (mixed-step? node) (mixed-step? (first (:args node))))
+    (let [[base steps] (edit-chain mixed-step? node)]
+      (when (some update-call? steps)
+        (let [per-step (map-indexed #(step-entries (zero? %1) %2) steps)
+              entries (into [] cat per-step)]
+          [base steps
+           (when (and (every? some? per-step)
+                      (<= 2 (count entries) 4)
+                      (every? (comp kw-const? :k) entries)
+                      (apply distinct? (map (comp :val :k) entries)))
+             entries)])))))
 
-(defn- eligible-assoc-update-chain? [node]
-  (and (chez-linked-fast-path?)
-       (mixed-step-kind node)
-       (not (some #(identical? node %) *unfused-update-nodes*))
-       (mixed-step-kind (first (:args node)))
-       (let [[_ steps] (assoc-update-chain node)]
-         (boolean (and (some update-call? steps)
-                       (assoc-update-entries steps))))))
-
-(defn- trivial-step-val? [node]
-  (and (not (:clear-caps node)) (#{:local :const} (:op node))))
-
-(defn- emit-assoc-update-fast [emit node m-name entries tail?]
-  (let [n (count entries)]
-    (loop [i 0 binds [] kv-args []]
-      (if (= i n)
-        (let [call (emit-fused-site-call node tail? "jolt-assoc" (into [m-name] kv-args))]
-          (if (seq binds)
-            (str "(let* (" (str/join " " (map (fn [[t e]] (str "(" t " " e ")")) binds)) ") " call ")")
-            call))
-        (let [entry (nth entries i)
-              k-str (emit (:k-node entry))]
-          (if (= :assoc (:kind entry))
-            (let [v-node (:v-node entry)
-                  v-str (emit v-node)]
-              (if (or (trivial-step-val? v-node) (and (empty? binds) (= i (dec n))))
-                (recur (inc i) binds (conj kv-args k-str v-str))
-                (let [t (fresh-label "_mu$")]
-                  (recur (inc i) (conj binds [t v-str]) (conj kv-args k-str t)))))
-            (let [step (:step entry)
-                  read-node {:op :const :literal-binding (str "(jolt-get " m-name " " k-str ")")}
-                  call-node {:op :invoke :fn (:f-node entry)
-                             :args (into [read-node] (:extras entry))
-                             :line (:line step)
-                             :inline-chain (:inline-chain step)}
-                  v-str (emit call-node)]
-              (if (and (empty? binds) (= i (dec n)))
-                (recur (inc i) binds (conj kv-args k-str v-str))
-                (let [t (fresh-label "_mu$")]
-                  (recur (inc i) (conj binds [t v-str]) (conj kv-args k-str t)))))))))))
+(defn- rebase-steps
+  "STEPS re-nested onto BASE, each step passed through MARK."
+  [base steps mark]
+  (rest (reductions #(mark (assoc-in %2 [:args 0] %1)) base steps)))
 
 (defn- emit-assoc-update-chain [emit node tail?]
-  (when (and (chez-linked-fast-path?)
-             (mixed-step-kind node)
-             (not (some #(identical? node %) *unfused-update-nodes*))
-             (mixed-step-kind (first (:args node))))
-    (let [[base steps] (assoc-update-chain node)]
-      (when (some update-call? steps)
-        (if-let [entries (assoc-update-entries steps)]
-          (let [linked (seed-callable? nil "clojure.core" "update" 3)
-                bind-m? (not (and (= :local (:op base)) (not (:clear-caps base))))
-                m-name (if bind-m? (fresh-label "_mu$") (munge-name (:name base)))
-                m-ref {:op :const :literal-binding m-name}
-                fast (emit-assoc-update-fast emit node m-name entries tail?)
-                [fallback-node fallback-steps]
-                (reduce (fn [[inner acc] step]
-                          (let [s (assoc-in step [:args 0] inner)]
-                            [s (conj acc s)]))
-                        [m-ref []]
-                        steps)
-                fallback (binding [*unfused-update-nodes* (into (or *unfused-update-nodes* []) fallback-steps)
-                                   *unfused-assoc-nodes* (into (or *unfused-assoc-nodes* []) fallback-steps)
-                                   session/*tail?* tail?]
-                           (emit fallback-node))
-                guard (str "(and (or (pmap? " m-name ") (eq? " m-name " jolt-nil))"
-                           " (jolt-loop-map-update? " linked "))")
-                body (str "(if " guard " " fast " " fallback ")")]
-            (if bind-m?
-              (str "(let ((" m-name " " (emit base) ")) " body ")")
-              body))
-          (binding [*unfused-update-nodes* (into (or *unfused-update-nodes* []) steps)
-                    session/*tail?* tail?]
-            (emit node)))))))
+  (when-let [[base steps entries] (mixed-chain node)]
+    (if-not entries
+      (binding [session/*tail?* tail?]
+        (emit (last (rebase-steps base steps #(assoc % :mixed-unfused true)))))
+      (let [local? (and (= :local (:op base)) (not (:clear-caps base)))
+            taken (into #{} (comp (filter map?) (filter #(= :local (:op %))) (map :name))
+                        (tree-seq coll? seq node))
+            nm (if local? (:name base)
+                   (first (remove taken (repeatedly #(fresh-label "_mu$")))))
+            m (munge-name nm)
+            m-ref (ir/local nm)
+            fast (emit-assoc-native
+                   emit node "jolt-assoc"
+                   (into [m-ref]
+                         (mapcat (fn [{:keys [k v f extras step]}]
+                                   [k (if f
+                                        (assoc (select-keys step [:pos :inline-chain])
+                                               :op :invoke :fn f
+                                               :args (into [(assoc (ir/invoke (ir/host-ref "get") [m-ref k])
+                                                                   :runtime-call "jolt-get")]
+                                                           extras))
+                                        v)]))
+                         entries)
+                   tail?)
+            fallback (binding [*mixed-fallback?* true
+                               *unfused-assoc-nodes* (into (or *unfused-assoc-nodes* [])
+                                                           (rebase-steps m-ref steps identity))
+                               session/*tail?* tail?]
+                       (emit (peek *unfused-assoc-nodes*)))
+            body (str "(if (and (or (pmap? " m ") (eq? " m " jolt-nil))"
+                      " (jolt-loop-map-update? " (seed-callable? nil "clojure.core" "update" 3) "))"
+                      " " fast " " fallback ")")]
+        (if local? body (str "(let ((" m " " (emit base) ")) " body ")"))))))
 
 ;; Emit-time peephole for adjacent single-key dissoc / single-pair assoc pairs.
 ;; Collapses (assoc (dissoc m dk) ak av) -> (jolt-dissoc1-assoc1 m dk ak av) and
@@ -448,7 +396,7 @@
     (let [[inner dk] (:args node)]
       (when (and (assoc1-call? inner)
                  (not (assoc-call? (first (:args inner))))
-                 (not (eligible-assoc-update-chain? inner))
+                 (not (peek (mixed-chain inner)))
                  (pure-edit-operand? dk))
         (let [[m ak av] (:args inner)]
           (emit-assoc-native emit node "jolt-assoc1-dissoc1" [m ak av dk] tail?))))))
