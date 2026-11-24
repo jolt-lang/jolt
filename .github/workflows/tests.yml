@@ -63,8 +63,18 @@ jobs:
         # binaries per app until it exits) ran it out with EDQUOT.
         run: |
           # TEMP DIAGNOSTIC (revert before merge): stream output, watch memory.
-          (while sleep 30; do echo "MEMWATCH $(date -u +%T) $(free -m | sed -n 2p)"; ps -eo rss,etimes,args --sort=-rss | head -4 | cut -c1-200 | sed 's/^/MEMWATCH   /'; done) &
-          TMPDIR="$RUNNER_TEMP" make CHEZ=/opt/chez/bin/chez GAMBIT_PREFIX=/opt/gambit -j"$(nproc)" ci-shard SHARD-SET=test SHARD=${{ matrix.shard }} SHARDS=4
+          (while sleep 10; do
+             av=$(free -m | awk 'NR==2{print $7}')
+             echo "MEMWATCH $(date -u +%T) avail=${av}MB"
+             ps -eo pid,rss,etimes,args --sort=-rss | sed -n 2,4p | cut -c1-240 | sed 's/^/MEMWATCH   /'
+             if [ "$av" -lt 1500 ]; then
+               top=$(ps -eo pid --sort=-rss --no-headers | head -1)
+               echo "MEMWATCH KILLING $(ps -o pid,rss,args -p $top | tail -1 | cut -c1-400)"
+               ps -eo pid,ppid,rss,etimes,args --sort=-rss | head -15 | cut -c1-300 | sed 's/^/MEMWATCH TOP /'
+               kill -9 $top
+             fi
+           done) &
+          timeout 55m env TMPDIR="$RUNNER_TEMP" make CHEZ=/opt/chez/bin/chez GAMBIT_PREFIX=/opt/gambit -j"$(nproc)" ci-shard SHARD-SET=test SHARD=${{ matrix.shard }} SHARDS=4 || { echo "MEMWATCH make exit $?"; ps -eo pid,ppid,rss,etimes,args --sort=-etimes | head -30 | cut -c1-300; exit 1; }
 
   # The check that says the whole gate passed, under the name the single job
   # had, so anything that waits on "test" (a required status check, a person)
