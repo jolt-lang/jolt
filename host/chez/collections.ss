@@ -2028,15 +2028,48 @@
                       (((caar as) coll) ((cdar as) coll x))
                       (else (loop (cdr as))))))))
 ;; (conj) -> []; (conj nil a b ...) builds a list (conj prepending -> (b a)).
-(define (jolt-conj . args)
-  (if (null? args)
-      (jolt-vector)
-      (let ((coll (car args)) (xs (cdr args)))
-        (cond
-          ;; 1-arity returns the coll untouched — (conj nil) is nil
-          ((null? xs) coll)
-          ((jolt-nil? coll) (fold-left jolt-conj1 jolt-empty-list xs))
-          (else (meta-carry-conj coll (fold-left jolt-conj1 coll xs)))))))
+;; Multi-arg conj (2 and 3 elements, covering 89.8% of corpus multi-arg sites)
+;; takes a single-copy fast path on persistent vectors when the tail has room,
+;; using sa-vector-append (block copy, no zero-fill or barriered loop) and
+;; preserving pv-derived-ent (MapEntry decays to plain vector, SubVector stays
+;; subvec) and pvec-meta directly. Also ships a 1-element clause for
+;; value-position callers (swap!/update). Non-vector receivers and tail-full
+;; vectors fall back through chained jolt-conj1 / pvec-conj with a single
+;; meta-carry-conj (identical to the variadic fold-left).
+(define jolt-conj
+  (case-lambda
+    ((coll a b)
+     (if (pvec? coll)
+         (let* ((tail (pvec-tail coll)) (tl (vector-length tail)))
+           (if (fx<=? tl 30)
+               (%mk-pvec (fx+ (pvec-cnt coll) 2) (pvec-shift coll) (pvec-root coll)
+                         (if (fx=? tl 0) (vector a b) (sa-vector-append tail (vector a b)))
+                         (pv-derived-ent coll) 0 (pvec-meta coll))
+               (meta-carry-conj coll (pvec-conj (pvec-conj coll a) b))))
+         (if (jolt-nil? coll)
+             (jolt-conj1 (jolt-conj1 jolt-empty-list a) b)
+             (meta-carry-conj coll (jolt-conj1 (jolt-conj1 coll a) b)))))
+    ((coll x)
+     (if (jolt-nil? coll)
+         (jolt-conj1 jolt-empty-list x)
+         (meta-carry-conj coll (jolt-conj1 coll x))))
+    ((coll a b c)
+     (if (pvec? coll)
+         (let* ((tail (pvec-tail coll)) (tl (vector-length tail)))
+           (if (fx<=? tl 29)
+               (%mk-pvec (fx+ (pvec-cnt coll) 3) (pvec-shift coll) (pvec-root coll)
+                         (if (fx=? tl 0) (vector a b c) (sa-vector-append tail (vector a b c)))
+                         (pv-derived-ent coll) 0 (pvec-meta coll))
+               (meta-carry-conj coll (pvec-conj (pvec-conj (pvec-conj coll a) b) c))))
+         (if (jolt-nil? coll)
+             (jolt-conj1 (jolt-conj1 (jolt-conj1 jolt-empty-list a) b) c)
+             (meta-carry-conj coll (jolt-conj1 (jolt-conj1 (jolt-conj1 coll a) b) c)))))
+    ((coll) coll)
+    (() (jolt-vector))
+    ((coll . xs)
+     (if (jolt-nil? coll)
+         (fold-left jolt-conj1 jolt-empty-list xs)
+         (meta-carry-conj coll (fold-left jolt-conj1 coll xs))))))
 (define jolt-conj2 (lambda (coll x)
   (if (jolt-nil? coll)
       (jolt-conj1 jolt-empty-list x)

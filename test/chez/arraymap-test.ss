@@ -792,5 +792,154 @@
   (ok "all-no-op 2/3/4-pair assoc allocates 0 extra bytes"
       (and (= b2-noop b-base) (= b3-noop b-base) (= b4-noop b-base))))
 
+;; --- multi-arg conj (2 and 3 elements) single-copy fast path on vectors ------
+(define (pvec-same-result? a b)
+  (and (pvec? a) (pvec? b)
+       (fx=? (pvec-cnt a) (pvec-cnt b))
+       (fx=? (pvec-shift a) (pvec-shift b))
+       (eq? (pvec-ent a) (pvec-ent b))
+       (eq? (rrbnode? (pvec-root a)) (rrbnode? (pvec-root b)))
+       (fx=? (vector-length (pvec-tail a)) (vector-length (pvec-tail b)))
+       (jolt=2 a b)
+       (jolt=2 (jolt-meta a) (jolt-meta b))))
+
+;; Exhaustive small matrix for multi-arg conj (2 and 3 items) vs left fold of
+;; jolt-conj2 across plain vectors (0..35, 60..66, 1053..1058), with-meta
+;; vectors, subvectors (1..33), RRB vectors (via pvec-catvec, tail lengths 0..32),
+;; and MapEntry.
+(let ()
+  (define (mk-vec n)
+    (let lp ((i 0) (v (jolt-vector)))
+      (if (fx=? i n) v (lp (fx+ i 1) (pvec-conj v i)))))
+  (define cases 0)
+  (define conj-matrix-ok #t)
+  (define (check-vec label v)
+    (let ((g2 (jolt-conj v 'x 'y))
+          (w2 (jolt-conj2 (jolt-conj2 v 'x) 'y))
+          (g3 (jolt-conj v 'x 'y 'z))
+          (w3 (jolt-conj2 (jolt-conj2 (jolt-conj2 v 'x) 'y) 'z)))
+      (set! cases (fx+ cases 2))
+      (unless (and (pvec-same-result? g2 w2) (pvec-same-result? g3 w3))
+        (when conj-matrix-ok
+          (printf "  conj matrix mismatch (~a, cnt=~a, tl=~a, ent=~a)\n"
+                  label (pvec-cnt v) (vector-length (pvec-tail v)) (pvec-ent v))
+          (set! conj-matrix-ok #f)))))
+  ;; Plain and with-meta vectors across tail boundaries 0..35, 60..66, 1053..1058
+  (for-each
+    (lambda (n)
+      (let ((v (mk-vec n)))
+        (check-vec (format "plain-~a" n) v)
+        (check-vec (format "meta-~a" n) (jolt-with-meta v (make-pmap (vector (kw "n") n) 1)))))
+    (append (iota 36) '(60 61 62 63 64 65 66 1053 1054 1055 1056 1057 1058)))
+  ;; Subvectors across tail lengths 1..33 (plain and with-meta)
+  (let ((big (mk-vec 70)))
+    (do ((n 1 (fx+ n 1))) ((fx>? n 33))
+      (let ((sv (pvec-as-subvec (pvec-slice big 3 (fx+ 3 n)))))
+        (check-vec (format "subvec-~a" n) sv)
+        (check-vec (format "subvec-meta-~a" n) (jolt-with-meta sv (make-pmap (vector (kw "sv") n) 1))))))
+  ;; RRB vectors across tail lengths 1..32 (built by catvec of non-32-aligned prefix + suffix)
+  (let ((left (mk-vec 37)))
+    (do ((rlen 0 (fx+ rlen 1))) ((fx>? rlen 33))
+      (let ((rv (pvec-catvec left (mk-vec rlen))))
+        (check-vec (format "rrb-~a" rlen) rv)
+        (check-vec (format "rrb-meta-~a" rlen) (jolt-with-meta rv (make-pmap (vector (kw "rrb") rlen) 1))))))
+  ;; MapEntry receiver (must decay to plain vector)
+  (check-vec "map-entry" (make-map-entry (kw "k") 42))
+  (printf "  exhaustive multi-arg conj matrix: ~a cases checked\n" cases)
+  (ok "exhaustive multi-arg conj matrix (plain/meta/subvec/RRB/MapEntry across tail boundaries) matches jolt-conj2 fold"
+      conj-matrix-ok))
+
+;; Directed conj receiver tests: MapEntry, subvector, RRB, nil, list, sets, maps, defrecord, queue, custom deftype
+(ok "conj on MapEntry yields plain vector (not MapEntry) for 2 and 3 elements"
+    (let* ((e (evv "(first {:a 1})"))
+           (r2 (jolt-conj e 2 3))
+           (r3 (jolt-conj e 2 3 4)))
+      (and (eq? (pvec-ent e) #t)
+           (eq? (pvec-ent r2) #f) (eq? (pvec-ent r3) #f)
+           (jolt=2 r2 (evv "[:a 1 2 3]"))
+           (jolt=2 r3 (evv "[:a 1 2 3 4]")))))
+(ok "conj on subvector stays a subvector and carries metadata for 2 and 3 elements"
+    (let* ((sv (evv "(with-meta (subvec [10 20 30 40 50] 1 4) {:tag :sv})"))
+           (r2 (jolt-conj sv 60 70))
+           (r3 (jolt-conj sv 60 70 80)))
+      (and (eq? (pvec-ent r2) 'subvec) (eq? (pvec-ent r3) 'subvec)
+           (jolt=2 r2 (evv "[20 30 40 60 70]"))
+           (jolt=2 r3 (evv "[20 30 40 60 70 80]"))
+           (jolt=2 (jolt-meta r2) (jolt-meta sv))
+           (jolt=2 (jolt-meta r3) (jolt-meta sv)))))
+(is "multi-arg conj on nil, list, sets, maps, queue, defrecord, and value-position callers"
+    "(pr-str
+       (let [l (with-meta '(1 2) {:l 1})
+             el (with-meta '() {:el 1})
+             s (with-meta #{1 2} {:s 1})
+             ss (with-meta (sorted-set 3 1) {:ss 1})
+             am (with-meta {:a 1} {:am 1})
+             hm (with-meta (hash-map :a 1) {:hm 1})
+             sm (with-meta (sorted-map :b 2) {:sm 1})
+             q (conj clojure.lang.PersistentQueue/EMPTY 1 2)
+             q3 (conj q 3 4 5)
+             a (atom [1 2])
+             _ (swap! a conj 3 4)
+             _ (swap! a conj 5 6 7)
+             _ (swap! a conj 8)
+             u (update {:v [1]} :v conj 2 3)]
+         [(conj)
+          (conj nil)
+          (conj nil 1 2)
+          (conj nil 1 2 3)
+          (conj l 3 4) (meta (conj l 3 4))
+          (conj l 3 4 5) (meta (conj l 3 4 5))
+          (conj el 1 2) (meta (conj el 1 2))
+          (= #{1 2 3 4} (conj s 3 4)) (meta (conj s 3 4))
+          (= #{1 2 3 4 5} (conj s 3 4 5)) (meta (conj s 3 4 5))
+          (seq (conj ss 2 0)) (meta (conj ss 2 0))
+          (conj am [:b 2] [:c 3]) (meta (conj am [:b 2] [:c 3]))
+          (conj am [:b 2] nil {:c 3}) (meta (conj am [:b 2] nil {:c 3}))
+          (= {:a 1 :b 2 :c 3} (conj hm [:b 2] [:c 3])) (meta (conj hm [:b 2] [:c 3]))
+          (keys (conj sm [:a 1] [:c 3])) (meta (conj sm [:a 1] [:c 3]))
+          (vec q) (vec q3)
+          @a u
+          (conj [1] 2 3 4 5)]))"
+    "[[] nil (2 1) (3 2 1) (4 3 1 2) {:l 1} (5 4 3 1 2) {:l 1} (2 1) {:el 1} true {:s 1} true {:s 1} (0 1 2 3) {:ss 1} {:a 1, :b 2, :c 3} {:am 1} {:a 1, :b 2, :c 3} {:am 1} true {:hm 1} (:a :b :c) {:sm 1} [1 2] [1 2 3 4 5] [1 2 3 4 5 6 7 8] {:v [1 2 3]} [1 2 3 4 5]]")
+(is "multi-arg conj on defrecord and custom IPersistentCollection deftype"
+    "(do (defrecord ConjRec [a b])
+         (deftype CustomConj [xs log]
+           clojure.lang.IPersistentCollection
+           (cons [_ x]
+             (swap! log conj x)
+             (CustomConj. (conj xs x) log))
+           (count [_] (count xs))
+           (empty [_] (CustomConj. [] log))
+           (equiv [this o] (identical? this o))
+           clojure.lang.Seqable
+           (seq [_] (seq xs)))
+         (let [r (with-meta (->ConjRec 1 2) {:rm 1})
+               r2 (conj r [:c 3] [:d 4])
+               r3 (conj r [:c 3] [:d 4] [:e 5])
+               log (atom [])
+               c (CustomConj. [] log)
+               c2 (conj c 10 20)
+               c3 (conj c2 30 40 50)]
+           [[(:c r2) (:d r2) (meta r2) (instance? ConjRec r2)]
+            [(:c r3) (:d r3) (:e r3) (meta r3) (instance? ConjRec r3)]
+            (vec (seq c3)) @log]))"
+    "[[3 4 {:rm 1} true] [3 4 5 {:rm 1} true] [10 20 30 40 50] [10 20 30 40 50]]")
+
+;; Reachability & allocation checks: compiled direct multi-arg conj reaches the
+;; case-lambda fixed clauses and allocates a single output tail + pvec.
+(let* ((v20 (evv "(vec (range 20))"))
+       (fc2 (evv "(fn [v] (conj v 101 102))"))
+       (fc3 (evv "(fn [v] (conj v 101 102 103))"))
+       (bc2-clj  (bytes-of (lambda () (jolt-invoke1 fc2 v20))))
+       (bc3-clj  (bytes-of (lambda () (jolt-invoke1 fc3 v20))))
+       (bc2-fold (bytes-of (lambda () (jolt-conj2 (jolt-conj2 v20 101) 102))))
+       (bc3-fold (bytes-of (lambda () (jolt-conj2 (jolt-conj2 (jolt-conj2 v20 101) 102) 103)))))
+  (printf "  compiled multi-arg conj bytes on 20-elem vec: 2-arg ~a vs ~a, 3-arg ~a vs ~a\n"
+          bc2-clj bc2-fold bc3-clj bc3-fold)
+  (ok "compiled (fn [v] (conj v 101 102)) reaches single-copy fast path"
+      (< bc2-clj (- bc2-fold 128)))
+  (ok "compiled (fn [v] (conj v 101 102 103)) reaches single-copy fast path"
+      (< (* 2 bc3-clj) bc3-fold)))
+
 (printf "arraymap-test: ~a/~a passed\n" (- total fails) total)
 (exit (if (= fails 0) 0 1))
