@@ -4,7 +4,7 @@
 ;;   chez --script host/chez/cli.ss test/chez/sync-classes-test.clj
 (ns sync-classes-test
   (:require [jolt.fibers :as f])
-  (:import [java.util.concurrent Semaphore TimeUnit]
+  (:import [java.util.concurrent Semaphore CyclicBarrier TimeUnit]
            [java.util.concurrent.locks ReentrantReadWriteLock]
            [java.util.concurrent.atomic AtomicLongArray AtomicIntegerArray AtomicLong]))
 
@@ -171,6 +171,26 @@
                      (.updateAndGet b (mod (+ i n) 4) (fn [x] (+ x 2))))))
     (ok [kind "AtomicLongArray: no lost increment"] (= [1000 1000 1000 1000] (mapv #(.get a %) (range 4))))
     (ok [kind "AtomicIntegerArray: no lost update"] (= 8000 (reduce + (map #(.get b %) (range 4)))))))
+
+;; --- CyclicBarrier -----------------------------------------------------------------
+;; 24 parties is more than the carriers, so a fiber that awaits has to park and
+;; give its carrier up or the last arrivals never get to run.
+(doseq [[kind run] [[:threads run-threads] [:fibers run-fibers]]]
+  (let [trips (AtomicLong. 0)
+        idx (atom [])
+        b2 (CyclicBarrier. 24 #(.incrementAndGet trips))]
+    (run 24 (fn [_] (dotimes [_ 3] (let [i (.await b2)] (swap! idx conj i)))))
+    (ok [kind "CyclicBarrier: one action per trip"] (= 3 (.get trips)))
+    (ok [kind "CyclicBarrier: each round hands out every index once"]
+        (= (zipmap (range 24) (repeat 3)) (frequencies @idx)))
+    (ok [kind "CyclicBarrier: nobody left waiting"] (zero? (.getNumberWaiting b2)))))
+
+;; a fiber waiter whose timeout runs out during the action does not break the barrier
+(let [b (CyclicBarrier. 2 #(Thread/sleep 900))
+      w (f/spawn #(try (.await b 400 TimeUnit/MILLISECONDS) (catch Throwable e (.getName (class e)))))]
+  (loop [k 0] (when (and (< k 2000) (zero? (.getNumberWaiting b))) (Thread/sleep 1) (recur (inc k))))
+  (let [l (f/spawn #(.await b))]
+    (ok "CyclicBarrier: fiber waiter's timeout during the action" (= [1 0 false] [(f/join w) (f/join l) (.isBroken b)]))))
 
 (println (str "sync-classes-test: " (- @total @fails) "/" @total " passed"))
 (if (zero? @fails)
