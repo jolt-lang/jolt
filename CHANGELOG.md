@@ -5,7 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.30] - 2026-11-24
+
+`jolt.native` regions: blocks of hinted numeric code that `jolt build` compiles
+to C, with an ownership checker so arrays are never used after they are given
+away, and the same program running as Jolt under `jolt run`. Also new:
+`java.util.concurrent.CyclicBarrier` and `java.io.DataInputStream` /
+`DataOutputStream`, and optimizer passes for `set/difference`, filter/map into
+vectors, fixed-key map loops, `assoc-in` chains and `reduce-kv` map builds. The
+rest is JVM parity found reviewing this window: NaN payloads survive raw bit
+reads, division by zero and calling `nil` throw the JVM's exception and message,
+`Math/pow` follows Java's special cases, and dependency fetches wait out a
+rate-limiting Maven repository.
 
 ### Added
 
