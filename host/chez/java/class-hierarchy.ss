@@ -809,6 +809,7 @@
 (jch-register-supers! "java.io.FileNotFoundException" '("java.io.IOException"))
 (jch-register-supers! "java.io.UnsupportedEncodingException" '("java.io.IOException"))
 (jch-register-supers! "java.io.EOFException" '("java.io.IOException"))
+(jch-register-supers! "java.io.UTFDataFormatException" '("java.io.IOException"))
 ;; java.util.zip's exception classes (JDK 21 ZipException.java,
 ;; DataFormatException.java). Here, before host-static-classes.ss, so its
 ;; Throwable sweep gives them constructors.
@@ -980,12 +981,14 @@
 (jch-register-supers! "java.io.PipedInputStream" '("java.io.InputStream"))
 (jch-register-supers! "java.io.FilterInputStream" '("java.io.InputStream"))
 (jch-register-supers! "java.io.BufferedInputStream" '("java.io.FilterInputStream"))
+(jch-register-supers! "java.io.DataInputStream" '("java.io.FilterInputStream" "java.io.DataInput"))
 (jch-register-supers! "java.io.PushbackInputStream" '("java.io.FilterInputStream"))
 (jch-register-supers! "java.io.SequenceInputStream" '("java.io.InputStream"))
 (jch-register-supers! "java.io.FileOutputStream" '("java.io.OutputStream"))
 (jch-register-supers! "java.io.ByteArrayOutputStream" '("java.io.OutputStream"))
 (jch-register-supers! "java.io.PipedOutputStream" '("java.io.OutputStream"))
 (jch-register-supers! "java.io.BufferedOutputStream" '("java.io.FilterOutputStream"))
+(jch-register-supers! "java.io.DataOutputStream" '("java.io.FilterOutputStream" "java.io.DataOutput"))
 (jch-register-supers! "java.io.Reader" '("java.io.Closeable" "java.lang.Readable"))
 (jch-register-supers! "java.lang.Readable" '())
 (jch-register-supers! "java.io.Writer" '("java.io.Closeable" "java.io.Flushable" "java.lang.Appendable"))

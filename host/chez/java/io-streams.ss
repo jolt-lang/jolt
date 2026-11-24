@@ -187,6 +187,10 @@
        => (lambda (pb)
             (+ (port-buffered port)
                (jnum->exact (record-method-dispatch (pushback-inner pb) "available" jolt-nil)))))
+      ;; a DataInputStream over a stream read through dispatch: what its port
+      ;; holds plus the wrapped stream's own count
+      ((in-stream-data-inner self)
+       (+ (port-buffered port) (dis-d-available self)))
       ;; a piped stream holds its bytes in two places: what the writer has queued
       ;; and what an earlier read already pulled into the port's buffer
       (p (+ (port-buffered port) (pipe-available p)))
@@ -488,7 +492,11 @@
                    jolt-nil))
    (cons "connect" (lambda (self other) (pipe-connect! self other) jolt-nil))
    (cons "toByteArray" (lambda (self) (na-byte-array (bytevector-copy (baos-bytes self)))))
-   (cons "size" (lambda (self) (->num (bytevector-length (baos-bytes self)))))
+   (cons "size" (lambda (self)
+                  ;; a DataOutputStream counts what it was given; a
+                  ;; ByteArrayOutputStream holds it
+                  (cond ((out-stream-data-count self) => (lambda (c) (->num (unbox c))))
+                        (else (->num (bytevector-length (baos-bytes self)))))))
    (cons "reset" (lambda (self) (baos-bytes self) (vector-set! (jhost-state self) 2 (make-bytevector 0)) jolt-nil))
    (cons "toString" (lambda (self . cs) (decode-bytevector (baos-bytes self)
                                           (if (pair? cs) (list (jolt-str-render-one (car cs))) '()))))))
@@ -1581,6 +1589,508 @@
                                (let ((sub (make-bytevector len))) (bytevector-copy! bv off sub 0 len) sub))
                              bv)))
         "java.io.ByteArrayInputStream"))))
+;; --- java.io.DataInput / DataOutput --------------------------------------------
+;; DataInputStream, DataOutputStream and RandomAccessFile share one set of
+;; members, written once over two small functions: how to reach a binary input
+;; port, and how to put bytes out. Everything is big-endian, as the JDK's is.
+;;
+;; A short read is the JDK's EOFException with no message. The bytes it did get
+;; are consumed, as they are on the JVM, which reads them one at a time.
+(define (data-eof!) (throw-jvm 'EOFException jolt-nil))
+(define (data-null-check! x)
+  (when (jolt-nil? x) (throw-jvm 'NullPointerException jolt-nil)))
+;; the JDK's Objects.checkFromIndexSize on a byte[]
+(define (data-array-check! arr off len)
+  (when (jolt-nil? arr) (raf-null-array!))
+  (when (or (< off 0) (< len 0) (> (+ off len) (ja-len arr)))
+    (throw-jvm 'IndexOutOfBoundsException
+               (string-append "Range [" (number->string off) ", " (number->string off) " + "
+                              (number->string len) ") out of bounds for length "
+                              (number->string (ja-len arr))))))
+;; exactly N bytes from PORT as a bytevector, or EOFException
+;; The three operations the readers are built on, as a vector #(read1 fill
+;; after-cr) of procedures over SELF:
+;;   read1     one byte 0..255, or -1 at the end (InputStream.read())
+;;   fill      (self array off len) reads up to LEN bytes into a byte array and
+;;             answers the count, or -1 at the end (read(byte[],int,int))
+;;   after-cr  consumes the \n that follows a \r, if one does
+;; A DataInputStream over a stream it reads through dispatch calls the wrapped
+;; stream's own read() and read(byte[],int,int) exactly where the JDK does:
+;; read() for readByte, readUnsignedByte, readBoolean and readLine, and
+;; read(byte[],int,int) for every multi-byte value, repeated until the value is
+;; complete. A fill that answers 0 is not the end.
+(define (data-fill-fully! fill self arr off len)
+  (let loop ((got 0))
+    (when (fx<? got len)
+      (let ((c (fill self arr (fx+ off got) (fx- len got))))
+        (when (< c 0) (data-eof!))
+        (loop (fx+ got c))))))
+(define (data-take fill self n)
+  (let ((arr (na-bv->bytearray (make-bytevector n))))
+    (data-fill-fully! fill self arr 0 n)
+    (na-bytearray->bv arr)))
+(define (data-read-fully! fill self buf off len)
+  (data-array-check! buf off len)
+  (data-fill-fully! fill self buf off len))
+;; Over a binary input port: RandomAccessFile's, or a DataInputStream's shared
+;; with the jolt stream it wraps.
+(define (data-ops-port port-of)
+  (vector
+   (lambda (self) (let ((b (get-u8 (port-of self)))) (if (eof-object? b) -1 b)))
+   (lambda (self arr off len)
+     (let* ((tmp (make-bytevector len))
+            (n (get-bytevector-n! (port-of self) tmp 0 len)))
+       (if (or (eof-object? n) (eqv? n 0))
+           -1
+           (begin (ja-bv->bytes! tmp 0 arr off n) n))))
+   (lambda (self)
+     (let ((p (port-of self)))
+       (when (eqv? (lookahead-u8 p) 10) (get-u8 p))))))
+
+;; The UTF-16 code units of S. A jolt string holds code points, so an astral one
+;; is the surrogate pair the JVM's string holds, and writeBytes, writeChars and
+;; writeUTF all see the two units.
+(define (data-string-units s)
+  (let loop ((i (fx- (string-length s) 1)) (acc '()))
+    (if (fx<? i 0)
+        acc
+        (let ((cp (char->integer (string-ref s i))))
+          (loop (fx- i 1)
+                (if (fx<? cp #x10000)
+                    (cons cp acc)
+                    (let ((v (fx- cp #x10000)))
+                      (cons (fx+ #xD800 (fxsrl v 10))
+                            (cons (fx+ #xDC00 (fxand v #x3FF)) acc)))))))))
+(define (data-need-string x)
+  (data-null-check! x)
+  (if (string? x) x (jolt-str-render-one x)))
+
+;; writeUTF: modified UTF-8, a two-byte length and then the bytes. U+0000 is C0 80
+;; and an astral character is two three-byte surrogate units.
+(define (data-encode-utf s)
+  (let* ((units (data-string-units s))
+         (len (let loop ((us units) (n 0))
+                (if (null? us)
+                    n
+                    (loop (cdr us)
+                          (+ n (let ((u (car us)))
+                                 (cond ((and (fx>=? u 1) (fx<=? u #x7F)) 1)
+                                       ((fx>? u #x7FF) 3)
+                                       (else 2)))))))))
+    (when (> len 65535)
+      ;; the JDK names the first and last 8 UTF-16 units of the string
+      (let ((n (length units)))
+        (throw-jvm 'UTFDataFormatException
+                   (string-append "encoded string ("
+                                  (data-units->string (list-head units (min 8 n)))
+                                  "..."
+                                  (data-units->string (list-tail units (max 0 (- n 8))))
+                                  ") too long: " (number->string len) " bytes"))))
+    (let ((out (make-bytevector (+ 2 len))) (at 2))
+      (bytevector-u8-set! out 0 (fxsrl len 8))
+      (bytevector-u8-set! out 1 (fxand len #xFF))
+      (for-each
+       (lambda (u)
+         (define (put! b) (bytevector-u8-set! out at b) (set! at (fx+ at 1)))
+         (cond ((and (fx>=? u 1) (fx<=? u #x7F)) (put! u))
+               ((fx>? u #x7FF)
+                (put! (fxior #xE0 (fxand (fxsrl u 12) #x0F)))
+                (put! (fxior #x80 (fxand (fxsrl u 6) #x3F)))
+                (put! (fxior #x80 (fxand u #x3F))))
+               (else
+                (put! (fxior #xC0 (fxand (fxsrl u 6) #x1F)))
+                (put! (fxior #x80 (fxand u #x3F))))))
+       units)
+      out)))
+
+;; readUTF: DataInputStream.readUTF's decoder, with its messages. The units it
+;; produces are paired into code points, and a half with no partner becomes
+;; U+FFFD because a jolt string cannot hold one.
+(define (data-utf-malformed! at)
+  (throw-jvm 'UTFDataFormatException
+             (string-append "malformed input around byte " (number->string at))))
+(define (data-decode-utf bv)
+  (let ((n (bytevector-length bv)))
+    (define (cont? b) (fx=? (fxand b #xC0) #x80))
+    (let loop ((count 0) (units '()))
+      (if (fx>=? count n)
+          (data-units->string (reverse units))
+          (let* ((c (bytevector-u8-ref bv count)) (hi (fxsrl c 4)))
+            (cond
+              ((fx<=? hi 7) (loop (fx+ count 1) (cons c units)))
+              ((or (fx=? hi 12) (fx=? hi 13))
+               (let ((count (fx+ count 2)))
+                 (when (fx>? count n)
+                   (throw-jvm 'UTFDataFormatException "malformed input: partial character at end"))
+                 (let ((c2 (bytevector-u8-ref bv (fx- count 1))))
+                   (unless (cont? c2) (data-utf-malformed! count))
+                   (loop count (cons (fxior (fxsll (fxand c #x1F) 6) (fxand c2 #x3F)) units)))))
+              ((fx=? hi 14)
+               (let ((count (fx+ count 3)))
+                 (when (fx>? count n)
+                   (throw-jvm 'UTFDataFormatException "malformed input: partial character at end"))
+                 (let ((c2 (bytevector-u8-ref bv (fx- count 2)))
+                       (c3 (bytevector-u8-ref bv (fx- count 1))))
+                   (unless (and (cont? c2) (cont? c3)) (data-utf-malformed! (fx- count 1)))
+                   (loop count (cons (fxior (fxsll (fxand c #x0F) 12)
+                                            (fxsll (fxand c2 #x3F) 6)
+                                            (fxand c3 #x3F))
+                                     units)))))
+              (else (data-utf-malformed! count))))))))
+(define (data-units->string units)
+  (let loop ((us units) (acc '()))
+    (cond
+      ((null? us) (list->string (reverse acc)))
+      ((and (fx>=? (car us) #xD800) (fx<=? (car us) #xDBFF)
+            (pair? (cdr us)) (fx>=? (cadr us) #xDC00) (fx<=? (cadr us) #xDFFF))
+       (loop (cddr us)
+             (cons (integer->char (fx+ #x10000
+                                       (fxsll (fx- (car us) #xD800) 10)
+                                       (fx- (cadr us) #xDC00)))
+                   acc)))
+      ((and (fx>=? (car us) #xD800) (fx<=? (car us) #xDFFF))
+       (loop (cdr us) (cons #\xFFFD acc)))
+      (else (loop (cdr us) (cons (integer->char (car us)) acc))))))
+
+;; readLine: bytes taken as Latin-1, ended by \n, \r or \r\n; nil at the end of
+;; the input when nothing was read.
+;; Reads through OPS (see above).
+(define (data-read-line ops self)
+  (let ((read1 (vector-ref ops 0)) (after-cr (vector-ref ops 2)))
+    (let loop ((acc '()) (any? #f))
+      (let ((b (read1 self)))
+        (cond ((< b 0) (if any? (list->string (reverse acc)) jolt-nil))
+              ((fx=? b 10) (list->string (reverse acc)))
+              ((fx=? b 13) (after-cr self) (list->string (reverse acc)))
+              (else (loop (cons (integer->char b) acc) #t)))))))
+
+;; The DataInput members. OPS-OF answers the operations above for SELF. OK? says
+;; whether SELF really is a DataInput: the byte-stream tags serve every stream,
+;; so a plain InputStream answers a missing method as it always did.
+(define (data-input-members ops-of ok?)
+  (define (mk name read)
+    (cons name
+          (case-lambda
+            ((self) (if (ok? self)
+                        (read self (ops-of self))
+                        (dispatch-miss self name '()))))))
+  (define (fill-of ops) (vector-ref ops 1))
+  (define (bytes self ops n) (data-take (fill-of ops) self n))
+  (define (sint n)
+    (lambda (self ops) (->num (bytevector-sint-ref (bytes self ops n) 0 (endianness big) n))))
+  (define (uint n)
+    (lambda (self ops) (->num (bytevector-uint-ref (bytes self ops n) 0 (endianness big) n))))
+  (define (byte1 self ops)
+    (let ((b ((vector-ref ops 0) self)))
+      (when (< b 0) (data-eof!))
+      b))
+  (list
+   (mk "readBoolean" (lambda (self ops) (not (fx=? 0 (byte1 self ops)))))
+   (mk "readByte" (lambda (self ops) (->num (let ((b (byte1 self ops))) (if (fx>? b 127) (fx- b 256) b)))))
+   (mk "readUnsignedByte" (lambda (self ops) (->num (byte1 self ops))))
+   (mk "readShort" (sint 2))
+   (mk "readUnsignedShort" (uint 2))
+   (mk "readChar" (lambda (self ops)
+                    (jolt-code-point->char
+                     (bytevector-uint-ref (bytes self ops 2) 0 (endianness big) 2))))
+   (mk "readInt" (sint 4))
+   (mk "readLong" (sint 8))
+   (mk "readFloat" (lambda (self ops)
+                     (jolt-int-bits->float
+                      (bytevector-sint-ref (bytes self ops 4) 0 (endianness big) 4))))
+   (mk "readDouble" (lambda (self ops)
+                      (jolt-long-bits->double
+                       (bytevector-sint-ref (bytes self ops 8) 0 (endianness big) 8))))
+   (mk "readLine" (lambda (self ops) (data-read-line ops self)))
+   (mk "readUTF" (lambda (self ops)
+                   (let ((len (bytevector-uint-ref (bytes self ops 2) 0 (endianness big) 2)))
+                     (data-decode-utf (bytes self ops len)))))
+   (cons "readFully"
+         (case-lambda
+           ((self buf)
+            (if (ok? self)
+                (begin (when (jolt-nil? buf) (raf-null-array!))
+                       (data-read-fully! (fill-of (ops-of self)) self buf 0 (ja-len buf))
+                       jolt-nil)
+                (dispatch-miss self "readFully" (list buf))))
+           ((self buf off len)
+            (if (ok? self)
+                (begin (data-read-fully! (fill-of (ops-of self)) self buf
+                                         (jnum->exact off) (jnum->exact len))
+                       jolt-nil)
+                (dispatch-miss self "readFully" (list buf off len))))))))
+
+;; The DataOutput members. EMIT! (self bytevector) writes bytes the way the JDK's
+;; write(byte[],0,n) does and EMIT1! (self int) the way write(int) does: the JDK
+;; writes a boolean, a byte and each byte of writeBytes with write(int), and the
+;; rest as one write(byte[],0,n) per value (per char for writeChars). A write that
+;; fails must leave nothing behind, so neither one buffers.
+(define (data-output-members emit! emit1! ok?)
+  (define (mk name body)
+    (cons name
+          (case-lambda
+            ((self x) (if (ok? self)
+                          (begin (body self x) jolt-nil)
+                          (dispatch-miss self name (list x)))))))
+  (define (int-arg x)
+    (if (or (char? x) (jsurr? x)) (char-or-unit->integer x) (jnum->exact x)))
+  (define (uint-bytes n width)
+    (let ((bv (make-bytevector width)))
+      (bytevector-uint-set! bv 0 (bitwise-and n (- (expt 2 (* 8 width)) 1)) (endianness big) width)
+      bv))
+  (define (fixed width conv)
+    (lambda (self x) (emit! self (uint-bytes (conv x) width))))
+  (list
+   (mk "writeBoolean" (lambda (self x) (emit1! self (if (jolt-truthy? x) 1 0))))
+   (mk "writeByte" (lambda (self x) (emit1! self (int-arg x))))
+   (mk "writeShort" (fixed 2 int-arg))
+   (mk "writeChar" (fixed 2 int-arg))
+   (mk "writeInt" (fixed 4 int-arg))
+   (mk "writeLong" (fixed 8 int-arg))
+   (mk "writeFloat" (fixed 4 jolt-float->int-bits))
+   (mk "writeDouble" (fixed 8 jolt-double->long-bits))
+   (mk "writeBytes"
+       (lambda (self x)
+         (for-each (lambda (u)
+                     (let ((b (fxand u #xFF)))
+                       (emit1! self (if (fx>? b 127) (fx- b 256) b))))
+                   (data-string-units (data-need-string x)))))
+   (mk "writeChars"
+       (lambda (self x)
+         (for-each (lambda (u) (emit! self (uint-bytes u 2)))
+                   (data-string-units (data-need-string x)))))
+   (mk "writeUTF" (lambda (self x) (emit! self (data-encode-utf (data-need-string x)))))))
+
+;; DataInputStream. A jolt stream over a plain port is shared, which reads the
+;; same bytes without a dispatch per byte. Any other stream (a proxy, a reify, a
+;; replay or piped stream) is held in state slot 7 and called through its own
+;; read, as FilterInputStream does, with no buffer between: it never sees a read
+;; for bytes the caller has not asked for. Slot 8 holds the one byte readLine may
+;; have to give back after a \r, which the JDK keeps in a PushbackInputStream it
+;; swaps in. read, skip, available and close go to the wrapped stream (after that
+;; byte), where the port is only what readAllBytes, transferTo and a reader over
+;; the stream use.
+(define (in-stream-data-inner x)
+  (let ((st (and (jhost? x) (jhost-state x))))
+    (and (vector? st) (fx>? (vector-length st) 7) (vector-ref st 7))))
+(define (data-in-stream? x)
+  (and (in-stream? x)
+       (let ((c (stream-class x))) (and c (string=? c "java.io.DataInputStream")))))
+(define (dis-pending self) (vector-ref (jhost-state self) 8))
+(define (dis-pending-set! self b) (vector-set! (jhost-state self) 8 b))
+;; read(): a byte 0..255, or -1
+(define (dis-d-read1 self)
+  (let ((p (dis-pending self)))
+    (if p
+        (begin (dis-pending-set! self #f) p)
+        (jnum->exact (record-method-dispatch (in-stream-data-inner self) "read" jolt-nil)))))
+;; read(byte[],off,len): the count, or -1
+(define (dis-d-fill self arr off len)
+  (let ((inner (in-stream-data-inner self)) (p (dis-pending self)))
+    (define (call arr off len)
+      (jnum->exact (record-method-dispatch inner "read"
+                     (list->cseq (list arr (->num off) (->num len))))))
+    (if (and p (fx>? len 0))
+        (begin
+          (dis-pending-set! self #f)
+          (let ((one (make-bytevector 1)))
+            (bytevector-u8-set! one 0 p)
+            (ja-bv->bytes! one 0 arr off 1))
+          (if (fx>? len 1)
+              (let ((n (call arr (fx+ off 1) (fx- len 1))))
+                (if (< n 0) 1 (fx+ n 1)))
+              1))
+        (call arr off len))))
+(define (dis-d-available self)
+  (+ (if (dis-pending self) 1 0)
+     (jnum->exact (record-method-dispatch (in-stream-data-inner self) "available" jolt-nil))))
+(define (dis-d-skip self n)
+  (let ((inner (in-stream-data-inner self)))
+    (if (<= n 0)
+        0
+        (let* ((p (dis-pending self))
+               (from-pending (if p (begin (dis-pending-set! self #f) 1) 0))
+               (n (- n from-pending)))
+          (+ from-pending
+             (if (> n 0)
+                 (jnum->exact (record-method-dispatch inner "skip" (list->cseq (list (->num n)))))
+                 0))))))
+(define data-dis-dispatch-ops
+  (vector
+   dis-d-read1
+   dis-d-fill
+   (lambda (self)
+     (let ((c2 (dis-d-read1 self)))
+       (when (and (fx<>? c2 10) (fx<>? c2 -1)) (dis-pending-set! self c2))))))
+(define (fx<>? a b) (not (fx=? a b)))
+(define data-dis-port-ops (data-ops-port in-stream-live-port))
+(define (data-dis-ops self)
+  (if (in-stream-data-inner self) data-dis-dispatch-ops data-dis-port-ops))
+
+(define (make-data-in-stream inner)
+  (when (reader-jhost? inner)
+    (throw-jvm (quote IllegalArgumentException)
+               "DataInputStream wraps an InputStream, not a Reader (it is already decoded)"))
+  (stream-classed!
+    (if (and (in-stream? inner)
+             (not (in-stream-replay inner))
+             (not (piped-pipe inner))
+             (not (in-stream-sequence-close inner)))
+        (make-jhost "in-stream"
+                    (vector (vector-ref (jhost-state inner) 0)
+                            (vector-ref (jhost-state inner) 1)
+                            (vector-ref (jhost-state inner) 2)))
+        (let* ((self #f)
+               (port (make-custom-binary-input-port
+                       "data-source"
+                       (lambda (bv start count)
+                         (let* ((arr (na-bv->bytearray (make-bytevector count)))
+                                (n (dis-d-fill self arr 0 count)))
+                           (if (<= n 0)
+                               0
+                               (begin (ja-bytes->bv! arr 0 bv start n) n))))
+                       #f #f
+                       (lambda () #f))))
+          (set! self (make-jhost "in-stream" (vector port #f 0 #f #f #f #f inner #f)))
+          self))
+    "java.io.DataInputStream"))
+(reg-ctor! '("DataInputStream" "java.io.DataInputStream") make-data-in-stream)
+(register-class-statics! "java.io.DataInputStream"
+  (list (cons "readUTF" (lambda (in) (record-method-dispatch in "readUTF" jolt-nil)))))
+(register-host-methods! "in-stream"
+  (append
+   (data-input-members data-dis-ops data-in-stream?)
+   (list
+    ;; DataInputStream.skipBytes asks the wrapped stream's skip until it answers 0
+    (cons "skipBytes"
+          (lambda (self n)
+            (if (data-in-stream? self)
+                (let ((n (jnum->exact n)))
+                  (let loop ((total 0))
+                    (if (>= total n)
+                        (->num total)
+                        (let ((cur (jnum->exact
+                                     (record-method-dispatch self "skip"
+                                       (list->cseq (list (->num (- n total))))))))
+                          (if (> cur 0) (loop (+ total cur)) (->num total))))))
+                (dispatch-miss self "skipBytes" (list n))))))))
+;; The InputStream methods a DataInputStream over a dispatched stream hands on.
+(define (wrap-host-method! tag name wrap)
+  (let ((old (hashtable-ref (hashtable-ref host-methods-tbl tag #f) name #f)))
+    (register-host-methods! tag (list (cons name (wrap old))))))
+(wrap-host-method! "in-stream" "read"
+  (lambda (old)
+    (lambda (self . rest)
+      (if (in-stream-data-inner self)
+          (cond ((null? rest) (->num (dis-d-read1 self)))
+                ((null? (cdr rest))
+                 (data-null-check! (car rest))
+                 (->num (dis-d-fill self (car rest) 0 (ja-len (car rest)))))
+                (else (->num (dis-d-fill self (car rest) (jnum->exact (cadr rest))
+                                         (jnum->exact (caddr rest))))))
+          (apply old self rest)))))
+(wrap-host-method! "in-stream" "skip"
+  (lambda (old)
+    (lambda (self n)
+      (if (in-stream-data-inner self)
+          (->num (dis-d-skip self (jnum->exact n)))
+          (old self n)))))
+(wrap-host-method! "in-stream" "available"
+  (lambda (old)
+    (lambda (self)
+      (if (in-stream-data-inner self)
+          (->num (dis-d-available self))
+          (old self)))))
+(wrap-host-method! "in-stream" "close"
+  (lambda (old)
+    (lambda (self)
+      (cond ((in-stream-data-inner self)
+             => (lambda (inner) (record-method-dispatch inner "close" jolt-nil) jolt-nil))
+            (else (old self))))))
+
+;; DataOutputStream. Unbuffered, as the JDK's is: each write goes straight on to
+;; the wrapped stream through its own write, with the call the JDK makes, and is
+;; counted once that call has returned, so a write that fails leaves neither
+;; bytes nor count behind. State slot 6 is the count size() answers, slot 5 the
+;; wrapped stream flush and close go on to, and slot 7 whether close has run. The
+;; port in slot 0 is only for the code that writes to a stream's port directly
+;; (transferTo); it is emptied before each write here so the order holds.
+(define (out-stream-data-count self)
+  (let ((st (jhost-state self)))
+    (and (fx>? (vector-length st) 6) (vector-ref st 6))))
+(define (data-out-stream? x)
+  (and (out-stream? x) (out-stream-data-count x) #t))
+(define (data-out-count! self n)
+  (let ((c (out-stream-data-count self)))
+    (set-box! c (min 2147483647 (+ (unbox c) n)))))
+(define (data-out-call! self args)
+  (let ((port (out-stream-port self)))
+    (unless (port-closed? port) (flush-output-port port))
+    (record-method-dispatch (out-stream-filter-inner self) "write" (list->cseq args))))
+(define (data-out-emit! self bv)
+  (data-out-call! self (list (na-bv->bytearray bv) (->num 0) (->num (bytevector-length bv))))
+  (data-out-count! self (bytevector-length bv)))
+(define (data-out-emit1! self b)
+  (data-out-call! self (list (->num b)))
+  (data-out-count! self 1))
+;; write(int) | write(byte[]) | write(byte[],off,len), as FilterOutputStream and
+;; DataOutputStream route them
+(define (data-out-write! self x rest)
+  (when (jolt-nil? x) (raf-null-array!))
+  ;; a jolt stream underneath refuses a range outside the array as the JDK's
+  ;; ByteArrayOutputStream does; any other stream is handed the arguments as given
+  (when (and (jolt-array? x) (pair? rest) (out-stream? (out-stream-filter-inner self)))
+    (data-array-check! x (jnum->exact (car rest)) (jnum->exact (cadr rest))))
+  (cond
+    ((number? x) (data-out-emit1! self x))
+    ((and (jolt-array? x) (eq? (jolt-array-kind x) 'byte))
+     (if (pair? rest)
+         (let ((len (jnum->exact (cadr rest))))
+           (data-out-call! self (list x (car rest) (cadr rest)))
+           (data-out-count! self len))
+         (let ((len (ja-len x)))
+           (data-out-call! self (list x (->num 0) (->num len)))
+           (data-out-count! self len))))
+    (else (throw-jvm (quote IllegalArgumentException) "OutputStream/write: unsupported argument")))
+  jolt-nil)
+;; FilterOutputStream.close: flush, and close the wrapped stream whether or not
+;; the flush failed, once only. The flush failure is rethrown after.
+(define (data-out-close! self)
+  (let ((st (jhost-state self)))
+    (unless (vector-ref st 7)
+      (vector-set! st 7 #t)
+      (let* ((inner (out-stream-filter-inner self)) (failed #f))
+        (guard (e (#t (set! failed (list e))))
+          (let ((port (out-stream-port self)))
+            (unless (port-closed? port) (flush-output-port port)))
+          (record-method-dispatch inner "flush" jolt-nil))
+        (record-method-dispatch inner "close" jolt-nil)
+        (when failed (raise (car failed)))))
+    jolt-nil))
+(define (make-data-out-stream inner)
+  (when (writer-jhost? inner)
+    (throw-jvm (quote IllegalArgumentException)
+               "DataOutputStream wraps an OutputStream, not a Writer (it takes characters)"))
+  (stream-classed!
+    (make-jhost "out-stream"
+                (vector (out-stream-sink-port inner) #f #f #f #f inner (box 0) #f))
+    "java.io.DataOutputStream"))
+(reg-ctor! '("DataOutputStream" "java.io.DataOutputStream") make-data-out-stream)
+(register-host-methods! "out-stream"
+  (data-output-members data-out-emit! data-out-emit1! data-out-stream?))
+(wrap-host-method! "out-stream" "write"
+  (lambda (old)
+    (lambda (self x . rest)
+      (if (data-out-stream? self)
+          (data-out-write! self x rest)
+          (apply old self x rest)))))
+(wrap-host-method! "out-stream" "close"
+  (lambda (old)
+    (lambda (self)
+      (if (data-out-stream? self)
+          (data-out-close! self)
+          (old self)))))
+
 ;; --- java.io.RandomAccessFile -------------------------------------------------
 ;; state #(port writable?). One Chez file port serves both directions: "r" opens
 ;; an input port, "rw" (and "rws"/"rwd", which differ only in how eagerly the JDK
@@ -1644,7 +2154,19 @@
     (port-length port)))
 
 (hashtable-set! jhost-tag->fqn "random-access-file" "java.io.RandomAccessFile")
+(define (raf-data-emit! self bv)
+  (let ((port (raf-writable-port self)))
+    (put-bytevector port bv)
+    (flush-output-port port)))
+(define (raf-data-emit1! self b)
+  (let ((port (raf-writable-port self)))
+    (put-u8 port (bitwise-and b #xff))
+    (flush-output-port port)))
+(define raf-ops (data-ops-port raf-port))
 (register-host-methods! "random-access-file"
+  (append
+   (data-input-members (lambda (self) raf-ops) (lambda (self) #t))
+   (data-output-members raf-data-emit! raf-data-emit1! (lambda (self) #t))
   (list
    (cons "read"
          (lambda (self . args)
@@ -1701,8 +2223,8 @@
          (lambda (self)
            (let ((p (vector-ref (jhost-state self) 0)))
              (unless (port-closed? p) (close-port p)))
-           jolt-nil))))
-(jch-register-supers! "java.io.RandomAccessFile" '("java.io.Closeable"))
+           jolt-nil)))))
+(jch-register-supers! "java.io.RandomAccessFile" '("java.io.Closeable" "java.io.DataInput" "java.io.DataOutput"))
 (reg-ctor! '("RandomAccessFile" "java.io.RandomAccessFile")
   (lambda args
     (unless (= (length args) 2)
