@@ -3,12 +3,34 @@
   the C comes from, so the REPL and a built binary agree. It differs from the
   body as written only where a region's rules differ from Jolt's: long
   arithmetic overflows instead of promoting, an index passes through
-  RT.intCast, and a variadic op folds pair by pair exactly as the C does.")
+  RT.intCast, and a variadic op folds pair by pair exactly as the C does."
+  (:require [clojure.string :as str]))
 
-(defn- lname [id] (symbol (str "nr__l" id)))
-(defn- hname [iid] (symbol (str "nr__h" iid)))
+;; the prefix of the fallback's own names (locals, helper fns): one no region
+;; parameter starts with, since parameters keep their own names
+(def ^:private ^:dynamic *prefix* "nr__")
+(defn- lname [id] (symbol (str *prefix* "l" id)))
+(defn- hname [iid] (symbol (str *prefix* "h" iid)))
+
+(defn- fresh-prefix [params]
+  (let [names (map (comp str :name) params)]
+    (first (remove (fn [pre] (some #(str/starts-with? % pre) names))
+                   (cons "nr__" (map #(str "nr" % "__") (range)))))))
+
+(defn- realize
+  "A generated form with every lazy part realized, while *prefix* is bound."
+  [form]
+  (cond (seq? form) (doall (map realize form))
+        (vector? form) (mapv realize form)
+        :else form))
 
 (declare clj)
+
+(defn- value-of
+  "A function body as its result: a nil-typed (:unit) body answers nil, as the
+  C does, even where a branch beside the nil computed a value: (when c x)."
+  [node]
+  (if (= :unit (:type node)) (list 'do (clj node) nil) (clj node)))
 
 (defn- dbl [form t] (if (= t :long) (list 'clojure.core/double form) form))
 
@@ -93,20 +115,22 @@
   "The fallback expression for an analyzed region, evaluated where its
   parameters are bound under their own names."
   [region]
-  (let [params (into {} (map (fn [p] [(:id p) (:name p)]) (:params region)))
-        mark (fn mark [node]
-               (cond
-                 (and (map? node) (= :local (:op node)) (params (:binding node)))
-                 (assoc node :param-name (params (:binding node)))
-                 (map? node) (into {} (map (fn [[k v]] [k (mark v)]) node))
-                 (vector? node) (mapv mark node)
-                 :else node))]
-    (let [body (clj (mark (:body region)))
+  (binding [*prefix* (fresh-prefix (:params region))]
+    (let [params (into {} (map (fn [p] [(:id p) (:name p)]) (:params region)))
+          mark (fn mark [node]
+                 (cond
+                   (and (map? node) (= :local (:op node)) (params (:binding node)))
+                   (assoc node :param-name (params (:binding node)))
+                   (map? node) (into {} (map (fn [[k v]] [k (mark v)]) node))
+                   (vector? node) (mapv mark node)
+                   :else node))
+          body (value-of (mark (:body region)))
           insts (:instances region)]
-      (if (seq insts)
-        ;; each native helper instance as a local fn, from its own checked IR
-        (list 'clojure.core/letfn
-              (mapv (fn [i] (list (hname (:iid i)) (mapv (comp lname :id) (:params i)) (clj (:body i))))
-                    insts)
-              body)
-        body))))
+      (realize
+       (if (seq insts)
+         ;; each native helper instance as a local fn, from its own checked IR
+         (list 'clojure.core/letfn
+               (mapv (fn [i] (list (hname (:iid i)) (mapv (comp lname :id) (:params i)) (value-of (:body i))))
+                     insts)
+               body)
+         body)))))

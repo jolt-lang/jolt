@@ -48,7 +48,8 @@
 (def rt-so (str work-dir "/jn_rt.dylib"))
 (spit (str work-dir "/jn_rt.c")
       (str "#include <stdint.h>\n"
-           "typedef struct { int64_t code; int64_t a; int64_t b; double d; int64_t len; } jn_out;\n"
+           "typedef struct { int64_t code; int64_t a; int64_t b; double d; int64_t len;"
+           " uintptr_t stack_lo; uintptr_t stack_thr; } jn_out;\n"
            "jn_out jn_tls;\n"))
 (let [p (.start (ProcessBuilder. ^java.util.List ["cc" "-O2" "-shared" "-fPIC" "-o" rt-so (str work-dir "/jn_rt.c")]))]
   (when-not (zero? (.waitFor p)) (throw (ex-info "cc failed for jn_rt" {}))))
@@ -455,6 +456,41 @@
 (defnative odd-steps [n] (if (zero? n) 1 (even-steps (dec n))))
 (check-run "a hinted recursive helper still checks" '[^double x] '((halve-to x 1.0)) [[10.0] [0.5]] :raw true)
 (check-run "mutual recursion between helpers is inferred" '[^long n] '((+ (even-steps n) (odd-steps n))) [[0] [7]] :raw true)
+
+;; recursion deeper than the thread's C stack raises StackOverflowError, as the
+;; JVM does, instead of crashing the process; what was live is still freed
+(defnative ^long down [n] (if (zero? n) 0 (+ 1 (down (dec n)))))
+(defnative ^doubles eat [a n] (if (<= n 0) a (let [r (eat a (dec n))] (aset r 0 1.0) r)))
+(let [deep (compile-region '[^long n] '((down n)))
+      deep-arr (compile-region '[^long n] '((alength (eat (double-array 3) n))))
+      soe {:throw "java.lang.StackOverflowError" :msg nil}]
+  (check-eq "shallow helper recursion" (outcome #(apply (:call deep) %) [1000]) {:value 1000})
+  (check-eq "deep helper recursion raises StackOverflowError"
+            (outcome #(apply (:call deep) %) [100000000]) soe)
+  (check-eq "deep helper recursion in a future raises StackOverflowError"
+            @(future (outcome #(apply (:call deep) %) [100000000])) soe)
+  (check-eq "the region still runs after a stack overflow" (outcome #(apply (:call deep) %) [10]) {:value 10})
+  (check-eq "deep recursion holding a taken array raises StackOverflowError"
+            (outcome #(apply (:call deep-arr) %) [100000000]) soe)
+  (check-eq "the taken array is freed on the overflow" ((:live deep-arr)) 0)
+  (check-eq "no bad free on the overflow" ((:bad deep-arr)) 0)
+  (check-eq "a region without recursion has no stack guard"
+            (str/includes? (:c (compile-region '[^long n] '((sum-pick (long-array 3) 0 n)))) "__builtin_frame_address") false)
+  (check-eq "a recursive helper checks the stack" (str/includes? (:c deep) "__builtin_frame_address") true))
+
+;; (if c x nil) is a nil-typed if, so the region answers nil in both halves
+(check-run "a when beside nil answers nil" '[^long x] '((when (> x 0) (* x 2))) [[3] [-1]])
+(check-run "an if beside nil in a let answers nil" '[^long x] '((let [y 1] (if (> x 0) (+ x y) nil))) [[3] [-1]])
+(defnative maybe-five [c] (when c 5))
+(check-run "a helper's when beside nil answers nil" '[^boolean c] '((maybe-five c)) [[true] [false]])
+
+;; the fallback's own local and helper names cannot capture a parameter
+(check-run "fallback locals do not capture a parameter" '[^long nr__l3]
+           '((let [y 10] (+ y nr__l3))) [[1]] :raw true)
+(doseq [k (range 1 6)]
+  (let [p (with-meta (symbol (str "nr__h" k)) {:tag 'long})]
+    (check-run (str "fallback helpers do not capture parameter " p) [p]
+               (list (list '+ (list 'fib p) p)) [[5]] :raw true)))
 (check-reject "a helper returning an array the region borrowed" '[^doubles xs] '((alength (leak-borrowed xs)))
               #"only borrowed from its caller.*pass \(aclone x\)")
 (check-reject "moving the array a helper borrows in a sibling argument" '[]
