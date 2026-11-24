@@ -649,11 +649,13 @@
          (loop i (fx+ j 1) (fx+ o 1) #t))
         (else (values (if changed (bt-bulk out o) tree) o changed))))))
 ;; the batch as a fresh flat k v vector: a vector's slots copied by block, a set's
-;; elements (KEYS-ONLY) given nil values, anything else folded
+;; elements (KEYS-ONLY) given nil values. A batch of known size (counted?) is
+;; filled in place; anything else is folded onto a list first.
 (define (bt-batch-flat kvs keys-only?)
   (cond
     ((and (pvec? kvs) (not keys-only?))
      (let ((v (make-vector (pvec-cnt kvs)))) (pvec-copy-into! v 0 kvs) v))
+    ((let ((n (bt-known-count kvs))) (and n (bt-fill-flat kvs n (if keys-only? 2 1)))))
     (keys-only?
      (let* ((xs (into-fold (lambda (acc x) (cons x acc)) '() kvs))
             (n (length xs))
@@ -661,6 +663,17 @@
        (let loop ((xs xs) (i (fx- n 1)))
          (if (null? xs) v (begin (vector-set! v (fx+ i i) (car xs)) (loop (cdr xs) (fx- i 1)))))))
     (else (list->vector (reverse (into-fold (lambda (acc x) (cons x acc)) '() kvs))))))
+;; KVS's N elements in a fresh vector, element i at slot i*STRIDE and nil in the
+;; slots between; #f when the fold does not find exactly N (a Counted deftype's
+;; count is its own claim), and the caller folds onto a list instead
+(define (bt-fill-flat kvs n stride)
+  (let* ((v (make-vector (fx* n stride) jolt-nil))
+         (i (into-fold (lambda (i x)
+                         (if (fx=? i n)
+                             (make-jolt-reduced #f)
+                             (begin (vector-set! v (fx* i stride) x) (fx+ i 1))))
+                       0 kvs)))
+    (and (eqv? i n) v)))
 ;; under this many entries a batch is inserted entry by entry
 (define bt-batch-min 8)
 ;; (rbt-assoc-all tree cmp cnt kvs keys-only?): KVS assoc'd onto TREE of CNT
@@ -692,12 +705,21 @@
 
 ;; a source no bigger than this goes into an empty sorted coll by plain conj
 (define bt-into-conj-max 8)
-;; FROM's element count when it is O(1) to know, else #f
+;; FROM's element count when it is O(1) to know, else #f. The common colls are
+;; answered here; anything else asks counted? (lists, queues, a vector's seq, a
+;; record, a deftype declaring Counted) and then count.
+(define bt-counted?-cell (jolt-var "clojure.core" "counted?"))
 (define (bt-known-count from)
   (cond ((pvec? from) (pvec-cnt from))
         ((pmap? from) (pmap-cnt from))
         ((pset? from) (pset-count from))
         ((scoll? from) (scoll-cnt from))
+        ;; a list and a vector's seq answer as counted? does, without the call
+        ((cseq? from) (and (cseq-counted? from) (jolt-count from)))
+        ((empty-list-t? from) 0)
+        ((or (jolt-nil? from) (jolt-lazyseq? from) (string? from)) #f)
+        ((jolt-truthy? (jolt-invoke1 (var-cell-deref bt-counted?-cell) from))
+         (let ((n (jolt-count from))) (and (fixnum? n) (fx>=? n 0) n)))
         (else #f)))
 ;; (into sorted-coll [xform] from): conj after conj's result, built as a batch.
 ;; Each element folds onto a transient buffer through the coll's own :conj-kvs
