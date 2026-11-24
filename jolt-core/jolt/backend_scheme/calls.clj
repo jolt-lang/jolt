@@ -284,22 +284,16 @@
 (defn- simple-operand? [s]
   (and (pos? (count s))
        (not (some #{\( \) \space \newline \tab \" \' \# \| \;} s))))
-;; A lowering that read a linked root itself binds that value's local here,
-;; keyed by the jv$ name, around one call's emission. The call then applies
-;; the value it was handed through the same text as a read of the root.
-(def ^:private ^:dynamic *read-roots* nil)
-(defn- apply-linked-root [root names]
-  (let [args (if (seq names) (str " " (str/join " " names)) "")]
-    (str "(if (" (unsafe-prefix) "procedure? " root ") (" root args
-         ") (jolt-invoke " root args "))")))
 (defn- linked-call [callee operand-strs]
   (let [p (fresh-label "_lp$")
         bound (mapv (fn [s] (if (simple-operand? s) [s nil] (let [t (fresh-label "_la$")] [t s])))
                     operand-strs)
         names (mapv first bound)
-        binds (str "(" p " " (get *read-roots* callee callee) ")"
-                   (apply str (keep (fn [[t s]] (when s (str " (" t " " s ")"))) bound)))]
-    (str "(let (" binds ") " (apply-linked-root p names) ")")))
+        binds (str "(" p " " callee ")"
+                   (apply str (keep (fn [[t s]] (when s (str " (" t " " s ")"))) bound)))
+        args (if (seq names) (str " " (str/join " " names)) "")]
+    (str "(let (" binds ") (if (" (unsafe-prefix) "procedure? " p ") (" p args
+         ") (jolt-invoke " p args ")))")))
 (defn- linked-binding? [callee]
   (and (string? callee) (str/starts-with? callee "jv$")))
 
@@ -675,15 +669,28 @@
                                        (range (quot (count as) 2))))
                      ")"))))
 
+;; Closed-world direct call to a SEED var — clojure.core and the other
+;; namespaces the runtime image boots with. Such a var is preloaded ahead of
+;; every app def and never emitted by this build, so the def binds its root
+;; procedure once at load and the site applies it directly: no var-cell-deref
+;; (7 ns), no jolt-invokeN (5 ns) — true? went 16 -> 4 ns.
+;; jolt.host/seed-callable? applies the same closed-world rule an app def gets
+;; (not ^:dynamic/^:redef, not redefined by the app) plus "root is a procedure
+;; whose arity mask admits this arity", so a keyword/map/multimethod-valued var
+;; and a wrong-arity call keep jolt-invoke. seed-callable? answers the callee's
+;; jv$ binding name for a var the seed minted direct-linked (def-var-linked!),
+;; and the site applies that top-level variable: the same one load, and a later
+;; def / alter-var-root / with-redefs of the var writes through to it (rt.ss
+;; var-root-set!), so the site follows a redefinition. A seed var the runtime
+;; defined itself (a Scheme def-var!) has no binding to name; its root is
+;; hoisted once at load, and a redefinition is invisible to that site, as under
+;; the JVM's direct linking. `jolt run` never direct-links. Off while MINTING
+;; the seed: the vars this arm would bind are the ones being emitted.
 (defn emit-seed-callable-invoke [fnode args tail? tl ich order-args]
   (when (and (direct-link?) (not (seed-mint?)))
     (when-let [sc (seed-callable? nil (:ns fnode) (:name fnode) (count args))]
-      (let [head (if (string? sc) sc (hoist-seed-root (:ns fnode) (:name fnode)))
-            root (:root-binding fnode)]
-        (when (and root (not (string? sc)))
-          (throw (ex-info "emit: a supplied root needs a linked call head" {:var (:name fnode)})))
-        (binding [*read-roots* (if root {head root} *read-roots*)]
-          (order-args (fn [as] (emit-call tail? head as tl ich))))))))
+      (let [head (if (string? sc) sc (hoist-seed-root (:ns fnode) (:name fnode)))]
+        (order-args (fn [as] (emit-call tail? head as tl ich)))))))
 
 (defn record-ctor-shape [fnode n]
   (when-let [shape (get (ctor-shapes) (str (:ns fnode) "/" (:name fnode)))]

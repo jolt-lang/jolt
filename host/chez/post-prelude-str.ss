@@ -30,98 +30,47 @@
            (jolt-invoke ov-replace s match replacement))))))
 (def-var! "clojure.string" "replace" jolt-string-replace)
 
-;; These limits bound the work until a fiber, signal or GC can run again.
-;; Only scalar hashing/equality, literal string copies and intern hits run
-;; inside the region. A missed intern can take a lock, so it ends the region.
+;; A confined reduce-kv whose callback only hands its accumulator to a final
+;; (assoc acc K V); jolt.passes.facts/reducer-confinement-at proves that shape.
+;; The emitter passes `collect`, the same callback with that assoc re-targeted
+;; to jolt-reduce-kv-collect, and the whole fold runs through it. It evaluates
+;; every key and value expression in order, as the ordinary fold does, and
+;; accumulates the computed entries as an immutable list, so a continuation
+;; that re-enters the fold carries its own entries. A builder then writes them
+;; with interrupts off; nothing in that region calls user code. The first key
+;; that cannot be hashed natively freezes the entries so far, and from there
+;; the collector is the ordinary step's assoc on a persistent map.
+
+;; The builder region is bounded so a fiber, signal or GC can run again soon.
 (define pmap-builder-max-entries 256)
-(define pmap-builder-stock-timer (timer-interrupt-handler))
-(define pmap-builder-stop (make-jolt-reduced #f))
-(define (pmap-builder-short-string? x)
-  (and (string? x) (fx<=? (string-length x) 128)))
 (define (pmap-builder-key? k)
-  (or (keyword-t? k) (pmap-builder-short-string? k) (fixnum? k) (char? k) (jolt-nil? k)))
+  (or (keyword-t? k) (and (string? k) (fx<=? (string-length k) 128))
+      (fixnum? k) (char? k) (jolt-nil? k)))
 
 (define (jolt-reduce-kv-builder-source? source)
   (and (pmap? source)
        ;; For one or two writes the ordinary array copies cost less than setup.
-       (fx<=? 3 (pmap-cnt source) pmap-builder-max-entries)
-       ;; A custom engine handler can observe or change an in-flight fold.
-       (let ((handler (timer-interrupt-handler)))
-         (or (eq? handler pmap-builder-stock-timer) (eq? handler jolt-tick-fire)))))
+       (fx<=? 3 (pmap-cnt source) pmap-builder-max-entries)))
 
-;; The source is a built-in immutable map. Finding the first unhandled
-;; entry again only reads its slots and trie nodes. Keep the skip counter
-;; in the continuation too: this walk may be interrupted or re-entered.
-(define (reduce-kv-builder-resume f source prefix count missed retry)
-  (let ((step (kv-step f)))
-    (let ((r (walk-pmap-kv source
-               (lambda (acc k v)
-                 (cond ((not (fixnum? acc)) (step acc k v))
-                       ((fx>? acc 0) (fx- acc 1))
-                       (missed (jolt-site-kept (retry prefix k v (car missed))))
-                       (else (step prefix k v))))
-               count)))
-      (if (jolt-reduced? r) (jolt-reduced-val r) r))))
+(define (reduce-kv-entries? acc) (or (pair? acc) (null? acc)))
 
-(define (reduce-kv-build f seed source attempt retry)
-  ;; The live builder never crosses a host delivery point or a call into
-  ;; user code. On refusal publish the persistent prefix before performing
-  ;; the first ordinary step. A continuation from that step cannot get
-  ;; back to the builder, even if it resumes before the fold returns.
-  (let-values (((prefix count missed)
-                (dynamic-wind
-                  disable-interrupts
-                  (lambda ()
-                    (let ((t (pmap-builder-new (pmap-cnt source))) (count 0) (missed #f))
-                      (let ((r (walk-pmap-kv source
-                                 (lambda (_ k v)
-                                   (let ((decision (attempt t k v)))
-                                     (if (eq? decision #t)
-                                         (begin (set! count (fx+ count 1)) #t)
-                                         (begin (set! missed decision) pmap-builder-stop))))
-                                 #t)))
-                        (values (if (fx=? count 0) seed (jolt-persistent! t))
-                                (and (eq? r pmap-builder-stop) count) missed))))
-                  enable-interrupts)))
-    (cond ((not count) prefix)
-          ((and (fx=? count 0) (not missed)) (jolt-reduce-kv f seed source))
-          (else (reduce-kv-builder-resume f source prefix count missed retry)))))
+(define (reduce-kv-freeze entries)
+  (if (null? entries)
+      empty-pmap
+      (let ((entries (reverse entries)))
+        (dynamic-wind
+          disable-interrupts
+          (lambda ()
+            (let ((t (pmap-builder-new (length entries))))
+              (for-each (lambda (e) (pmap-builder-put! t (car e) (cdr e))) entries)
+              (jolt-persistent! t)))
+          enable-interrupts))))
 
-(define (pmap-builder-write! t k v)
-  (pmap-builder-put! t k v)
-  #t)
-(define (jolt-reduce-kv-build-copy f seed source)
-  (reduce-kv-build f seed source
-    (lambda (t k v) (and (pmap-builder-key? k) (pmap-builder-write! t k v))) #f))
+(define (jolt-reduce-kv-collect acc k v)
+  (cond ((not (reduce-kv-entries? acc)) (jolt-assoc3 acc k v))
+        ((pmap-builder-key? k) (cons (cons k v) acc))
+        (else (jolt-assoc3 (reduce-kv-freeze acc) k v))))
 
-(define (builder-interned-keyword ns name)
-  (if ns
-      (hashtable-ref keyword-table (keyword-intern-key ns name) #f)
-      (hashtable-ref keyword-table-bare name #f)))
-(define (builder-symbol-key k)
-  (if (symbol-t? k)
-      (let ((ns (jolt-namespace k)) (name (symbol-t-name k)))
-        (and (pmap-builder-short-string? name)
-             (if (jolt-nil? ns)
-                 (let ((si (keyword-split-index name)))
-                   (if si
-                       (builder-interned-keyword
-                         (substring name 0 si) (substring name (+ si 1) (string-length name)))
-                       (builder-interned-keyword #f name)))
-                 (and (pmap-builder-short-string? ns) (builder-interned-keyword ns name)))))
-      (and (pmap-builder-key? k) k)))
-(define (jolt-reduce-kv-build-symbol-keys f seed source)
-  (reduce-kv-build f seed source
-    (lambda (t k v) (let ((key (builder-symbol-key k))) (and key (pmap-builder-write! t key v)))) #f))
-
-(define (jolt-reduce-kv-build-string-replace f seed source replace-root match replacement retry)
-  (reduce-kv-build f seed source
-    (lambda (t k v)
-      (and (pmap-builder-key? k) (string? v) (fx<=? (string-length v) 1024)
-           (let ((proc (replace-root)))
-             ;; Read the linked callable at this step. If it has changed, hand
-             ;; that very value to the ordinary application for this entry.
-             (if (eq? proc jolt-string-replace)
-                 (pmap-builder-write! t k (str-replace-literal v match replacement))
-                 (list proc)))))
-    retry))
+(define (jolt-reduce-kv-build seed source collect)
+  (let ((r (walk-pmap-kv source (kv-step collect) '())))
+    (if (reduce-kv-entries? r) (reduce-kv-freeze r) r)))

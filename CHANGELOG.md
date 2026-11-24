@@ -49,6 +49,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which is also what the Jolt fallback runs. The bodies must agree on their
   result type and on which arguments they take.
 
+### Changed
+
+- A `reduce-kv` into `{}` whose callback only passes its accumulator to a final
+  `assoc` builds the result map in one pass, whatever the key and value
+  expressions are. It used to recognize only three exact callback shapes.
+  Keyword-keyed rebuilds are about 2x faster.
+- A chain of `assoc-in` edits sharing a path prefix is fused when the path is a
+  literal too, as inlining leaves it when the key is a constant argument.
+- `(keyword ...)` no longer allocates an argument list on every call.
+- A loop accumulating a fixed-key map with `update` is about 12% faster.
+
 ### Fixed
 
 - `double-array`, `long-array` and the other array constructors read a numeric

@@ -95,9 +95,12 @@
     "(defn no-edit [m k a b] (-> m (assoc-in [:root (k) :a] a) (assoc-in [:root (k) :b] b)))"
     "(defn no-edit [m k a b] (-> m (assoc-in [:root k :a] (a)) (assoc-in [:root k :b] b)))"
     "(defn no-edit [m k a b] (-> (m) (assoc-in [:root k :a] a) (assoc-in [:root k :b] b)))"
-    "(defn no-edit [m a b] (-> m (assoc-in [:root :shape :a] a) (assoc-in [:root :shape :b] b)))"
     "(defn no-edit [m k a b] (assoc-in (let [k :other] (assoc-in m [:root k :a] a)) [:root k :b] b))"))
+(ok "a literal path, as inlining leaves a keyword argument, still fuses"
+    (has? (code-part (emitf "u" "(defn lit-edit [m a b] (-> m (assoc-in [:root :shape :a] a) (assoc-in [:root :shape :b] b)))"))
+          "(jolt-assoc-in-map-edit "))
 (set-direct-link-flag! #f)
+
 (ok "dynamic calls keep ordinary assoc-in dispatch"
     (not (has? (code-part (emitf "u" assoc-in-pair)) "(jolt-assoc-in-map-edit ")))
 (set-direct-link-flag! #t)
@@ -252,6 +255,7 @@
                                     (original before path marker)))))))))))
   (run 'dynamic #f '(("k" "a") ("k" "b") ("k" "c") ("k" "d")))
   (run 'traced-tail #t '((":shape" "a") (":shape" "b")))
+  (run 'literal #f '((":shape" "a") (":shape" "b") (":shape" "c")))
   (set-trace! #f))
 
 (ok "the UUID edit guard accepts the boot registries" (assoc-in-native-uuid?))
@@ -1670,9 +1674,9 @@
 (set-direct-link-flag! #t)
 (define builder-headers-body
   "[m] (reduce-kv (fn [a k v] (assoc a k (clojure.string/replace v \"\\n\" \",\"))) {} m)")
-(ok "a closed header reducer emits a guarded builder"
+(ok "a confined header reducer emits a guarded builder"
     (has? (code-part (emitf "u" (string-append "(fn " builder-headers-body ")")))
-          "(jolt-reduce-kv-build-string-replace "))
+          "(jolt-reduce-kv-build "))
 (ev (string-append "(defn builder-headers " builder-headers-body ")"))
 (define builder-header-source (ev "(array-map :a \"a\\n1\" :b \"b\\n2\" :c \"c\\n3\")"))
 (define (with-header-tick handler run)
@@ -1711,7 +1715,7 @@
         (set! results (cons result results))
         (if (and resume (< (length results) 3))
             (resume (void))
-            (ok "a native header fold can resume twice from the same timer continuation"
+            (ok "a header fold can resume twice from the same timer continuation"
                 (and (= (length results) 3)
                      (for-all (lambda (m) (and (pmap? m) (clj= m expected))) results)
                      (not (eq? (car results) (cadr results)))
@@ -1719,24 +1723,25 @@
 
 (ev "(defn builder-keyword [s]
        (if (symbol? s) (if-let [n (namespace s)] (keyword n (name s)) (keyword (name s))) s))")
+(ev "(defn builder-probe [k] k)")
 (for-each
-  (lambda (name body proc)
-    (ok proc (has? (code-part (emitf "u" (string-append "(fn " body ")")))
-                   (string-append "(" proc " ")))
+  (lambda (name body)
+    (ok (string-append name " emits the builder")
+        (has? (code-part (emitf "u" (string-append "(fn " body ")"))) "(jolt-reduce-kv-build "))
     (ev (string-append "(defn " name " " body ")")))
-  '("builder-copy" "builder-symbols")
+  '("builder-copy" "builder-symbols" "builder-calls")
   '("[source] (reduce-kv (fn [a k v] (assoc a k v)) {} (source))"
-    "[source] (reduce-kv (fn [a k v] (assoc a (builder-keyword k) v)) {} source)")
-  '("jolt-reduce-kv-build-copy" "jolt-reduce-kv-build-symbol-keys"))
+    "[source] (reduce-kv (fn [a k v] (assoc a (builder-keyword k) v)) {} source)"
+    "[f source] (reduce-kv (fn [a k v] (assoc a (f k) [k v])) {} source)"))
 (for-each
   (lambda (step)
     (ok "an observing or early-exit reducer keeps its original driver"
         (not (has? (code-part (emitf "u" (string-append "(fn [f m] "
                               (reducer-call step "{}" "m") ")")))
-                   "(jolt-reduce-kv-build-"))))
+                   "(jolt-reduce-kv-build "))))
   '("(fn [a k v] (assoc a k (do (reset! reducer-sink a) v)))"
     "(fn [a k v] (assoc a k [a]))"
-    "(fn [a k v] (assoc a (f k) v))"
+    "(fn [a k v] (assoc a (f a) v))"
     "(fn [a k v] (reduced (assoc a k v)))"))
 (ok "an IKVReduce source gets the original callback and seed, following one source evaluation"
     (eq? #t (ev "(let [seen (atom [])
@@ -1755,34 +1760,49 @@
                        result (builder-symbols source)]
                    (and (= [:k :app/k] (vec (keys result)))
                         (identical? value (:k result)) (identical? value (:app/k result))))")))
-(ok "a cold transformed key retains the completed prefix and the ordinary suffix"
+(ok "a cold transformed key is interned by the step itself"
     (eq? #t (ev "(let [k (gensym \"cold-builder-key\")
                        source (array-map 'k 1 k 2 'app/k 3)
                        actual (builder-symbols source)]
                    (= [[:k 1] [(keyword (name k)) 2] [:app/k 3]] (vec actual)))")))
-(let ((thrown (ev "(try (builder-headers (array-map :a \"a\\n1\" :b nil :c \"unused\"))
-                    (catch Throwable t t))")))
-  (ok "late invalid header conversion sees the persistent prefix"
-      (raw-frame-value? thrown (lambda (x)
-                                 (and (pmap? x) (= 1 (pmap-cnt x))
-                                      (equal? "a,1" (jolt-get x (fact-kw 'a))))))))
+(ok "key and value expressions run once each, in source order"
+    (eq? #t (ev "(let [seen (atom [])
+                       source (array-map :a 1 :b 2 :c 3 :d 4)
+                       r (builder-calls (fn [k] (swap! seen conj k) (name k)) source)]
+                   (and (= [:a :b :c :d] @seen)
+                        (= {\"a\" [:a 1] \"b\" [:b 2] \"c\" [:c 3] \"d\" [:d 4]} r)
+                        (= [\"a\" \"b\" \"c\" \"d\"] (vec (keys r)))))")))
+(ok "a key the builder cannot hash freezes the prefix and assocs the rest in order"
+    (eq? #t (ev "(let [seen (atom [])
+                       odd (reify Object
+                             (hashCode [_] 7)
+                             (equals [this o] (identical? this o)))
+                       source (array-map :a 1 :b 2 :c 3 :d 4 :e 5)
+                       r (builder-calls (fn [k] (swap! seen conj k) (if (= k :c) odd k)) source)]
+                   (and (= [:a :b :c :d :e] @seen)
+                        (= [:a :b odd :d :e] (vec (keys r)))
+                        (= [:c 3] (get r odd)) (= [:e 5] (get r :e))))")))
+(ev "(defn builder-literal [f source] (reduce-kv (fn [a k v] (assoc a (f k) [:literal])) {} source))")
+(ok "a literal in the step is one object across the frozen prefix and the rest"
+    (eq? #t (ev "(let [odd (reify Object (hashCode [_] 7) (equals [this o] (identical? this o)))
+                       r (builder-literal (fn [k] (if (= k :b) odd k)) (array-map :a 1 :b 2 :c 3 :d 4))
+                       [x & more] (vals r)]
+                   (and (= 4 (count r)) (every? #(identical? x %) more)))")))
+(ok "a thrown value expression propagates as the ordinary call's throwable"
+    (equal? (ev "(try (builder-headers (array-map :a \"a\\n1\" :b nil :c \"unused\"))
+                  (catch Throwable t (str (class t) \" \" (ex-message t))))")
+            (ev "(try (clojure.string/replace nil \"\\n\" \",\")
+                  (catch Throwable t (str (class t) \" \" (ex-message t))))")))
 
-;; Force the same root change while the native path is enabled. The step
-;; that switches to the ordinary callable can itself capture a continuation.
+;; A root change mid-fold, then a continuation captured inside a step and
+;; re-entered: each resumption carries the entries collected before it, and
+;; user code never runs with interrupts masked.
 (let* ((root (jolt-var "clojure.string" "replace")) (original (var-cell-deref root))
-       (native-replace str-replace-literal) (builder-put pmap-builder-put!)
-       (freeze jolt-persistent!) (builder #f) (edits 0)
+       (native-replace str-replace-literal)
        (resume #f) (first #f) (unmasked? #f)
        (source (ev "(array-map :a \"a\\n1\" :b \"b\\n2\" :c \"c\\n3\")")))
   (dynamic-wind
     (lambda ()
-      (set! pmap-builder-put!
-        (lambda (t k v) (set! builder t) (set! edits (+ edits 1)) (builder-put t k v)))
-      (set! jolt-persistent!
-        (lambda (t)
-          (when (eq? t builder)
-            (var-root-set! root (lambda (s _match _replacement) (string-append s "!"))))
-          (freeze t)))
       (set! str-replace-literal
         (lambda (s match replacement)
           (when (string=? s "a\n1")
@@ -1792,30 +1812,29 @@
                     (begin
                       (set! unmasked? (zero? (sa-disable-count)))
                       (call/cc (lambda (k) (set! resume k) "first")))
-                    s))))
+                    (string-append s "!")))))
           (native-replace s match replacement))))
     (lambda ()
       (let ((result (jolt-invoke1 (var-deref "u" "builder-headers") source)))
         (cond
           (first
-           (ok "a changed root uses its captured callable and can resume with the frozen prefix"
-               (and (= edits 1) unmasked?
+           (ok "a changed root applies from the next step and a step can resume twice"
+               (and unmasked?
                     (clj= first (ev "{:a \"a,1\" :b \"first\" :c \"c\\n3!\"}"))
-                    (clj= result (ev "{:a \"a,1\" :b \"second\" :c \"c\\n3!\"}")))))
+                    (clj= result (ev "{:a \"a,1\" :b \"second\" :c \"c\\n3!\"}"))
+                    (not (eq? first result)))))
           (resume (set! first result) (resume "second"))
           (else (ok "a changed root was invoked" #f)))))
     (lambda ()
-      (set! pmap-builder-put! builder-put)
-      (set! jolt-persistent! freeze)
       (set! str-replace-literal native-replace)
       (var-root-set! root original))))
 (ev "(defmulti builder-replace-multi (fn [s _ _] s))")
 (ev "(defmethod builder-replace-multi :default [s _ _] (str s \"!\"))")
-(ok "the captured replace root can be an IFn"
+(ok "the replace root can be an IFn"
     (eq? #t (ev "(with-redefs [clojure.string/replace builder-replace-multi]
                    (= {:a \"a!\" :b \"b!\" :c \"c!\"}
                       (builder-headers (array-map :a \"a\" :b \"b\" :c \"c\"))))")))
-(ok "a root replacement receives the same literal objects on every ordinary step"
+(ok "a root replacement receives the same literal objects on every step"
     (eq? #t (ev "(let [args (atom [])]
                    (with-redefs [clojure.string/replace (fn [s m r] (swap! args conj [m r]) s)]
                      (builder-headers (array-map :a \"a\" :b \"b\" :c \"c\")))
