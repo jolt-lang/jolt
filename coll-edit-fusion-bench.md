@@ -748,3 +748,330 @@ Every receiver in `bench46` asserts its runtime class at startup via `(.getName 
 - **Mutant-checked tests:** Parent commit `e0f6096ce` fails all 14 new emitted-head assertions in `test/chez/inline-test.ss` (`409/423`); M1 (drop `(not (fx=? ai di))` in `jolt-dissoc1-assoc1`) fails 5 tests in `test/chez/arraymap-test.ss` (`123/128`); M2 (check promotion against `(fx- cnt 1)` instead of `cnt` in `jolt-assoc1-dissoc1`) fails 3 tests (`125/128`); M3 (replace `(amap-stable-key? ak)` with `#t`) fails the matching present non-stable written-key assertion individually before the macro patch (`129/130` for each helper) and both assertions together in `amap-edit-pair` (`128/130`).
 - **Committed tree (seeds restored per the seed rule):** `selfhost`, `gambitseedcheck`, `inline` (30 emitted-head/precedence assertions, `393/423`, covering `jolt-41` and `jolt-46`), and `arraymap` (4 compiled-fn single-allocation assertions, `126/130`; all 126 runtime helper checks pass) fail strictly for seed staleness until `make remint` (or `jolt-45`); `deadhost`, `portcheck`, `recordshadow`, `emittedheads`, and `attributioncheck` pass on the committed tree.
 - **Gambit did not run:** `gambitboot`, `gambitcheck`, `gambiteval`, `gambitkernel`, `gambitprofile`, `gambitstatics`, `gambitunbound`, and `gambitvars` skipped because Gambit is not installed on this machine.
+
+## jolt-43
+
+Emit-time peephole (`emit-assoc-update-chain`) in `jolt-core/jolt/backend_scheme/fused.clj` (with `pmap?` registered in `rt-emitted-names` in `jolt-core/jolt/backend_scheme/names.clj`) collapsing straight-line 2..4-pair chains mixing `assoc` and `update` on distinct literal keyword keys into a single guarded multi-pair `(jolt-assoc m k1 v1 ...)` call (reaching `jolt-39`'s fixed `case-lambda` clauses). Chez direct-link builds only (`chez-linked-fast-path?` + `seed-callable?` on `clojure.core/update`; plain/non-direct-link and Gambit builds emit ordinary calls).
+
+- **Parent commit measured against:** `60de4931e` (`perf/coll-edit-fusion`)
+- **Date:** 2026-11-24
+- **Machine:** Apple M3 Ultra (Virtual), macOS 15.7.3
+- **Chez:** 10.4.1 (`JOLT_CHEZ=/Users/admin/src/jolt/.cache/local/chezscheme-10.4.1/bin/scheme`)
+- **Build flags:** `bin/jolt build -m <ns> -o <out> --direct-link --opt`
+- **Nursery pin:** `JOLT_GC_TRIP_BYTES=16m` (isolates adaptive nursery doubling investigated in `jolt-44`)
+- **Precedence among the three rules in `fused.clj`:**
+  1. `emit-assoc-update-chain` (mixed chains containing `>=1` `update`, 2..4 distinct literal keyword pairs, Chez direct-link only)
+  2. `emit-assoc-chain` (pure `assoc` chains, 2..4 pairs, all modes)
+  3. `emit-dissoc-assoc-pair` (single `dissoc`/`assoc` pairs, all modes; defers to `emit-assoc-chain` and eligible `emit-assoc-update-chain`)
+  Rejected mixed chains suppress partial mixed tiling via `*unfused-update-nodes*` while still allowing pure `assoc` chains or `dissoc`/`assoc` pairs on sub-expressions.
+- **Semantics decisions relied on (`coll-edit-fusion-decisions.md`):** Decision 1 (`pure-edit-operand?` / `pure-call-head?` without `:clear-caps` for later `assoc` values and extra `update` arguments), Decision 2 (one `clojure.core/update` root check at chain entry via `jolt-loop-map-update?`, honouring `with-redefs` and `alter-var-root` around the call; does not notice an updater redefining `update` mid-chain), and Decision 3 (no identity guarantee under raw Scheme `call/cc` re-entry). Smaller relaxations: all-no-op chains return the `identical?` receiver; a throw from the final `jolt-assoc` may report the outermost call's line; fallback runs the original unfused calls unchanged.
+- **Seed mint impact:** `make remint` converged in 3 passes (0 forms skipped). **0** call sites fused in `host/chez/seed/prelude.ss` and **0** in `host/chez/seed/image.ss` (gated on `(not (seed-mint?))` via `chez-linked-fast-path?`). Per the seed rule, seed files were restored before committing (`git checkout -- host/chez/seed host/gambit/seed`).
+- **Gambit:** not installed on this machine; `portcheck`, `gambitseedcheck`, `gambitgencheck`, and `gambittwins` passed on the reminted tree; Gambit-runtime gates (`gambitboot`, `gambitcheck`, `gambiteval`, `gambitkernel`, `gambitprofile`, `gambitstatics`, `gambitunbound`, `gambitvars`) did not run.
+
+### Go/no-go measurement on base tip (`60de4931e`)
+
+Before implementing, measured the two target shapes on reminted `60de4931e` (`bin/jolt build -m gonogo --direct-link --opt`, `JOLT_GC_TRIP_BYTES=16m`, 7 runs × 2,000,000 ops after 3 warmup runs, median ns/op) against hand-written Clojure equivalents using multi-arg `assoc` (reaching `jolt-39`'s fast multi-pair clauses):
+
+| Shape | Original `->` (ns/op) | Hand-written multi-`assoc` (ns/op) | Ratio | Notes |
+|---|---:|---:|---:|---|
+| `athens` (4-key real state) | 53.48 | **23.30** | **2.30x** | `(-> state (assoc :last-op op) (update :op-count inc))` |
+| `reframe-dec` (5-key real state) | 182.42 | **136.51** | **1.34x** | `decrement-pending-child` taking `assoc` branch (`n > 1`) |
+| `reframe-dissoc` (5-key real state) | 188.79 | **135.39** | **1.39x** | `decrement-pending-child` taking `dissoc` branch (`n = 1`) |
+| `reframe-nilparent` (5-key real state) | 146.32 | **102.05** | **1.43x** | `parent-id` = `nil` |
+| `reframe-3conj` (5-key state) | 201.04 | **161.62** | **1.24x** | 3 `conj` updates (`:seen-ids`, `:cascade-epochs`, `:cascade-ids`) |
+
+**Decision: GO** — both target shapes clear the 1.15x bar by a wide margin (`2.30x` on `athens`, `1.24x–1.43x` on `re-frame`).
+
+### Corpus recount (50 repos, 15,551 `.clj`/`.cljc`/`.cljs` files, `/tmp/jolt-opt-corpus-20261123`)
+
+Scanned all 15,551 files with a standalone out-of-tree scanner matching maximal contiguous `assoc`/`update` runs inside `->` containing `>=1` `update`, applying the shipped key and operand rules (`op-registry/pure-ops` + keyword lookups; unqualified non-earmuffed symbol local approximation, matching `jolt-41`'s `unq` column):
+
+| Category | Count | Breakdown / Notes |
+|---|---:|---|
+| Syntactic `->` mixed `assoc`/`update` runs | 810 | |
+| Excluded: `>4` pairs / non-keyword key / duplicate key | 143 | 59 `>4` pairs, 36 non-keyword key, 48 duplicate key |
+| Distinct literal keyword 2..4 pairs | 667 | |
+| **Eligible (shipped operand rule, Decision 1)** | **420** | **316** 2-pair, **72** 3-pair, **32** 4-pair (283 update-only, 68 `assoc`+`update`, 40 `update`+`assoc`, 29 mixed 3..4-step) |
+| Eligible (strict local+const only) | 387 | Decision 1 adds +33 sites (+8.5%) |
+
+### Emitted Scheme (before and after), call-site bytes, and compile time
+
+Real corpus sites (`athens/src/cljc/event_sync/core.cljc:19-24` and `re-frame/src/re_frame/router.cljc:483-490`, with `decrement-pending-child` direct-linked):
+
+```clojure
+;; athens/event_sync/core.cljc:19-24
+(defn update-op [state op]
+  (-> state
+      (assoc :last-op op)
+      (update :op-count inc)))
+
+;; re-frame/router.cljc:487-490
+(defn accept-trace-epoch [state id parent-id epoch]
+  (-> state
+      (update :seen-ids conj id)
+      (update :pending-children decrement-pending-child parent-id)
+      (update :cascade-epochs conj epoch)))
+```
+
+```scheme
+;; athens BEFORE (211 bytes at call expr, 940 bytes full def):
+(let* ((_a$32 (jolt-assoc3 state _kc$30 op)) (_a$33 _kc$31) (_a$34 jolt-inc))
+  (let ((_lp$35 jv$clojure.core/update))
+    (if (#3%procedure? _lp$35) (_lp$35 _a$32 _a$33 _a$34) (jolt-invoke _lp$35 _a$32 _a$33 _a$34))))
+
+;; athens AFTER (382 bytes at call expr, +171 bytes [98B guard + 67B fast + 211B fallback + 6B if]; 1,111 bytes full def):
+(if (and (or (pmap? state) (eq? state jolt-nil)) (jolt-loop-map-update? jv$clojure.core/update))
+    (jolt-assoc state _kc$35 op _kc$36 (jolt-n-inc (jolt-get state _kc$36)))
+    (let* ((_a$37 (jolt-assoc3 state _kc$35 op)) (_a$38 _kc$36) (_a$39 jolt-inc))
+      (let ((_lp$40 jv$clojure.core/update))
+        (if (#3%procedure? _lp$40) (_lp$40 _a$37 _a$38 _a$39) (jolt-invoke _lp$40 _a$37 _a$38 _a$39)))))
+
+;; re-frame BEFORE (594 bytes at call expr, 1,560 bytes full def)
+;; re-frame AFTER (1,041 bytes at call expr, +447 bytes [98B guard + 343B fast + 594B fallback + 6B if]; 2,007 bytes full def):
+(if (and (or (pmap? state) (eq? state jolt-nil)) (jolt-loop-map-update? jv$clojure.core/update))
+    (let* ((_mu$10 (jolt-conj2 (jolt-get state _kc$9) id))
+           (_mu$14 (let ((_lp$12 jv$u/decrement-pending-child) (_la$13 (jolt-get state _kc$11)))
+                     (if (#3%procedure? _lp$12) (_lp$12 _la$13 parent-id) (jolt-invoke _lp$12 _la$13 parent-id))))
+           (_mu$16 (jolt-conj2 (jolt-get state _kc$15) epoch)))
+      (jolt-assoc state _kc$9 _mu$10 _kc$11 _mu$14 _kc$15 _mu$16))
+    <unfused 3-step update chain>)
+```
+
+- **Compile time (`bench43`, `bin/jolt build --direct-link --opt`):** parent **21.34 s** vs candidate **21.15 s** (`JOLT_BUILD_PROFILE=1`: `emit app namespaces` 107 ms vs 109 ms, `emit: emit-top` 8 ms vs 11 ms, cumulative 168 ms vs 173 ms — no measurable compile-time overhead).
+
+### Commands
+
+```sh
+# Go/no-go on base tip (60de4931e, reminted):
+(cd /tmp/jolt-43-gonogo && JOLT_PWD="$PWD" "$REPO/bin/jolt" build -m gonogo -o /tmp/jolt-43-gonogo/gonogo --direct-link --opt)
+JOLT_GC_TRIP_BYTES=16m /tmp/jolt-43-gonogo/gonogo 2000000
+
+# Before/after AOT benchmarks (detached worktree at 60de4931e, reminted, vs reminted candidate):
+(cd /tmp/jolt-43-bench && JOLT_PWD="$PWD" /tmp/jolt-43-parent/bin/jolt build -m bench43 -o /tmp/jolt-43-bench/bench43-base --direct-link --opt)
+(cd /tmp/jolt-43-bench && JOLT_PWD="$PWD" "$REPO/bin/jolt" build -m bench43 -o /tmp/jolt-43-bench/bench43-cand --direct-link --opt)
+JOLT_GC_TRIP_BYTES=16m /tmp/jolt-43-bench/bench43-base 2000000
+JOLT_GC_TRIP_BYTES=16m /tmp/jolt-43-bench/bench43-cand 2000000
+JOLT_GC_TRIP_BYTES=16m /tmp/jolt-43-bench/bench43-base 2000000
+```
+
+### Benchmark receiver construction and asserted representations
+
+Every receiver in `bench43` asserts its runtime class at startup via `(.getName ^Class (class obj))`:
+
+- `athens-state`: `{:id :q1 :stages {:s1 {} :s2 {}} :last-op :initialization :op-count 0}` — `clojure.lang.PersistentArrayMap` (4 outer keys, matches `athens/event_sync/core.cljc:69-72`)
+- `rf-state-dec`, `rf-state-dissoc`, `rf-state-nil`: 5-key map literals matching `re-frame/router.cljc:470-474` (`:cascade-ids`, `:seen-ids`, `:cascade-epochs`, `:pending-children`, `:unmatched-epochs`) — `clojure.lang.PersistentArrayMap`
+- `m4`: `{:k0 0 :k1 1 :k2 2 :k3 3}` — `clojure.lang.PersistentArrayMap` (4 keyword keys, literal)
+- `m12`: `(reduce (fn [m i] (assoc m (keyword (str "k" i)) i)) {} (range 12))` — `clojure.lang.PersistentArrayMap` (12 keyword keys, array-mode)
+- `hm24`: `(apply hash-map (mapcat (fn [i] [(keyword (str "k" i)) i]) (range 24)))` — `clojure.lang.PersistentHashMap` (24 keyword keys, hash-mode control)
+- `rec`: `(assoc (->Rec 1 2 3) :x 10 :y 20)` from `(defrecord Rec [a b c])` — `bench43.Rec` (record miss control, declared-field and ext-map rows)
+- `sm`: `(sorted-map :k0 0 :k1 1 :k2 2 :k3 3)` — `clojure.lang.PersistentTreeMap` (sorted-map miss control)
+- `ca`: `(CustomAssoc. m4)` — `bench43.CustomAssoc` (`deftype` implementing `Associative`/`ILookup`/`Counted`, custom miss control)
+- Tail-full vector control: omitted from timed rows because keyword-keyed `assoc`/`update` throws `IllegalArgumentException` on vectors (covered in `test/chez/inline-test.ss`).
+
+### Ad hoc AOT results (median ns/op of 7 runs × 2,000,000 ops, `JOLT_GC_TRIP_BYTES=16m`, A1 -> B -> A2)
+
+| Row | Parent A1 (ns/op) | Candidate B (ns/op) | Parent A2 (ns/op) | Speedup (avg A / B) | Notes |
+|---|---:|---:|---:|---:|---|
+| `athens-4key` | 52.96 | **23.26** | 52.66 | **2.27x** | `athens/event_sync/core.cljc:22` on 4-key real state |
+| `reframe-5key-dec` | 177.86 | **135.88** | 179.96 | **1.32x** | `re-frame/router.cljc:487` (`decrement-pending-child` `assoc` branch) |
+| `reframe-5key-dissoc` | 190.53 | **136.01** | 189.15 | **1.40x** | `re-frame/router.cljc:487` (`decrement-pending-child` `dissoc` branch) |
+| `reframe-5key-nilp` | 140.45 | **101.41** | 142.35 | **1.39x** | `re-frame/router.cljc:487` (`parent-id` = `nil`) |
+| `ua-m4` | 48.98 | **22.23** | 50.90 | **2.25x** | 2-step `update`+`assoc` on 4-key array map |
+| `uu-m4` | 60.73 | **27.39** | 59.27 | **2.19x** | 2-step `update`+`update` on 4-key array map |
+| `mixed4-m4` | 102.40 | **34.01** | 98.12 | **2.95x** | 4-step `assoc`+`update`+`assoc`+`update` on 4-key array map |
+| `mixed4-m12` | 122.01 | **49.20** | 118.78 | **2.45x** | 4-step mixed chain on 12-keyword array map |
+| `mixed2-nil` | 125.27 | **90.92** | 124.32 | **1.37x** | 2-step `assoc`+`update` (`inc0 = (fnil inc 0)`) on `nil` |
+| `ctrl-hash24-ua` | 111.44 | **107.08** | 113.87 | **1.05x** | hash-mode 24-key map (takes fast lane, saves `update` dispatch) |
+| `ctrl-hash24-mixed4` | 252.87 | **242.18** | 251.28 | **1.04x** | hash-mode 24-key map, 4-step mixed |
+| `ctrl-rec-field` | 79.82 | 79.38 | 79.17 | 1.00x | miss control: `defrecord` declared fields (misses `pmap?` inline) |
+| `ctrl-rec-ext` | 125.67 | 125.93 | 124.91 | 0.99x | miss control: `defrecord` ext keys (misses `pmap?` inline) |
+| `ctrl-sorted-ua` | 355.43 | 356.09 | 353.27 | 0.99x | miss control: `sorted-map` (misses `pmap?` inline) |
+| `ctrl-custom-ua` | 190.29 | 191.26 | 190.81 | 1.00x | miss control: custom `Associative` `deftype` (misses `pmap?` inline) |
+
+### Allocation checks (compiled Clojure fns, `bytes-allocated` over 1,000 iterations)
+
+- `athens-4key`: **256 -> 128 bytes/op** (2.0x less allocation: 1 outer 4-key array map instead of 2)
+- `reframe-5key-dec`: **800 -> 512 bytes/op** (-288 bytes/op: eliminates 2 intermediate 5-key outer maps, 144 bytes each)
+- `mixed4-m4`: **512 -> 128 bytes/op** (4.0x less allocation: 1 outer 4-key array map instead of 4)
+- `noop-m4` (`(-> m4 (assoc :k0 0) (update :k1 identity))`): **0 -> 0 bytes/op** (`identical?` receiver)
+
+### Benchmark source (`gonogo.clj` and `bench43.clj`, with `deps.edn` `{:paths ["."]}`)
+
+```clojure
+;; gonogo.clj (go/no-go harness run on base tip 60de4931e)
+(ns gonogo)
+
+(defn athens-orig [state op]
+  (-> state (assoc :last-op op) (update :op-count inc)))
+
+(defn athens-hand [state op]
+  (let [v1 op, v2 (inc (get state :op-count))]
+    (assoc state :last-op v1 :op-count v2)))
+
+(defn decrement-pending-child [pending parent-id]
+  (if parent-id
+    (let [n (get pending parent-id 0)]
+      (cond (> n 1) (assoc pending parent-id (dec n))
+            (= n 1) (dissoc pending parent-id)
+            :else pending))
+    pending))
+
+(defn reframe-orig [state id parent-id epoch]
+  (-> state
+      (update :seen-ids conj id)
+      (update :pending-children decrement-pending-child parent-id)
+      (update :cascade-epochs conj epoch)))
+
+(defn reframe-hand [state id parent-id epoch]
+  (let [v1 (conj (get state :seen-ids) id)
+        v2 (decrement-pending-child (get state :pending-children) parent-id)
+        v3 (conj (get state :cascade-epochs) epoch)]
+    (assoc state :seen-ids v1 :pending-children v2 :cascade-epochs v3)))
+
+(defn reframe-3conj-orig [state id epoch]
+  (-> state
+      (update :seen-ids conj id)
+      (update :cascade-epochs conj epoch)
+      (update :cascade-ids conj id)))
+
+(defn reframe-3conj-hand [state id epoch]
+  (let [v1 (conj (get state :seen-ids) id)
+        v2 (conj (get state :cascade-epochs) epoch)
+        v3 (conj (get state :cascade-ids) id)]
+    (assoc state :seen-ids v1 :cascade-epochs v2 :cascade-ids v3)))
+```
+
+```clojure
+;; bench43.clj (A1/B/A2 benchmark harness)
+(ns bench43)
+
+(defrecord Rec [a b c])
+
+(deftype CustomAssoc [m]
+  clojure.lang.Associative
+  (containsKey [_ k] (contains? m k))
+  (entryAt [_ k] (find m k))
+  (assoc [_ k v] (CustomAssoc. (assoc m k v)))
+  clojure.lang.ILookup
+  (valAt [_ k] (get m k))
+  (valAt [_ k d] (get m k d))
+  clojure.lang.Counted
+  (count [_] (count m)))
+
+(defn athens-update-op [state op]
+  (-> state
+      (assoc :last-op op)
+      (update :op-count inc)))
+
+(defn decrement-pending-child [pending parent-id]
+  (if parent-id
+    (let [n (get pending parent-id 0)]
+      (cond
+        (> n 1) (assoc pending parent-id (dec n))
+        (= n 1) (dissoc pending parent-id)
+        :else pending))
+    pending))
+
+(defn reframe-accept [state id parent-id epoch]
+  (-> state
+      (update :seen-ids conj id)
+      (update :pending-children decrement-pending-child parent-id)
+      (update :cascade-epochs conj epoch)))
+
+(defn update-assoc-2 [m x] (-> m (update :k0 inc) (assoc :k1 x)))
+(defn update-update-2 [m] (-> m (update :k0 inc) (update :k1 inc)))
+(defn mixed-4 [m x y] (-> m (assoc :k0 x) (update :k1 inc) (assoc :k2 y) (update :k3 inc)))
+(def inc0 (fnil inc 0))
+(defn mixed-nil-2 [m x] (-> m (assoc :a x) (update :b inc0)))
+(defn mixed-rec-field [r x] (-> r (assoc :a x) (update :b inc)))
+(defn mixed-rec-ext [r x] (-> r (assoc :x x) (update :y inc)))
+
+(defn- assert-class [label obj expected]
+  (let [actual (.getName ^Class (class obj))]
+    (when (not= actual expected)
+      (throw (ex-info (str "Unexpected class for " label ": " actual " != " expected) {})))))
+
+(defn- median [xs]
+  (let [s (vec (sort xs))]
+    (nth s (quot (count s) 2))))
+
+(defn- run-row [label n f]
+  (dotimes [_ 3] (f (quot n 10)))
+  (let [samples
+        (mapv (fn [_]
+                (System/gc)
+                (let [t0 (System/nanoTime)
+                      acc (f n)
+                      dt (- (System/nanoTime) t0)]
+                  [(/ (double dt) (double n)) acc]))
+              (range 7))
+        med (median (mapv first samples))]
+    (println (format "  %-24s %7.2f ns/op  (acc=%s)" label med (second (first samples))))))
+
+(defn -main [& args]
+  (let [n (if (seq args) (Integer/parseInt (first args)) 2000000)
+        athens-state {:id :q1 :stages {:s1 {} :s2 {}} :last-op :initialization :op-count 0}
+        op [:add :s1 :e1 {:payload 1} false]
+        rf-state-dec {:cascade-ids #{:root} :seen-ids #{:root}
+                      :cascade-epochs [{:dispatch-id :root}]
+                      :pending-children {:root 2 :p2 1} :unmatched-epochs []}
+        rf-state-dissoc {:cascade-ids #{:root} :seen-ids #{:root}
+                         :cascade-epochs [{:dispatch-id :root}]
+                         :pending-children {:root 1 :p2 2} :unmatched-epochs []}
+        rf-state-nil {:cascade-ids #{} :seen-ids #{} :cascade-epochs []
+                      :pending-children {} :unmatched-epochs []}
+        epoch {:dispatch-id :e2 :parent-dispatch-id :root :effects []}
+        m4 {:k0 0 :k1 1 :k2 2 :k3 3}
+        m12 (reduce (fn [m i] (assoc m (keyword (str "k" i)) i)) {} (range 12))
+        hm24 (apply hash-map (mapcat (fn [i] [(keyword (str "k" i)) i]) (range 24)))
+        rec (assoc (->Rec 1 2 3) :x 10 :y 20)
+        sm (sorted-map :k0 0 :k1 1 :k2 2 :k3 3)
+        ca (CustomAssoc. m4)]
+    (assert-class "athens-state" athens-state "clojure.lang.PersistentArrayMap")
+    (assert-class "rf-state-dec" rf-state-dec "clojure.lang.PersistentArrayMap")
+    (assert-class "rf-state-dissoc" rf-state-dissoc "clojure.lang.PersistentArrayMap")
+    (assert-class "rf-state-nil" rf-state-nil "clojure.lang.PersistentArrayMap")
+    (assert-class "m4" m4 "clojure.lang.PersistentArrayMap")
+    (assert-class "m12" m12 "clojure.lang.PersistentArrayMap")
+    (assert-class "hm24" hm24 "clojure.lang.PersistentHashMap")
+    (assert-class "rec" rec "bench43.Rec")
+    (assert-class "sm" sm "clojure.lang.PersistentTreeMap")
+    (assert-class "ca" ca "bench43.CustomAssoc")
+    (run-row "athens-4key" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (:op-count (athens-update-op athens-state op)))) acc))))
+    (run-row "reframe-5key-dec" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (count (:cascade-epochs (reframe-accept rf-state-dec :e2 :root epoch))))) acc))))
+    (run-row "reframe-5key-dissoc" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (count (:cascade-epochs (reframe-accept rf-state-dissoc :e2 :root epoch))))) acc))))
+    (run-row "reframe-5key-nilp" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (count (:cascade-epochs (reframe-accept rf-state-nil :e2 nil epoch))))) acc))))
+    (run-row "ua-m4" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (:k0 (update-assoc-2 m4 i)))) acc))))
+    (run-row "uu-m4" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (:k1 (update-update-2 m4)))) acc))))
+    (run-row "mixed4-m4" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (:k3 (mixed-4 m4 i (+ i 1))))) acc))))
+    (run-row "mixed4-m12" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (:k3 (mixed-4 m12 i (+ i 1))))) acc))))
+    (run-row "mixed2-nil" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (:b (mixed-nil-2 nil i)))) acc))))
+    (run-row "ctrl-hash24-ua" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (:k0 (update-assoc-2 hm24 i)))) acc))))
+    (run-row "ctrl-hash24-mixed4" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (:k3 (mixed-4 hm24 i (+ i 1))))) acc))))
+    (run-row "ctrl-rec-field" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (:b (mixed-rec-field rec i)))) acc))))
+    (run-row "ctrl-rec-ext" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (:y (mixed-rec-ext rec i)))) acc))))
+    (run-row "ctrl-sorted-ua" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (:k0 (update-assoc-2 sm i)))) acc))))
+    (run-row "ctrl-custom-ua" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (:k0 (update-assoc-2 ca i)))) acc))))))
+```
+
+### Gate status
+
+- **Reminted worktree (filtered full `SHARD-POOL`, 205 of 208 targets):** excluded the three pre-existing host environmental failures (`certify` [requires JDK 21], `lazyretain` [requires GNU `timeout`], and `filelock` [pre-existing `starved after 10000 cycles` failure]). Ran `200` parallel targets (`-j8`) + `devbootsmoke`/`gatebootsmoke` (`-j1`) + `fastpathratio`/`stdlibratio`/`pmoverhead` (`-j1`) — all **205/205** targets exited 0, including `selfhost`, `gambitseedcheck`, `gambitgencheck`, `gambittwins`, `emittedheads` (295 heads, 0 shadowable), `inline` (483/483, including 60 new `jolt-43` positive/non-direct-link/precedence/negative/`with-redefs`/`alter-var-root`/throwing/eval-order/`^:once`/shadowing/receiver-fallback/`loop-maps`/`types.clj`/400-trial randomized differential tests), `irvalidate`, `arraymap` (130/130), `recfast` (518/518), `recfold` (13/13), `oparity`, `directlink`, `cts` (6094 pass, matches baseline), `unit`, `corpus`, `footprint`, `vfaslceiling`, `portcheck`, `deadhost`, `recordshadow`, and `attributioncheck`.
+- **Mutant-checked tests (`test/chez/inline-test.ss`):** Parent commit `60de4931e` fails all 20 new emitted-head/precedence/demotion-fusion assertions (`463/483`); M1 (drop duplicate-key check) fails 9 assertions (`474/483`); M2 (drop `jolt-loop-map-update?` root guard) fails 22 assertions (`461/483`, including both `with-redefs` and `alter-var-root` fallback tests); M3 (drop `(or (pmap? ...) (eq? ... jolt-nil))` receiver guard) fails emitted-head + eval-order tests and throws on `[1 2]`; M4 (drop `*unfused-update-nodes*` suppression) fails 3 no-tiling assertions (`480/483`); M5 (drop `pure-edit-operand?` on later steps) fails all 9 impure/`:clear-caps` negative assertions (`474/483`).
+- **Committed tree (seeds restored per the seed rule):** `selfhost`, `gambitseedcheck`, `emittedheads` (`"pmap?"` absent from committed seed's `rt-emitted-names`), and `inline` (54 emitted-head/precedence assertions, `429/483`, covering `jolt-41`, `jolt-46`, and `jolt-43`) fail strictly for seed staleness until `make remint` (or `jolt-45`); `attributioncheck` passes on the committed tree.
+- **Gambit did not run:** `gambitboot`, `gambitcheck`, `gambiteval`, `gambitkernel`, `gambitprofile`, `gambitstatics`, `gambitunbound`, and `gambitvars` skipped because Gambit is not installed on this machine.
