@@ -29,13 +29,14 @@
   folds left pair by pair, so (+ Long/MAX_VALUE 1 1.5) overflows on the first
   pair as it does on the JVM. Compile the output with -ffp-contract=off: a fused
   multiply-add rounds once where Jolt rounds twice."
-  (:require [clojure.string :as str]
+  (:require [clojure.set :as set]
+            [clojure.string :as str]
             [jolt.native.ast :as ast]
             [jolt.native.range :as ranges]
             [jolt.native.stack :as stack]))
 
 (def err-codes
-  {:oob 1 :overflow 2 :div-zero 3 :neg-size 4 :long-range 5 :oom 6 :fixnum-store 7})
+  {:oob 1 :overflow 2 :div-zero 3 :neg-size 4 :long-range 5 :oom 6 :fixnum-store 7 :stack-overflow 8})
 
 ;; A borrowed long-array is a Chez fxvector: each slot a fixnum, the value times
 ;; 8 (scheme.h Sfixnum/Sfixnum_value). jolt widens the backing once a value
@@ -60,6 +61,10 @@
 ;; stack arrays per function (jolt.native.stack), and the current function's
 (def ^:dynamic *stacks* nil)
 (def ^:dynamic *stack* nil)
+;; the helper instances that can call themselves (directly or through others),
+;; whose C checks the stack on entry; when there are any, every helper takes
+;; the limit (jn_lo) the entry read once
+(def ^:dynamic *recursive* #{})
 
 (defn- proven? [node k] (and *fast* (get-in *fast* [(:id node) k])))
 
@@ -366,7 +371,8 @@
     :call (let [args (mapv emit (:args node))
                 t (:type node)
                 r (if (ast/owned? t) (declare-var! (:id node) t) (fresh! (if (#{:unit :never} t) :long t)))]
-            (line! r " = " (helper-name (:instance node)) "(" (str/join ", " args) ");")
+            (line! r " = " (helper-name (:instance node)) "("
+                   (str/join ", " (cond-> args (seq *recursive*) (conj "jn_lo"))) ");")
             (line! "if (jn_tls.code) { " (frees (:live node)) " return " (ret-zero) "; }")
             r)
     :new-array (if-let [n-el (get-in *stack* [:sites (:id node)])]
@@ -439,7 +445,8 @@
 #define JN_PRELUDE
 typedef struct { int64_t len; double *data; } jn_arr_d;
 typedef struct { int64_t len; int64_t *data; } jn_arr_l;
-typedef struct { int64_t code; int64_t a; int64_t b; double d; int64_t len; } jn_out;
+typedef struct { int64_t code; int64_t a; int64_t b; double d; int64_t len;
+                 uintptr_t stack_lo; uintptr_t stack_thr; } jn_out;
 /* The status of the region this thread ran last: code 0, or a failure and its
    operands; and an array result's length. Thread-local rather than an argument
    buffer: a collect-safe call lets the collector run while C works, and a
@@ -452,6 +459,49 @@ extern jn_out jn_tls;
 #else
 static _Thread_local jn_out jn_tls;
 #endif
+/* The lowest stack address a recursive helper may enter at: the thread's real
+   stack bounds less some headroom (a frame, the C it calls, a signal handler),
+   read once per thread. Below it a helper fails with StackOverflowError rather
+   than run into the guard page. A platform without a way to ask gets no guard. */
+#ifndef JN_STACK_HEADROOM
+#define JN_STACK_HEADROOM (256 * 1024)
+#endif
+#if defined(_WIN32)
+__declspec(dllimport) void __stdcall GetCurrentThreadStackLimits(unsigned long long *, unsigned long long *);
+__declspec(dllimport) unsigned long __stdcall GetCurrentThreadId(void);
+#define JN_THREAD_ID() ((uintptr_t)GetCurrentThreadId())
+#else
+#include <pthread.h>
+#if defined(__linux__)
+int pthread_getattr_np(pthread_t, pthread_attr_t *);
+#endif
+#define JN_THREAD_ID() ((uintptr_t)pthread_self())
+#endif
+__attribute__((noinline, unused)) static uintptr_t jn_stack_limit_slow(void) {
+  uintptr_t lo = 0, size = 0;
+#if defined(__APPLE__)
+  uintptr_t hi = (uintptr_t)pthread_get_stackaddr_np(pthread_self());
+  size = pthread_get_stacksize_np(pthread_self());
+  lo = hi - size;
+#elif defined(__linux__)
+  pthread_attr_t at; void *addr; size_t sz;
+  if (pthread_getattr_np(pthread_self(), &at) == 0) {
+    if (pthread_attr_getstack(&at, &addr, &sz) == 0) { lo = (uintptr_t)addr; size = sz; }
+    pthread_attr_destroy(&at);
+  }
+#elif defined(_WIN32)
+  unsigned long long l = 0, h = 0;
+  GetCurrentThreadStackLimits(&l, &h);
+  lo = (uintptr_t)l; size = (uintptr_t)(h - l);
+#endif
+  uintptr_t head = size / 4 < JN_STACK_HEADROOM ? size / 4 : JN_STACK_HEADROOM;
+  jn_tls.stack_lo = size ? lo + head : 1;
+  jn_tls.stack_thr = JN_THREAD_ID();
+  return jn_tls.stack_lo;
+}
+__attribute__((unused)) static inline uintptr_t jn_stack_limit(void) {
+  return (jn_tls.stack_lo && jn_tls.stack_thr == JN_THREAD_ID()) ? jn_tls.stack_lo : jn_stack_limit_slow();
+}
 /* Chez's 64-bit flvector layout (scheme.h Sflvector_length / Sflvector_ref) */
 #define JN_FLV_LEN(x) ((int64_t)((uintptr_t)(*((intptr_t *)((uintptr_t)(x) + 1))) >> 4))
 #define JN_FLV_DATA(x) ((double *)((uintptr_t)(x) + 9))
@@ -471,10 +521,41 @@ static _Thread_local jn_out jn_tls;
 (defn- helper-sig [inst]
   (let [t (:ret inst)]
     (str "static " (if (#{:unit :never} t) "int64_t" (ctype t)) " " (helper-name (:iid inst)) "("
-         (if (seq (:params inst))
-           (str/join ", " (map (fn [p] (str (ctype (:type p)) " " (var-name (:id p)))) (:params inst)))
-           "void")
+         (let [ps (cond-> (mapv (fn [p] (str (ctype (:type p)) " " (var-name (:id p)))) (:params inst))
+                    (seq *recursive*) (conj "uintptr_t jn_lo"))]
+           (if (seq ps) (str/join ", " ps) "void"))
          ")")))
+
+(defn- calls-of
+  "The helper instances a body calls."
+  [body]
+  (->> (tree-seq coll? (fn [n] (if (map? n) (vals n) n)) body)
+       (keep #(when (and (map? %) (= :call (:op %))) (:instance %)))
+       set))
+
+(defn recursive-instances
+  "The iids of the region's helper instances that can reach themselves through
+  their calls: only those can recurse without bound."
+  [region]
+  (let [g (into {} (map (fn [i] [(:iid i) (apply set/union (calls-of (:body i))
+                                                  (map (comp calls-of :body) (:variants i)))])
+                        (:instances region)))
+        reach (fn [start]
+                (loop [seen #{} todo (vec (g start))]
+                  (if-let [x (peek todo)]
+                    (if (seen x) (recur seen (pop todo)) (recur (conj seen x) (into (pop todo) (g x))))
+                    seen)))]
+    (set (filter #((reach %) %) (keys g)))))
+
+(defn- stack-guard
+  "A recursive helper's entry check, before it holds anything but the arrays
+  it takes, which it frees as it fails."
+  [inst]
+  (when (*recursive* (:iid inst))
+    (let [takes (get-in @*region* [:takes (:iid inst) :positions])
+          taken (keep-indexed (fn [i p] (when (contains? takes i) (:id p))) (:params inst))]
+      (str "if ((uintptr_t)__builtin_frame_address(0) < jn_lo) { " (frees taken)
+           " jn_tls.code = " (err-codes :stack-overflow) "; return " (ret-zero) "; }"))))
 
 (defn- useful? [facts]
   (some (fn [f] (or (:idx-int f) (:in-bounds f) (some true? (:no-ov f)))) (vals facts)))
@@ -525,6 +606,7 @@ static _Thread_local jn_out jn_tls;
             *fn-ret* (:ret inst)
             *stack* (get *stacks* key)]
     (let [t (:ret inst)
+          _ (some-> (stack-guard inst) line!)
           v (emit-versioned body (get *ranges* key))
           lines @*lines*
           result (cond
@@ -588,7 +670,8 @@ static _Thread_local jn_out jn_tls;
   (binding [*sym* sym
             *region* (atom (assoc region :loops {}))
             *ranges* (ranges/analyze-region region)
-            *stacks* (stack/analyze-region region)]
+            *stacks* (stack/analyze-region region)
+            *recursive* (recursive-instances region)]
     (let [helpers (str (apply str (map #(str (helper-sig %) ";\n") (:instances region)))
                        (apply str (map emit-helper (:instances region))))]
       (str prelude "\n" (extern-decls region) helpers (emit-entry region sym)))))
@@ -610,6 +693,7 @@ static _Thread_local jn_out jn_tls;
                 (swap! *decls* assoc (var-name (:id p))
                        (str (ctype (:type p)) " " (var-name (:id p)) " = { JN_FLV_LEN(p" (:id p) "), "
                             (if (fx-borrowed? (:type p)) "(int64_t *)" "") "JN_FLV_DATA(p" (:id p) ") };"))))
+          _ (when (seq *recursive*) (swap! *decls* assoc "jn_lo" "uintptr_t jn_lo = jn_stack_limit();"))
           v (emit-versioned (:body region) (:entry *ranges*))
           body @*lines*
           decls (vals @*decls*)

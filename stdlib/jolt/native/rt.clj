@@ -20,6 +20,8 @@
     7 (throw (IllegalArgumentException.
               (str "native region: " a " does not fit a borrowed long-array, which"
                    " holds fixnums (-2^60 to 2^60-1); widen the array outside the region")))
+    ;; a recursive helper ran out of the thread's C stack
+    8 (throw (StackOverflowError.))
     (throw (IllegalStateException. (str "native region: unknown failure code " code)))))
 
 (defn- in-long [r]
