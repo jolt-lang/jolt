@@ -32,7 +32,7 @@
 
 ;; A confined reduce-kv whose callback only hands its accumulator to a final
 ;; (assoc acc K V); jolt.passes.facts/reducer-confinement-at proves that shape.
-;; The emitter passes `collect`, the same callback with that assoc re-targeted
+;; The emitter passes `step`, the same callback with that assoc re-targeted
 ;; to jolt-reduce-kv-collect, and the whole fold runs through it. It evaluates
 ;; every key and value expression in order, as the ordinary fold does, and
 ;; accumulates the computed entries as an immutable list, so a continuation
@@ -71,6 +71,6 @@
         ((pmap-builder-key? k) (cons (cons k v) acc))
         (else (jolt-assoc3 (reduce-kv-freeze acc) k v))))
 
-(define (jolt-reduce-kv-build seed source collect)
-  (let ((r (walk-pmap-kv source (kv-step collect) '())))
+(define (jolt-reduce-kv-build seed source step)
+  (let ((r (walk-pmap-kv source (kv-step step) '())))
     (if (reduce-kv-entries? r) (reduce-kv-freeze r) r)))
