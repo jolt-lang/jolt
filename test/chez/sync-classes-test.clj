@@ -186,8 +186,8 @@
     (ok [kind "CyclicBarrier: nobody left waiting"] (zero? (.getNumberWaiting b2)))))
 
 ;; a fiber waiter whose timeout runs out during the action does not break the barrier
-(let [b (CyclicBarrier. 2 #(Thread/sleep 300))
-      w (f/spawn #(try (.await b 80 TimeUnit/MILLISECONDS) (catch Throwable e (.getName (class e)))))]
+(let [b (CyclicBarrier. 2 #(Thread/sleep 900))
+      w (f/spawn #(try (.await b 400 TimeUnit/MILLISECONDS) (catch Throwable e (.getName (class e)))))]
   (loop [k 0] (when (and (< k 2000) (zero? (.getNumberWaiting b))) (Thread/sleep 1) (recur (inc k))))
   (let [l (f/spawn #(.await b))]
     (ok "CyclicBarrier: fiber waiter's timeout during the action" (= [1 0 false] [(f/join w) (f/join l) (.isBroken b)]))))
