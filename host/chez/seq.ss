@@ -741,64 +741,161 @@
 ;; representation.
 (define (pmap-seq-sel mode k v)
   (cond ((fx=? mode 0) (make-map-entry k v)) ((fx=? mode 1) k) (else v)))
+;; pmap-seq-sel spliced into the HAMT walk's per-entry step (one call less per
+;; entry; key and val are read only when the mode wants them)
+(define-syntax pmap-seq-pick
+  (syntax-rules ()
+    ((_ mode arr i)
+     (let ((md mode) (a arr) (j i))
+       (cond ((fx=? md 1) (vector-ref a j))
+             ((fx=? md 0) (make-map-entry (vector-ref a j) (vector-ref a (fx+ j 1))))
+             (else (vector-ref a (fx+ j 1))))))))
 (define (pmap-view-seq m mode kind)
   (let ((n (pmap-cnt m)))
     (cond
       ((fx=? n 0) jolt-nil)
-      ((hnode? (pmap-root m)) (hamt-chunk-seq m mode '(0)))
+      ((hnode? (pmap-root m)) (hamt-chunk-seq m mode))
       (else
        (let ((v (make-vector n)))
          (pmap-fold m (lambda (k val i) (vector-set! v i (pmap-seq-sel mode k val)) (fx- i 1)) (fx- n 1))
          (cseq-vec (vector-ref v 0) (make-pvec v #f) 0 kind))))))
 ;; --- the lazy HAMT walk -------------------------------------------------------
-;; Each chunk is up to 32 leaves, read depth-first in exactly the order the
-;; vector fill above produced: a node's slots ascending, a child node's leaves in
-;; place of its slot, and a collision bucket's alist REVERSED (node-fold visits it
-;; forward, and the view reverses the visit). A chunk is a ChunkedCons cell of the
-;; map's own flavor whose after-chunk rest is a lazy cell for the next chunk, so
-;; walking within a chunk allocates nothing beyond the cell, and the walk as a
-;; whole stays O(n).
+;; Each chunk is up to 32 entries, read depth-first in exactly the order the
+;; vector fill above produced: a node's fragments ascending, a branch's entries
+;; in place of its fragment, and a collision bucket's alist in order (its
+;; insertion order, the JVM's HashCollisionNode order). A chunk is a ChunkedCons
+;; cell of the map's own flavor whose after-chunk rest is a lazy cell for the
+;; next chunk, so walking within a chunk allocates nothing beyond the cell, and
+;; the walk as a whole stays O(n).
 ;;
-;; Where the next chunk starts is a PATH of slot indices from the root — data,
-;; so the lazy cell is a lazy-src over (map, mode . path) and travels in a state
-;; image like any other producer. Resuming re-descends the path: O(depth) per
-;; chunk, i.e. O(log32 n), the same as NodeSeq's first.
-(define (hamt-slot-vec x)              ; a branch's slots, as a vector to index
-  (if (hnode? x) (hnode-arr x) (list->vector (reverse (hcoll-alist x)))))
+;; The walk keeps a stack of where it is, one frame per level (a 32-bit hash
+;; spans at most 7 levels below the root, so 8 frames), four slots each in one
+;; vector. A frame above the level being read is a node positioned ON the
+;; branch being read below it: node, rem (its fragments not yet passed, that
+;; branch's included), di and ni (the next entry's slot counting up, the next
+;; branch's counting down from the end). When a chunk fills, the level being
+;; read is written as the top frame -- a node and its position, a branch-free
+;; node and its next key slot (rem 'leaf), or a bucket's remaining alist (rem
+;; 'bucket) -- and the next chunk's lazy cell holds the stack itself, so the
+;; next chunk resumes where this one stopped instead of re-descending from the
+;; root. A cell is realized once (a lazy-src runs under its cell's claim), so
+;; the next chunk may reuse the stack. The stack is nodes, alists and fixnums:
+;; data, so the cell travels in a state image like any other producer.
+;;
+;; Images written before format 16 hold 'hamt-chunk cells instead: a path from
+;; the root of RANKS (a fragment's index among its node's occupied ones, an
+;; index into a bucket's alist), which that name still resumes by descending.
+(define-syntax hamt-frag-of                    ; the fragment a single bit stands for
+  (syntax-rules () ((_ low) (hamt-popcount (hamt-sub low 1)))))
 (define (hamt-mode-kind mode)
   (cond ((fx=? mode 0) sk-hashmap-seq) ((fx=? mode 1) sk-key-seq) (else sk-val-seq)))
+(define lz-hamt-chunk-resume
+  (register-lazy-src! 'hamt-chunk-resume
+    (lambda (m mode+state)
+      (let ((stack (cadr mode+state)) (d (cddr mode+state)))
+        (hamt-walk-resume m (car mode+state) (make-vector seq-chunk-size) stack d)))))
 (define lz-hamt-chunk
   (register-lazy-src! 'hamt-chunk
-    (lambda (m mode+path) (hamt-chunk-seq m (car mode+path) (cdr mode+path)))))
-(define (hamt-chunk-seq m mode path)
-  (let ((buf (make-vector seq-chunk-size)))
-    ;; descend PATH: every index but the last names the branch being walked
-    (let descend ((vec (hnode-arr (pmap-root m))) (path path) (parents '()))
-      (if (pair? (cdr path))
-          (descend (hamt-slot-vec (vector-ref vec (car path))) (cdr path)
-                   (cons (cons vec (car path)) parents))
-          (let walk ((vec vec) (i (car path)) (parents parents) (n 0))
-            (cond
-              ((fx>=? i (vector-length vec))     ; this branch is done: pop it
-               (if (null? parents)
-                   (hamt-chunk-cell m mode buf n #f)
-                   (walk (caar parents) (fx+ (cdar parents) 1) (cdr parents) n)))
-              ((fx=? n seq-chunk-size)           ; full, and more follows: resume here
-               (hamt-chunk-cell m mode buf n
-                 (let up ((ps parents) (acc (list i)))
-                   (if (null? ps) acc (up (cdr ps) (cons (cdar ps) acc))))))
-              (else
-               (let ((x (vector-ref vec i)))
-                 (if (pair? x)
-                     (begin (vector-set! buf n (pmap-seq-sel mode (car x) (cdr x)))
-                            (walk vec (fx+ i 1) parents (fx+ n 1)))
-                     (walk (hamt-slot-vec x) 0 (cons (cons vec i) parents) n))))))))))
+    (lambda (m mode+path) (hamt-chunk-seq-ranks m (car mode+path) (cdr mode+path)))))
+
+(define (hamt-walk-push! stack d node rem di ni)
+  (let ((o (fx* 4 d)))
+    (vector-set! stack o node) (vector-set! stack (fx+ o 1) rem)
+    (vector-set! stack (fx+ o 2) di) (vector-set! stack (fx+ o 3) ni)))
+;; the chunk is full: the level being read becomes the top frame and the next
+;; chunk's cell carries the stack
+(define (hamt-walk-stop m mode buf stack d node rem di ni)
+  (hamt-walk-push! stack d node rem di ni)
+  (hamt-chunk-cell m mode buf seq-chunk-size (cons stack d)))
+;; continue at the top frame (d), as the stop above left it
+(define (hamt-walk-resume m mode buf stack d)
+  (let* ((o (fx* 4 d)) (node (vector-ref stack o)) (rem (vector-ref stack (fx+ o 1))))
+    (cond ((eq? rem 'leaf) (hamt-walk-leaf m mode buf stack node (vector-ref stack (fx+ o 2)) d 0))
+          ((eq? rem 'bucket) (hamt-walk-bucket m mode buf stack node d 0))
+          (else (hamt-walk m mode buf stack node rem (vector-ref stack (fx+ o 2)) (vector-ref stack (fx+ o 3)) d 0)))))
+;; back up a level, stepping past the branch that frame is on
+(define (hamt-walk-pop m mode buf stack d n)
+  (if (fx=? d 0)
+      (hamt-chunk-cell m mode buf n #f)
+      (let* ((o (fx* 4 (fx- d 1))) (rem (vector-ref stack (fx+ o 1))))
+        (hamt-walk m mode buf stack (vector-ref stack o) (hamt-and rem (hamt-sub rem 1))
+                   (vector-ref stack (fx+ o 2)) (fx- (vector-ref stack (fx+ o 3)) 1) (fx- d 1) n))))
+;; start reading branch b at depth d
+(define (hamt-walk-enter m mode buf stack b d n)
+  (cond ((not (hnode? b)) (hamt-walk-bucket m mode buf stack (hcoll-alist b) d n))
+        ((hamt=? 0 (hnode-nmap b)) (hamt-walk-leaf m mode buf stack b 0 d n))
+        (else (let ((bdm (hnode-dmap b)))
+                (hamt-walk m mode buf stack b (hamt-ior bdm (hnode-nmap b)) 0 (fx- (vector-length (hnode-arr b)) 1) d n)))))
+;; a node with no branches (most leaves, and the big nodes of a small map): its
+;; entries in slot order, from key slot i
+(define (hamt-walk-leaf m mode buf stack node i d n)
+  (let* ((arr (hnode-arr node)) (len (vector-length arr)))
+    (let run ((i i) (n n))
+      (cond ((fx=? i len) (hamt-walk-pop m mode buf stack d n))
+            ((fx=? n seq-chunk-size) (hamt-walk-stop m mode buf stack d node 'leaf i 0))
+            (else (vector-set! buf n (pmap-seq-pick mode arr i))
+                  (run (fx+ i 2) (fx+ n 1)))))))
+(define (hamt-walk m mode buf stack node rem di ni d n)
+  ;; the entries in a run stay in this loop, and so does a leaf that fits in the
+  ;; chunk -- most branches near the bottom of a trie are such leaves
+  (let ((arr (hnode-arr node)) (dm (hnode-dmap node)))
+    (let run ((rem rem) (di di) (ni ni) (n n))
+      (cond
+        ((hamt-u=? 0 rem) (hamt-walk-pop m mode buf stack d n))
+        ((fx=? n seq-chunk-size) (hamt-walk-stop m mode buf stack d node rem di ni))
+        (else
+         (let ((low (hamt-ulow-bit rem)))
+           (if (hamt-uentry? dm low)
+               (begin
+                 (vector-set! buf n (pmap-seq-pick mode arr di))
+                 (run (hamt-uxor rem low) (fx+ di 2) ni (fx+ n 1)))
+               (let ((b (vector-ref arr ni)))
+                 (if (and (hnode? b) (hamt-u=? 0 (hnode-nmap b))
+                          (fx<=? (fx+ n (fxsra (vector-length (hnode-arr b)) 1)) seq-chunk-size))
+                     ;; a leaf that fits in this chunk is read in place: no frame
+                     (let* ((barr (hnode-arr b)) (len (vector-length barr)))
+                       (let copy ((i 0) (n n))
+                         (if (fx=? i len)
+                             (run (hamt-uxor rem low) di (fx- ni 1) n)
+                             (begin
+                               (vector-set! buf n (pmap-seq-pick mode barr i))
+                               (copy (fx+ i 2) (fx+ n 1))))))
+                     (begin
+                       (hamt-walk-push! stack d node rem di ni)
+                       (hamt-walk-enter m mode buf stack b (fx+ d 1) n)))))))))))
+(define (hamt-walk-bucket m mode buf stack al d n)
+  (cond ((null? al) (hamt-walk-pop m mode buf stack d n))
+        ((fx=? n seq-chunk-size) (hamt-walk-stop m mode buf stack d al 'bucket 0 0))
+        (else (vector-set! buf n (pmap-seq-sel mode (caar al) (cdar al)))
+              (hamt-walk-bucket m mode buf stack (cdr al) d (fx+ n 1)))))
+;; the first chunk of a hash-mode map's walk
+(define (hamt-chunk-seq m mode)
+  (hamt-walk-enter m mode (make-vector seq-chunk-size) (make-vector 32) (pmap-root m) 0 0))
+;; a pre-format-16 'hamt-chunk cell's path of ranks: descend it, framing each
+;; level, and read on from the last
+(define (hamt-chunk-seq-ranks m mode path)
+  (let ((buf (make-vector seq-chunk-size)) (stack (make-vector 32)))
+    (let descend ((node (pmap-root m)) (path path) (d 0))
+      (let ((dm (hnode-dmap node)))
+        (let skip ((rem (hamt-ior dm (hnode-nmap node))) (di 0) (ni (fx- (vector-length (hnode-arr node)) 1)) (j (car path)))
+          (cond
+            ((and (fx>? j 0) (not (hamt=? 0 rem)))
+             (if (hamt=? 0 (hamt-and dm (hamt-low-bit rem)))
+                 (skip (hamt-and rem (hamt-sub rem 1)) di (fx- ni 1) (fx- j 1))
+                 (skip (hamt-and rem (hamt-sub rem 1)) (fx+ di 2) ni (fx- j 1))))
+            ((null? (cdr path)) (hamt-walk m mode buf stack node rem di ni d 0))
+            (else
+             (let ((b (vector-ref (hnode-arr node) ni)))
+               (hamt-walk-push! stack d node rem di ni)
+               (if (hnode? b)
+                   (descend b (cdr path) (fx+ d 1))
+                   (hamt-walk-bucket m mode buf stack (list-tail (hcoll-alist b) (cadr path)) (fx+ d 1) 0))))))))))
 (define (hamt-chunk-cell m mode buf n next)
   (if (fx=? n 0)
       jolt-nil
       (cseq-chunked/k (make-pvec (if (fx=? n seq-chunk-size) buf (vec-copy-range buf 0 n)))
                       0
-                      (if next (jolt-make-lazy-src lz-hamt-chunk m (cons mode next)) jolt-nil)
+                      (if next (jolt-make-lazy-src lz-hamt-chunk-resume m (cons mode next)) jolt-nil)
                       (hamt-mode-kind mode))))
 (define (jolt-seq x)
   (cond
@@ -2283,6 +2380,10 @@
     ((or (pvec? to) (pmap? to) (pset? to))
      (meta-carry to
        (jolt-persistent! (into-fold (lambda (t x) (jolt-conj! t x)) (jolt-transient-new to) from))))
+    ;; a sorted coll takes the whole source in one :conj call, which sorts and
+    ;; bulk-loads it (host-table.ss "many entries at once") instead of walking
+    ;; the tree once per element; the result is the same as conj after conj
+    ((htable-sorted? to) (sorted-into to #f from))
     ;; into nil is (reduce conj nil from): the first conj onto nil starts a
     ;; list, and an empty source leaves nil, as on the JVM.
     ((jolt-nil? to)
@@ -2318,31 +2419,48 @@
 ;; record, a sorted map, a host map arm) folds over its keys, the reference's
 ;; IPersistentMap arm. nil folds to init.
 (define (kv-step f) (if (procedure? f) (lambda (acc k v) (jolt-site-kept (f acc k v))) (lambda (acc k v) (jolt-invoke3 f acc k v))))
+;; Keep kv-step in the ordinary walker's compilation scope so the host can
+;; specialize its procedure and IFn arms. The confined path already has a
+;; Scheme step and uses the same array, trie and collision traversal.
+(define-syntax walk-pmap-kv
+  (syntax-rules ()
+    ((_ m step init)
+     (let ((root (pmap-root m)))
+       (if (not (hnode? root))
+           (let ((n (vector-length root)))
+             (let loop ((i 0) (acc init))
+               (cond ((jolt-reduced? acc) acc)
+                     ((fx>=? i n) acc)
+                     (else (loop (fx+ i 2) (step acc (vector-ref root i) (vector-ref root (fx+ i 1))))))))
+           ;; hash mode walks the trie in the seq view's order (hamt-kv-reduce
+           ;; below), stopping at a reduced accumulator anywhere
+           (hamt-kv-reduce root step init))))))
 (define (pmap-kv-reduce m f init)
-  (let ((step (kv-step f)) (root (pmap-root m)))
-    (if (not (hnode? root))
-        (let ((n (vector-length root)))
-          (let loop ((i 0) (acc init))
-            (cond ((jolt-reduced? acc) acc)
-                  ((fx>=? i n) acc)
-                  (else (loop (fx+ i 2) (step acc (vector-ref root i) (vector-ref root (fx+ i 1))))))))
-        ;; hash mode walks the trie in the seq view's order (ascending slots,
-        ;; children in place), stopping at a reduced accumulator at any leaf
-        (let walk ((node root) (acc init))
-          (let ((arr (hnode-arr node)))
-            (let loop ((i 0) (acc acc))
-              (cond ((jolt-reduced? acc) acc)
-                    ((fx>=? i (vector-length arr)) acc)
-                    (else
-                     (let ((child (vector-ref arr i)))
-                       (loop (fx+ i 1)
-                             (cond ((hnode? child) (walk child acc))
-                                   ((hcoll? child)
-                                    (let cl ((al (hcoll-alist child)) (acc acc))
-                                      (cond ((jolt-reduced? acc) acc)
-                                            ((null? al) acc)
-                                            (else (cl (cdr al) (step acc (caar al) (cdar al)))))))
-                                   (else (step acc (car child) (cdr child))))))))))))))
+  (let ((step (kv-step f)))
+    (walk-pmap-kv m step init)))
+;; collections.ss node-fold-fwd's walk with a stop at a reduced accumulator.
+;; Here, not there, so jolt-reduced? (this file's record predicate) is open-coded
+;; rather than called per entry.
+(define (hamt-kv-reduce node step acc)
+  (let* ((dm (hnode-dmap node)) (nm (hnode-nmap node)) (arr (hnode-arr node))
+         (base (fx* 2 (hamt-popcount dm))))
+    (if (hamt-u=? 0 nm)
+        (let run ((i 0) (acc acc))
+          (if (or (fx=? i base) (jolt-reduced? acc)) acc
+              (run (fx+ i 2) (step acc (vector-ref arr i) (vector-ref arr (fx+ i 1))))))
+        (let loop ((rem (hamt-ior dm nm)) (di 0) (ni (fx- (vector-length arr) 1)) (acc acc))
+          (if (or (hamt-u=? 0 rem) (jolt-reduced? acc))
+              acc
+              (let ((low (hamt-ulow-bit rem)))
+                (if (hamt-uentry? dm low)
+                    (loop (hamt-uxor rem low) (fx+ di 2) ni (step acc (vector-ref arr di) (vector-ref arr (fx+ di 1))))
+                    (let ((b (vector-ref arr ni)))
+                      (loop (hamt-uxor rem low) di (fx- ni 1)
+                            (if (hnode? b)
+                                (hamt-kv-reduce b step acc)
+                                (let cl ((al (hcoll-alist b)) (acc acc))
+                                  (if (or (jolt-reduced? acc) (null? al)) acc
+                                      (cl (cdr al) (step acc (caar al) (cdar al)))))))))))))))
 (define (vec-kv-reduce v f init)
   (let ((step (kv-step f)) (n (pvec-count v)))
     (let outer ((i 0) (acc init))
@@ -2420,6 +2538,9 @@
                              (else (loop (step acc (jolt-nth (car es) 0) (jolt-nth (car es) 1))
                                          (cdr es))))))))
              ((iface-method coll "kvreduce" 3) => (lambda (m) (jolt-invoke m coll f init)))
+             ;; a sorted map walks its tree's leaves, as PersistentTreeMap.kvreduce
+             ;; walks its nodes, stopping at a reduced value (host-table.ss)
+             ((htable-sorted-map? coll) (sc-reduce-kv coll (kv-step f) init))
              ((jolt-map? coll)
               (let ((step (kv-step f)))
                 (reduce-seq (lambda (acc k) (step acc k (jolt-get coll k))) init (jolt-seq (jolt-keys coll)))))

@@ -88,6 +88,21 @@
 (define-width-op hash-fx+   #3%fx+   +)
 (define-width-op hash-fx-   #3%fx-   -)
 (define-width-op hash-fx*   #3%fx*   *)
+;; A product reduced modulo the fixnum width (61 bits on a 64-bit Chez). Only its
+;; low 32 bits are ever kept, and those are exact: 2^32 divides 2^61, so wrapping
+;; at the fixnum width cannot disturb them. The narrow arm is exact arithmetic,
+;; split so that a 32-bit operand is only ever multiplied by a 16-bit one: a
+;; cross-compiled tpb32b build got some 32x32-bit bignum products wrong, which
+;; changed every string and keyword hash there.
+(define-syntax mul-low32/split
+  (syntax-rules ()
+    ((_ a b)
+     (let ((a* a) (b* b))
+       (+ (bitwise-arithmetic-shift-left
+            (bitwise-and (* a* (bitwise-and (bitwise-arithmetic-shift-right b* 16) #xFFFF)) #xFFFF)
+            16)
+          (* a* (bitwise-and b* #xFFFF)))))))
+(define-width-op hash-fx*/wrap #3%fx*/wraparound mul-low32/split)
 (define-width-op hash-fxand #3%fxand bitwise-and)
 (define-width-op hash-fxior #3%fxior bitwise-ior)
 (define-width-op hash-fxxor #3%fxxor bitwise-xor)
@@ -131,31 +146,15 @@
     ((_ x) (let ((u (u32 x)))
              (hash-fx- (hash-fxxor u #x80000000) #x80000000)))))
 
-;; 32-bit wrapping multiply via a 16-bit split. On a wide-fixnum target the
-;; selected fast path is fixnum-pure; on a narrow target the same bounded
-;; intermediates use generic exact arithmetic.
-;; Proof no step exceeds Chez's signed 61-bit fixnum range (±2^60−1):
-;;   Let a ∈ [−2^31, 2^31−1] (after i32), b likewise.
-;;   hi = low 16 bits of (b >>> 16) ∈ [0, 0xFFFF]
-;;   lo = low 16 bits of b          ∈ [0, 0xFFFF]
-;;   (hash-fx* a hi) : |a| ≤ 2^31, hi ≤ 0xFFFF → |p| ≤ 2^47        ≪ 2^60  ✓
-;;   (hash-fxand p #xFFFF) ∈ [0, 0xFFFF]                              ≪ 2^60  ✓
-;;   (hash-fxsll ... 16)  ∈ [0, 0xFFFF0000] ≤ 2^32                   ≪ 2^60  ✓
-;;   (hash-fx* a lo) : |a| ≤ 2^31, lo ≤ 0xFFFF → |p| ≤ 2^47          ≪ 2^60  ✓
-;;   (hash-fx+ hi_part lo_part) : each ≤ max(2^32, 2^47) = 2^47 → sum ≤ 2^48 ≪ 2^60 ✓
-;;   final (hash-fxand sum #xFFFFFFFF) ∈ [0, 2^32−1]                  ≪ 2^60  ✓
-;; After the unsigned 32-bit result is obtained, i32 converts back to signed.
-;; a and b are each evaluated exactly once (let*-bound as a*/b*).
+;; 32-bit wrapping multiply: the low 32 bits of the product, as signed. One
+;; fixnum multiply that wraps at the fixnum width (hash-fx*/wrap) carries those
+;; bits exactly, for signed and unsigned operands alike -- a two's-complement
+;; product's low bits do not depend on the high ones. It replaced a 16-bit split
+;; (two multiplies, three masks and a shift, kept inside 61 bits by bounds), at
+;; 2.3 ns against 5.1. a and b are each evaluated exactly once.
 (define-syntax mul32
   (syntax-rules ()
-    ((_ a b)
-     (let* ((a* (i32 a))
-            (b* (i32 b))
-            (hi (hash-fxand (hash-fxsra b* 16) #xFFFF))
-            (lo (hash-fxand b* #xFFFF))
-            (hi-part (hash-fxsll (hash-fxand (hash-fx* a* hi) #xFFFF) 16))
-            (lo-part (hash-fx* a* lo)))
-       (i32 (hash-fxand (hash-fx+ hi-part lo-part) #xFFFFFFFF))))))
+    ((_ a b) (i32 (hash-fx*/wrap (i32 a) (i32 b))))))
 
 ;; 32-bit wrapping add. a and b each evaluated once.
 (define-syntax add32
@@ -209,10 +208,7 @@
 ;; The unsigned forms: operands already in [0, 2^32), result too.
 (define-syntax mulu32
   (syntax-rules ()
-    ((_ a b)
-     (let ((a* a) (b* b))
-       (u32 (hash-fx+ (hash-fxsll (hash-fxand (hash-fx* a* (hash-fxsrl b* 16)) #xFFFF) 16)
-                      (hash-fx* a* (hash-fxand b* #xFFFF))))))))
+    ((_ a b) (u32 (hash-fx*/wrap a b)))))
 (define-syntax rotlu32
   (syntax-rules ()
     ((_ x n)

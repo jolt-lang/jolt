@@ -11,7 +11,20 @@
 ;; turn that into "set to nothing".
 (defn getenv [n] (let [v (jolt.host/getenv n)] (when-not (str/blank? v) v)))
 (defn file-exists? [p] (jolt.host/file-exists? p))
-(defn sh [cmd] (jolt.host/sh cmd))           ; exit code, inherits stdout/stderr
+(defn sh
+  "Run ARGV (a program and its arguments) directly, no shell between: each
+  argument reaches the program as written, with nothing expanded or split. It
+  runs in the user's directory and inherits stdout/stderr. -> the exit code;
+  127, as a shell answers, for a program that is not there (said on stderr)."
+  [argv]
+  (try
+    (-> (java.lang.ProcessBuilder. ^java.util.List (vec argv))
+        (.inheritIO)
+        (.start)
+        (.waitFor))
+    (catch java.io.IOException e
+      (binding [*out* *err*] (println (str "[jolt.deps] " (ex-message e))))
+      127)))
 
 ;; The filesystem seams. These used to be shell commands (`mkdir -p`, `mv`,
 ;; `rm -f`, `rm -rf`, `test -nt`, `find`), which is a POSIX assumption jolt.host/sh
@@ -33,21 +46,27 @@
   (let [d (or (getenv "TMPDIR") (getenv "TEMP") (getenv "TMP") "/tmp")]
     (str/replace d #"[/\\]+$" "")))
 
+(defn- null-device []
+  (if (str/includes? (str (System/getProperty "os.name")) "Windows") "NUL" "/dev/null"))
 (defn sh-out*
-  "Run a shell command, capturing stdout and stderr separately:
-  {:exit n :out s :err s}. Captures through temp files (jolt.host/sh inherits
-  stdio), which is also how a command's output gets discarded portably — there
-  is no /dev/null to redirect to everywhere jolt runs."
-  [cmd]
-  (let [stamp (str (System/currentTimeMillis) "-" (rand-int 100000))
-        out-f (str (tmp-dir) "/jolt-deps-" stamp ".out")
-        err-f (str (tmp-dir) "/jolt-deps-" stamp ".err")
-        code (sh (str cmd " > " (pr-str out-f) " 2> " (pr-str err-f)))
-        read-f (fn [p] (when (file-exists? p) (str/trim (slurp p))))
-        r {:exit code :out (read-f out-f) :err (read-f err-f)}]
-    (rm-f out-f)
-    (rm-f err-f)
-    r))
+  "Run ARGV directly, as `sh` does, capturing stdout and stderr separately:
+  {:exit n :out s :err s}, each trimmed. stderr goes to a temp file while stdout
+  is read, so a child writing a lot to both never blocks on a full pipe. A
+  program that is not there answers exit 127 with the reason as :err."
+  [argv]
+  (let [err-f (str (tmp-dir) "/jolt-deps-" (System/currentTimeMillis) "-" (rand-int 100000) ".err")]
+    (try
+      (let [p (-> (java.lang.ProcessBuilder. ^java.util.List (vec argv))
+                  (.redirectInput (java.io.File. ^String (null-device)))
+                  (.redirectError (java.io.File. ^String err-f))
+                  (.start))
+            out (slurp (.getInputStream p))
+            code (.waitFor p)]
+        {:exit code :out (str/trim out)
+         :err (when (file-exists? err-f) (str/trim (slurp err-f)))})
+      (catch java.io.IOException e
+        {:exit 127 :out "" :err (ex-message e)})
+      (finally (rm-f err-f)))))
 
 (defn warn [& xs] (binding [*out* *err*] (println (str "[jolt.deps] " (apply str xs)))))
 

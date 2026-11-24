@@ -680,10 +680,14 @@
         (cons "jolt.analyzer.tree" "jolt-core/jolt/analyzer/tree.clj")
         (cons "jolt.analyzer.ffi" "jolt-core/jolt/analyzer/ffi.clj")
         (cons "jolt.analyzer.interop" "jolt-core/jolt/analyzer/interop.clj")
+        (cons "jolt.analyzer.native" "jolt-core/jolt/analyzer/native.clj")
         (cons "jolt.analyzer" "jolt-core/jolt/analyzer.clj")
+        (cons "jolt.passes.facts" "jolt-core/jolt/passes/facts.clj")
         (cons "jolt.passes.fold" "jolt-core/jolt/passes/fold.clj")
         (cons "jolt.passes.numeric" "jolt-core/jolt/passes/numeric.clj")
+        (cons "jolt.passes.transducers" "jolt-core/jolt/passes/transducers.clj")
         (cons "jolt.passes.inline" "jolt-core/jolt/passes/inline.clj")
+        (cons "jolt.passes.loop-maps" "jolt-core/jolt/passes/loop_maps.clj")
         (cons "jolt.passes.types.lattice" "jolt-core/jolt/passes/types/lattice.clj")
         (cons "jolt.passes.types.check" "jolt-core/jolt/passes/types/check.clj")
         (cons "jolt.passes.types.records" "jolt-core/jolt/passes/types/records.clj")
@@ -700,6 +704,7 @@
         (cons "jolt.backend-scheme.ffi" "jolt-core/jolt/backend_scheme/ffi.clj")
         (cons "jolt.backend-scheme.interop" "jolt-core/jolt/backend_scheme/interop.clj")
         (cons "jolt.backend-scheme.lambda" "jolt-core/jolt/backend_scheme/lambda.clj")
+        (cons "jolt.backend-scheme.fused" "jolt-core/jolt/backend_scheme/fused.clj")
         (cons "jolt.backend-scheme" "jolt-core/jolt/backend_scheme.clj")))
 
 ;; The clojure.core tiers + stdlib namespaces, in load order.

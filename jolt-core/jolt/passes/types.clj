@@ -5,7 +5,7 @@
   checker. Also the inter-procedural driver API the back end calls to
   propagate param types across a unit / the whole program. Weakly coupled to the
   IR-rewriting passes — shares the const-shape predicates (jolt.passes.fold)."
-  (:require [jolt.ir :refer [reduce-ir-children map-ir-children coerce-node]]
+  (:require [jolt.ir :refer [reduce-ir-children map-ir-children coerce-node thread-bindings]]
             [jolt.host :refer [protocol-method-var?]]
             [jolt.op-registry :as op-registry]
             [jolt.passes.fold :refer [scalar-const? kw-callee? get-callee?]]
@@ -133,7 +133,9 @@
    ;; jolt.passes.inline scratch: the fixpoint dirty flag run-passes reads/resets and
    ;; the alpha-rename counter for inlined binders.
    :dirty (atom false)
-   :fresh-counter (atom 0)})
+   :fresh-counter (atom 0)
+   ;; jolt.passes.facts keeps only the most recently requested body revision.
+   :body-facts (atom nil)})
 
 ;; build a per-run env: a snapshot of the installed config plus this run's flags and
 ;; fresh accumulator/guard cells. escapes/user-sigs reference the unit's sweep-level
@@ -965,11 +967,9 @@
   [(let [vt (get (get env :vtypes) (var-key node))] (if vt vt :any)) node])
 
 (defn- infer-let [node tenv env]
-  (let [res (reduce (fn [acc b]
-                      (let [te (nth acc 0) binds (nth acc 1)
-                            ir (infer (nth b 1) te env)]
-                        [(assoc te (nth b 0) (nth ir 0)) (conj binds [(nth b 0) (nth ir 1)])]))
-                    [tenv []] (get node :bindings))
+  (let [res (thread-bindings node tenv identity
+                             (fn [te nm _ t] (assoc te nm (if (nil? t) :any t)))
+                             (fn [te init] (let [ir (infer init te env)] [(nth ir 1) (nth ir 0)])))
         br (infer (get node :body) (nth res 0) env)]
     [(nth br 0) (assoc node :bindings (nth res 1) :body (nth br 1))]))
 
@@ -1135,6 +1135,10 @@
     :var (infer-var-value node env)
     :invoke (infer-invoke node tenv env)
     :let (infer-let node tenv env)
+    :let-values
+    (let [init (nd (infer (:init node) tenv env))
+          [t body] (infer (:body node) (apply dissoc tenv (:names node)) env)]
+      [t (assoc node :init init :body body)])
     :loop (infer-loop node tenv env)
     :recur (infer-recur node tenv env)
     :fn (infer-fn node tenv env)

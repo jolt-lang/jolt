@@ -98,12 +98,16 @@
 ;; only reached for values no branch here claims, and a record is claimed.
 (define str-tostring-hook #f)
 (define (set-str-tostring-hook! f) (set! str-tostring-hook f))
+;; A collection's rendering: readable, unless the java layer replaces it with one
+;; that follows *print-dup* (io-streams.ss).
+(define str-coll-render (lambda (v) (jolt-pr-readable v)))
+(define (set-str-coll-render! f) (set! str-coll-render f))
 (define (jolt-str-one v)
   (let ((own (and str-tostring-hook (str-tostring-hook v))))
     (cond
       ((string? own) own)
       ((or (pvec? v) (pmap? v) (pset? v) (cseq? v) (empty-list-t? v) (jolt-lazyseq? v))
-       (jolt-pr-readable v))
+       (str-coll-render v))
       (else (jolt-str-render-one v)))))
 ;; A string renders as itself. jolt-str-one asks the toString hook first, but
 ;; that hook only ever answers for a record (protocols.ss), so a string can skip
@@ -251,6 +255,22 @@
     ((iface-method coll "reduce" 3) (jolt-into (make-pvec (vector)) coll))
     (else (make-pvec (list->vector (seq->list coll))))))
 
+;; The one-argument string spelling splits on the FIRST slash, except at
+;; either end: this is that slash's index, or #f. The builder's lookup-only
+;; intern splits the same way. A macro, and each caller applies its own
+;; interner, so (keyword "x") still calls keyword directly: a split procedure
+;; that took the interner cost every one-argument string keyword ~1.5ns, and
+;; binding it to a local ~0.5ns. Gambit expands syntax-rules without hygiene,
+;; so the operand is evaluated, once, before the macro binds a name of its own.
+(define-syntax keyword-split-index
+  (syntax-rules ()
+    ((_ str)
+     (let ((a str))
+       (let loop ((i 0))
+         (cond ((>= i (string-length a)) #f)
+               ((char=? (string-ref a i) #\/) (and (> i 0) (< i (- (string-length a) 1)) i))
+               (else (loop (+ i 1)))))))))
+
 (define (jolt-keyword . args)
   (cond
     ((= (length args) 1)
@@ -262,11 +282,8 @@
          ;; (keyword "x/y") => :x/y with ns "x" — destructure's {:keys [x/y]} builds
          ;; the key this way, so without the split the namespaced key never matches.
          ((string? a)
-          (let ((si (let loop ((i 0))
-                      (cond ((>= i (string-length a)) #f)
-                            ((char=? (string-ref a i) #\/) i)
-                            (else (loop (+ i 1)))))))
-            (if (and si (> si 0) (< si (- (string-length a) 1)))
+          (let ((si (keyword-split-index a)))
+            (if si
                 (keyword (substring a 0 si) (substring a (+ si 1) (string-length a)))
                 (keyword #f a))))
          ((jolt-symbol? a)

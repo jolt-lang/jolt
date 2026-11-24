@@ -261,29 +261,119 @@
     "(let [f (fn [m] (:k40 m)) m (into {} (map (fn [i] [(keyword (str \"k\" i)) i]) (range 70)))] [(f m) (f (assoc m :k40 :x))])"
     "[40 :x]")
 ;; the point of the cell, as a ratio inside one process: a monomorphic site on
-;; the tenth slot against the plain scan at that slot
+;; the tenth slot against the plain scan at that slot.
+;;
+;; Timed on this thread's clock in NANOSECONDS, best of seven alternating
+;; samples per arm, and a miss measured once more before it counts. It was a
+;; millisecond clock over best of three, and the arms run 5-25 ms on CI, so one
+;; tick was 4-20% of the cached arm: the ratio read 0.22-0.59 across 62 x86
+;; runs of the gate (bionic 0.41-0.46) against a 0.6 ceiling. With no site
+;; cache the cached arm IS the scan plus the site's check, so the regression
+;; reads ~1.0 or more; 0.75 sits between.
+(define kw-site-ceiling 0.75)
 (ok "a primed site answers in well under the scan's time"
     (let* ((ks (map (lambda (i) (keyword #f (string-append "k" (number->string i)))) (iota 10)))
            (m (amap-slots->pmap (list->vector (apply append (map (lambda (k i) (list k i)) ks (iota 10))))))
            (k9 (list-ref ks 9))
            (site (jolt-kw-site))
            (n 2000000)
-           (thread-ms (lambda () (let ((t (current-time 'time-thread))) (+ (* 1000 (time-second t)) (quotient (time-nanosecond t) 1000000)))))
-           (time-it (lambda (thunk) (let ((t0 (thread-ms))) (do ((i 0 (fx+ i 1))) ((fx= i n)) (thunk)) (- (thread-ms) t0))))
-           ;; best of three per arm, alternating: interference (a collection, a
-           ;; loaded machine running the rest of the gate) only ever makes an arm
-           ;; slower, and one bad sample in the cached arm read as a regression
-           ;; (29 ms against the scan's 23 under `make test`, 8 against 21 alone)
+           (thread-ns (lambda () (let ((t (current-time 'time-thread))) (+ (* 1000000000 (time-second t)) (time-nanosecond t)))))
+           (time-it (lambda (thunk) (let ((t0 (thread-ns))) (do ((i 0 (fx+ i 1))) ((fx= i n)) (thunk)) (- (thread-ns) t0))))
+           ;; interference (a collection, a loaded machine running the rest of
+           ;; the gate) only ever makes an arm slower, so each arm's fastest
+           ;; sample, the two arms alternating so a slow stretch lands on both
            (best (lambda (a b) (let loop ((i 0) (ba #f) (bb #f))
-                                 (if (fx= i 3)
+                                 (if (fx= i 7)
                                      (cons ba bb)
                                      (let* ((x (time-it a)) (y (time-it b)))
                                        (loop (fx+ i 1) (if ba (min ba x) x) (if bb (min bb y) y)))))))
-           (both (best (lambda () (jolt-get m k9)) (lambda () (jolt-kw-get-site m k9 site))))
+           (measure (lambda () (best (lambda () (jolt-get m k9)) (lambda () (jolt-kw-get-site m k9 site)))))
+           (ratio (lambda (p) (/ (cdr p) (max 1 (car p)))))
+           (both (let ((p (measure)))
+                   (if (< (ratio p) kw-site-ceiling)
+                       p
+                       (let ((q (measure)))
+                         (printf "  kw site: ~a — over the ceiling, measuring again\n" (/ (round (* 100.0 (ratio p))) 100.0))
+                         (cons (min (car p) (car q)) (min (cdr p) (cdr q)))))))
            (scan (car both))
            (cached (cdr both)))
-      (printf "  kw site: scan ~a ms, cached ~a ms (ratio ~a, ceiling 0.6)\n" scan cached (if (> scan 0) (/ (round (* 100.0 (/ cached scan))) 100.0) 'n/a))
-      (< cached (* 0.6 scan))))
+      (printf "  kw site: scan ~a ms, cached ~a ms (ratio ~a, ceiling ~a)\n"
+              (/ (round (/ scan 100000.0)) 10.0) (/ (round (/ cached 100000.0)) 10.0)
+              (/ (round (* 100.0 (ratio both))) 100.0) kw-site-ceiling)
+      (< (ratio both) kw-site-ceiling)))
 
+;; --- set difference over shared hash tries ------------------------------------
+(is "aligned subtraction keeps the left sequence, count, hash and metadata"
+    "(let [s (with-meta (set (range 128)) {:tag :left})
+           r (reduce disj s [13 35 57])
+           expected (reduce disj s r)
+           d (clojure.set/difference s r)]
+       [(= (vec d) (vec expected)) (= (hash d) (hash expected))
+        (count d) (meta d) (= d (jolt.host/try-set-difference s r disj))
+        (count (clojure.set/difference s s))])"
+    "[true true 3 {:tag :left} true 0]")
+(is "a shared root cannot suppress non-reflexive or nested comparisons"
+    "(let [base (set (range 128))
+           s (into base [##NaN [##NaN]])
+           r (disj s 13)]
+       [(nil? (jolt.host/try-set-difference s s disj))
+        (nil? (jolt.host/try-set-difference s r disj))
+        (= (pr-str (reduce disj s r)) (pr-str (clojure.set/difference s r)))])"
+    "[true true true]")
+(is "aligned subtraction preserves order across a branch and a collision bucket"
+    "(let [slot? #(zero? (bit-and 31 (hash %)))
+           ks (range 1 128)
+           common (conj (set (remove slot? ks)) 0)
+           other (first (filter slot? ks))
+           branch (conj common other)
+           bucket (conj common (char 0))
+           mixed (conj bucket other)]
+       (every? true?
+         (for [[l r] [[branch bucket] [bucket branch] [mixed branch] [mixed bucket]]
+               :let [d (clojure.set/difference l r)]]
+           (and (= (vec d) (vec (reduce disj l r)))
+                (let [trial (jolt.host/try-set-difference l r disj)]
+                  (if (< (count l) (count r)) (nil? trial) (= d trial)))))))"
+    "true")
+(is "public difference preserves both disj dispatch paths"
+    "(let [s (set (range 128))
+           bigger (conj s :extra)
+           first-key (first s)
+           seen (atom [])
+           replacement (fn [acc key] (swap! seen conj [:new key]) acc)
+           change (fn [acc key]
+                    (swap! seen conj [:first key])
+                    (when (= key first-key)
+                      (alter-var-root #'disj (constantly replacement)))
+                    acc)
+           run (fn [right]
+                 (reset! seen [])
+                 (let [result (with-redefs [disj change] (clojure.set/difference s right))]
+                   [(identical? s result) @seen]))]
+       (and (= [true (mapv (fn [key] [:first key]) s)] (run s))
+            (= [true (into [[:first first-key]] (map (fn [key] [:new key]) (rest s)))]
+               (run bigger))
+            (empty? (clojure.set/difference s s))))"
+    "true")
+(is "public difference honors thread-bound disj and native reduce and contains dispatch"
+    "(let [s (set (range 128))
+           bigger (conj s :extra)
+           v #'disj
+           seen (atom [])
+           keep (fn [acc key] (swap! seen conj key) acc)
+           poison (fn [& args] (throw (ex-info \"unexpected Var call\" {})))]
+       (.setDynamic v)
+       (try
+         (and (with-bindings {v keep}
+                (every? true?
+                  (for [right [s bigger]]
+                    (do (reset! seen [])
+                        (and (identical? s (clojure.set/difference s right))
+                             (= (vec s) @seen))))))
+              (with-redefs [reduce poison contains? poison]
+                (and (empty? (clojure.set/difference s s))
+                     (empty? (clojure.set/difference s bigger)))))
+         (finally (.setDynamic v false))))"
+    "true")
 (printf "arraymap-test: ~a/~a passed\n" (- total fails) total)
 (exit (if (= fails 0) 0 1))

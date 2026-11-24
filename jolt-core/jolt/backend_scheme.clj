@@ -13,7 +13,7 @@
   jolt.backend-scheme.* namespaces it requires, and those of them that need to
   lower a child take `emit` as an argument."
   (:require [clojure.string :as str]
-            [jolt.host :refer [seed-callable? protocol-call-key form-char? form-literal?]]
+            [jolt.host :refer [protocol-call-key form-char? form-literal?]]
             [jolt.passes.types :as types]
             [jolt.passes.numeric :as numeric]
             [jolt.op-registry :as op-registry]
@@ -23,14 +23,14 @@
              :refer [*array-vecs* *callsites* *dbg-scope* *dl-self* *known-procs*
                      *letrec-binders* *qualifying-ns* *recur-target* *site-call* *tail?*
                      *trace-frame* *trace-site* *variadic-reg-suppressed?* clone-site-key
-                     ctor-shapes cur dbg-hidden? dbg-record dbg-record1
+                     cur dbg-hidden? dbg-record dbg-record1
                      direct-link-callable? direct-link-fn?
                      direct-link? direct-linkable? fresh-label marker-safe-fqn?
                      node-line note-tail-call! prelude-mode? record-shape-for-class
                      register-callsite! seed-mint? source-reg? static-callee
                      target trace-callsite-reg unsafe-prefix var-cache? with-site]]
             [jolt.backend-scheme.hoist
-             :refer [*const-pool* const-coll-node? distinct-const-keys?
+             :refer [*const-pool* hoist-coll-literal
                      emit-top-cells emit-with-cells hoist-const hoist-const-for
                      hoist-const-per-site hoist-inline-guard hoist-load-time hoist-seed-root hoist-var-cell
                      site-const unique-keyword-key-literal? with-load-time-scope]]
@@ -38,10 +38,10 @@
              :refer [bit-fx-ops direct-field-accessor emit-bit-fx-call emit-call
                      emit-devirt-call emit-fl-aget emit-fl-aset
                      emit-host-static-call emit-numeric emit-pic-call
-                     emit-rec-type-check emit-record-ctor ifn-kind lookup-restore
-                     native-op node-inline-chain ordered-call plain-call
-                     site-literal site-restore sited-tail-call stdlib-var?
-                     struct-field-index]]
+                     emit-rec-type-check emit-record-ctor emit-seed-callable-invoke
+                     ifn-kind lookup-restore native-op node-inline-chain ordered-call
+                     plain-call record-ctor-shape site-literal site-restore
+                     sited-tail-call stdlib-var? struct-field-index]]
             [jolt.backend-scheme.literals :as literals :refer [emit-const]]
             [jolt.backend-scheme.once :refer [once-clear-stmts with-once-clears]]
             [jolt.backend-scheme.fnsrc :as fnsrc
@@ -49,7 +49,9 @@
                      *fnsrc-regs* fnsrc-flush]]
             [jolt.backend-scheme.ffi :as ffi :refer [emit-ffi-node]]
             [jolt.backend-scheme.interop :refer [host-call-emit]]
-            [jolt.backend-scheme.lambda :refer [emit-fn emit-nhint-coerce]]))
+            [jolt.backend-scheme.lambda
+             :refer [emit-fn emit-nhint-coerce]]
+            [jolt.backend-scheme.fused :refer [emit-fused-invoke]]))
 
 ;; op-registry and its derived accessor tables live in jolt.op-registry — the
 ;; single source of truth for per-op facts, shared with the passes. Bind them to
@@ -190,7 +192,7 @@
 ;; the same reason: a (.concat s nil) in tail position raises from inside the
 ;; host, and without the site the fn it sat in is the one frame the report
 ;; cannot recover.
-(def ^:private tail-transparent-ops #{:if :do :let :loop :invoke :throw :host-call :try})
+(def ^:private tail-transparent-ops #{:if :do :let :let-values :loop :invoke :throw :host-call :try})
 ;; A try is tail-transparent too. With neither a catch nor a finally, emit-try
 ;; emits it as its body and nothing else, so a tail call inside one is a real tail
 ;; call. With a catch or a finally the body runs inside a guard or dynamic-wind,
@@ -401,6 +403,13 @@
                body)]
     (str "(let* (" seq-bs ") (let " label " (" rebinds ") " body "))")))
 
+(defn- emit-let-values [node]
+  (let [names (mapv munge-name (:names node))
+        init (binding [*tail?* false] (emit (:init node)))
+        body (binding [*array-vecs* (apply dissoc *array-vecs* names)]
+               (emit (:body node)))]
+    (str "(let-values (((" (str/join " " names) ") " init ")) " body ")")))
+
 (defn- emit-recur [node]
   (when-not *recur-target* (throw (ex-info "emit: recur outside a loop/fn target" {})))
   (let [arg-nodes (:args node)]
@@ -609,6 +618,28 @@
 ;; The default value of a lookup's optional third operand, as spliced text.
 (defn- default-arg-str [as] (if (> (count as) 1) (str " " (nth as 1)) ""))
 
+;; (str x): a string or a StringBuilder answers inline on Chez (rt.ss
+;; jolt-str1/i) while the var still holds clojure.core/str. str has no :inline
+;; on the JVM, so a call reaches it through the var and sees with-redefs
+;; (#1768): the site reads the var as a call through it does, ahead of the
+;; argument, and calls whatever it holds otherwise. Minting the seed,
+;; clojure.core's own calls take the inline answer with no var read, as the
+;; JVM's direct-linked core does.
+(defn- str1-call? [fnode arg-nodes]
+  (and (= :var (:op fnode)) (= "clojure.core" (:ns fnode)) (= "str" (:name fnode))
+       (= 1 (count arg-nodes)) (not= :gambit (session/target))))
+
+(defn- emit-str1-call [fnode arg-nodes args order-args]
+  (if (seed-mint?)
+    (order-args (fn [as] (str "(jolt-str1/i " (first as) ")")))
+    (let [fsrc (emit fnode)
+          cell (second (re-find var-cell-deref-re fsrc))]
+      (if cell
+        (order-args (fn [as] (str "(jolt-str1/i " cell " " (first as) ")")))
+        ;; no cell to read (var cache off): an ordinary call through the var
+        (ordered-call (cons fnode arg-nodes) (cons fsrc args)
+                      (fn [[f a]] (str "(jolt-invoke " f " " a ")")))))))
+
 ;; The callee by what it is, once no annotation or native op has claimed the call.
 (defn- emit-var-invoke [c]
   (let [node (:node c) fnode (:fnode c) arg-nodes (:arg-nodes c) args (:args c)
@@ -623,11 +654,9 @@
       (and (= "jolt.host" (:ns fnode)) (= "rec-type?" (:name fnode))
            (some? (:rec-guard node)) (even? (count arg-nodes)))
       (emit-rec-type-check node arg-nodes order-args)
-      ;; (str x): a string or a StringBuilder answers inline on Chez (rt.ss
-      ;; jolt-str1/i), as clojure.core/str's other natives do without its var
-      (and (= :var (:op fnode)) (= "clojure.core" (:ns fnode)) (= "str" (:name fnode))
-           (= 1 (count arg-nodes)) (not= :gambit (session/target)))
-      (order-args (fn [as] (str "(jolt-str1/i " (first as) ")")))
+      ;; (str x): open-coded on Chez behind a read of the var (emit-str1-call)
+      (str1-call? fnode arg-nodes)
+      (emit-str1-call fnode arg-nodes args order-args)
       ;; closed-world direct call: the callee var is an app fn def already emitted
       ;; with a Scheme binding — apply it directly, no var lookup, no jolt-invoke.
       ;; Only fn-valued defs qualify; a non-fn invokable value (a map/set/keyword
@@ -637,42 +666,13 @@
            (direct-link-fn? (:ns fnode) (:name fnode))
            (direct-link-callable? (:ns fnode) (:name fnode) (count args)))
       (order-args (fn [as] (emit-call tail? (dl-name (:ns fnode) (:name fnode)) as tl ich)))
-      ;; closed-world direct call to a SEED var — clojure.core and the other
-      ;; namespaces the runtime image boots with. Such a var is preloaded ahead
-      ;; of every app def and never emitted by this build, so the def binds its
-      ;; root procedure once at load and the site applies it directly: no
-      ;; var-cell-deref (7 ns), no jolt-invokeN (5 ns) — true? went 16 -> 4 ns.
-      ;; jolt.host/seed-callable? applies the same closed-world rule an app def
-      ;; gets (not ^:dynamic/^:redef, not redefined by the app) plus "root is a
-      ;; procedure whose arity mask admits this arity", so a keyword/map/multi-
-      ;; method-valued var and a wrong-arity call keep jolt-invoke below.
-      ;; seed-callable? answers the callee's jv$ binding name for a var the seed
-      ;; minted direct-linked (def-var-linked!), and the site applies that
-      ;; top-level variable: the same one load, and a later def / alter-var-root
-      ;; / with-redefs of the var writes through to it (rt.ss var-root-set!), so
-      ;; the site follows a redefinition. A seed var the runtime defined itself
-      ;; (a Scheme def-var!) has no binding to name; its root is hoisted once at
-      ;; load, and a redefinition is invisible to that site, as under the JVM's
-      ;; direct linking. `jolt run` never direct-links. Off while MINTING the
-      ;; seed: the vars this arm would bind are the ones being emitted.
-      (and (direct-link?) (not (seed-mint?))
-           (seed-callable? nil (:ns fnode) (:name fnode) (count args)))
-      (let [sc (seed-callable? nil (:ns fnode) (:name fnode) (count args))
-            head (if (string? sc) sc (hoist-seed-root (:ns fnode) (:name fnode)))]
-        (order-args (fn [as] (emit-call tail? head as tl ich))))
-      ;; record ctor with matching arity: inline the native per-arity ctor
-      ;; (make-jrecN) directly — desc + ext + one inline slot per field —
-      ;; eliminating jolt-invoke / var-deref / rest-list / ctor call / hashtable
-      ;; lookup AND the field vector. After per-site desc-cell warmup the hot
-      ;; path is: cell read -> make-jrecN — one allocation, no lookups, no
-      ;; dispatch. The shape comes from the unit's record-shapes (set-record-shapes!).
-      (let [shape (get (ctor-shapes) (str (:ns fnode) "/" (:name fnode)))]
-        (and shape (= (count (get shape :fields)) (count args)) (<= (count args) 6)))
-      (emit-record-ctor (get (ctor-shapes) (str (:ns fnode) "/" (:name fnode))) arg-nodes args)
-      ;; a late-bound :var call head can hold a procedure OR a non-applicable
-      ;; value the RT dispatches (multimethod, keyword/coll IFn) — route via
-      ;; jolt-invoke (transparent for a procedure).
-      :else (emit-jolt-invoke c))))
+      :else
+      ;; closed-world direct call to a seed var, or record ctor with matching
+      ;; arity (make-jrecN), else late-bound dispatch via jolt-invoke.
+      (or (emit-seed-callable-invoke fnode args tail? tl ich order-args)
+          (when-let [shape (record-ctor-shape fnode (count args))]
+            (emit-record-ctor shape arg-nodes args))
+          (emit-jolt-invoke c)))))
 
 ;; a :local callee: a known procedure (the letrec-bound self-name of a named
 ;; fn — i.e. self-recursion) is a real Scheme proc, so call it directly with
@@ -945,6 +945,9 @@
     (or
      (emit-site-cache-invoke c)
      (cond
+       (:loop-map-runtime node)
+       (order-args (fn [as] (plain-call (:loop-map-runtime node) as)))
+
        ;; devirtualized protocol call: the inference proved the receiver (arg 0) is
        ;; one record type, so resolve the impl by that static tag instead of routing
        ;; through the protocol var -> jolt-invoke -> protocol-resolve (which recomputes
@@ -1034,17 +1037,19 @@
 (defn- emit-invoke [node]
   (let [tail? *tail?*]           ; capture: children below emit non-tail
    (binding [*tail?* false]
-    (let [fnode (:fn node)
-          arg-nodes (:args node)
-          args (mapv emit arg-nodes)
-          tl (or (node-line node) 0)]
+    (or (emit-fused-invoke emit node tail?)
+      (let [fnode (:fn node)
+            arg-nodes (:args node)
+            args (mapv emit arg-nodes)
+            tl (or (node-line node) 0)]
       ;; R2: record this site's static callee for the callsite table. Runs after
       ;; the args are emitted, so when a line carries both a call and its
       ;; operand's call the OUTER (later-emitted) callee wins — the tail call's.
       ;; A dynamic TAIL callee registers as "?": the reporter needs to know the
       ;; site's call went somewhere even when it cannot say where (rt.ss
       ;; jolt-dynamic-tail-lines). A dynamic non-tail site still registers nothing.
-      (when tl (register-callsite! tl (or (static-callee fnode) (when tail? "?")) tail?))
+      (when tl (register-callsite! tl (or (when (:loop-map-update node) "clojure.core/update")
+                                         (static-callee fnode) (when tail? "?")) tail?))
       (emit-annotated-invoke
        {:node node :fnode fnode :tail? tail? :arg-nodes arg-nodes :args args :tl tl
         ;; the same stamp with-site folds into the marker; a TAIL site needs it in
@@ -1053,7 +1058,7 @@
         :ich (node-inline-chain node)
         :nop (native-op fnode (count args))
         :kind (ifn-kind fnode (count args))
-        :order-args (fn [build] (ordered-call arg-nodes args build))})))))
+        :order-args (fn [build] (ordered-call arg-nodes args build))}))))))
 
 ;; A try's body runs in a closure of guard's or dynamic-wind's. Under debug
 ;; locals it is a tail region of its own, so its leaves keep the scope live there.
@@ -1456,6 +1461,8 @@
 (defn- emit-var-node [node]
   (let [core-proc (and (= "clojure.core" (:ns node)) (core-value-procs (:name node)))]
     (cond
+      (= :seed-root (:loop-map-procedure node)) (hoist-seed-root (:ns node) (:name node))
+      (:loop-map-procedure node) (:loop-map-procedure node)
       core-proc core-proc
       ;; direct-linked app var used as a value -> reference its binding.
       ;; The def emitted it linked (def-var-linked!), so the binding and the
@@ -1573,7 +1580,7 @@
     (if (unique-keyword-key-literal? node)
       (ordered-call kvs (mapv emit kvs)
         (fn [strs] (str "(amap-slots->pmap (vector " (str/join " " strs) "))")))
-      (emit-ordered (if (distinct-const-keys? (map first (:pairs node)))
+      (emit-ordered (if (ir/distinct-const-keys? (map first (:pairs node)))
                       "jolt-hash-map"
                       "jolt-hash-map-checked")
                     kvs))))
@@ -1581,12 +1588,12 @@
 (defn- emit-coll-literal [node]
   (let [s (case (:op node)
             :vector (emit-ordered "jolt-vector" (:items node))
-            :set (emit-ordered (if (distinct-const-keys? (:items node))
+            :set (emit-ordered (if (ir/distinct-const-keys? (:items node))
                                  "jolt-hash-set"
                                  "jolt-hash-set-checked")
                                (:items node))
             :map (emit-map-literal node))]
-    (if (const-coll-node? node) (hoist-const-per-site (site-const node s)) s)))
+    (hoist-coll-literal node s)))
 
 ;; Literal data the reader built: quoted forms, and the regex, #inst, #uuid,
 ;; bigdec and namespace leaves.
@@ -1653,9 +1660,19 @@
              *trace-frame* nil]
      (emit (:expr node)))))
 
+(defn- emit-const-node [node]
+  (or (:literal-binding node) (emit-const (:val node))))
+
+(defn- emit-binding-form [node]
+  (case (:op node)
+    :let (emit-let node)
+    :let-values (emit-let-values node)
+    :loop (emit-loop node)
+    :recur (emit-recur node)))
+
 (defn emit* [node]
   (case (:op node)
-    :const (emit-const (:val node))
+    :const (emit-const-node node)
     :local (munge-name (:name node))
     ;; late-bound var: read the cell's current root at use time. A value-position
     ;; ref to a clojure.core fn the RT provides lowers to the RT procedure.
@@ -1714,10 +1731,8 @@
      ;; on nil — is then reported at this fn and line, TCO having erased the
      ;; frame. Untraced and non-tail emission is byte-identical to before.
      :host-call (emit-host-call-node node)
-    :let (emit-let node)
-    :loop (emit-loop node)
-    :recur (emit-recur node)
-    (:ffi-layout :ffi-fn :ffi-callable) (emit-ffi-node emit node)
+    (:let :let-values :loop :recur) (emit-binding-form node)
+    (:ffi-layout :ffi-fn :ffi-callable :native-region) (emit-ffi-node emit node)
     :fn (emit-fn emit node)
     ;; (def name) with no init (declare): reserve the cell. A def with non-empty
     ;; reader metadata lowers to def-var-with-meta! (ported in a later increment).

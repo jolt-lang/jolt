@@ -38,8 +38,6 @@
    :why "var-deref from host/chez (build targets)"}
   {:path "jolt-core/jolt/backend_scheme.clj" :name "set-source-reg!"
    :why "var-deref from host/chez"}
-  {:path "jolt-core/jolt/backend_scheme.clj" :name "set-debug-locals!"
-   :why "var-deref from host/chez"}
   {:path "jolt-core/jolt/backend_scheme.clj" :name "seed-fnsrc-ns-counter!"
    :why "var-deref from host/chez/build.ss"}
   {:path "compatibility/cheshire/core.clj" :name "parse-string-strict"

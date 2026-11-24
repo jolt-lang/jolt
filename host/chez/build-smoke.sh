@@ -53,6 +53,31 @@ if ! JOLT_PWD="$app" "$jolt" build -m app.core -o "$out" >/dev/null 2>&1; then
 fi
 [ -x "$out" ] || { echo "  FAIL: no executable produced"; exit 1; }
 
+# Parallel compile workers: a built jolt compiles the app's units in copies of
+# itself, spawned directly (no /bin/sh), each logging into the build dir. A
+# worker that never starts is invisible otherwise, since the parent compiles
+# whatever a child did not produce, so the workers' own closing lines are the
+# evidence. Cache off so every unit is a miss; source mode has no binary to
+# spawn and compiles in process.
+# Built twice into the same output: the build dir persists across builds, and
+# each worker's log holds that build's run only.
+if [ "$jolt" != "bin/jolt" ]; then
+  wout="$(dirname "$out")/app-workers"
+  for pass in 1 2; do
+    if ! JOLT_PWD="$app" JOLT_BUILD_CACHE=0 JOLT_BUILD_JOBS=2 "$jolt" build -m app.core -o "$wout" >/dev/null 2>&1; then
+      echo "  FAIL: jolt build with two workers exited non-zero (build $pass)"; exit 1
+    fi
+    nw="$(cat "$wout.build"/jobs-*.edn.log 2>/dev/null | grep -c '^jolt-build-worker: [0-9]* units$' || true)"
+    if [ "$nw" -ne 2 ]; then
+      echo "  FAIL: want 2 compile workers to report, got $nw (build $pass):"
+      ls "$wout.build" | grep jobs- ; cat "$wout.build"/jobs-*.log 2>/dev/null | head -10
+      exit 1
+    fi
+  done
+  [ "$(cd / && "$wout" alpha bb ccc 2>&1 | tail -1)" = "$(cd / && "$out" alpha bb ccc 2>&1 | tail -1)" ] \
+    || { echo "  FAIL: the worker-compiled binary runs differently"; exit 1; }
+fi
+
 # Run from a neutral cwd with args. The first line is an embedded resource
 # (deps.edn :jolt/build :embed), proving io/resource resolves from the binary with
 # no resources/ dir on disk; the rest exercise a macro, cross-ns, and args.
@@ -954,15 +979,17 @@ fi
 # pure?/total? treated it as discardable and elim-let-structs dropped the whole
 # map binding — the release binary printed 1 instead of throwing.
 inline_throw_app="$root/test/chez/inline-throw-app"
-inline_throw_out="$(dirname "$out")/inline-throw-bin"
-if ! JOLT_PWD="$inline_throw_app" "$jolt" build -m app.core -o "$inline_throw_out" --opt --direct-link >/dev/null 2>&1; then
-  echo "  FAIL: inline-throw --opt --direct-link build exited non-zero"; exit 1
-fi
-inline_throw_got="$(cd "$inline_throw_app" && "$inline_throw_out" 2>&1)"
 inline_throw_want="$(printf 'THROW OK\nTHROW2 OK')"
-if [ "$inline_throw_got" != "$inline_throw_want" ]; then
-  echo "  FAIL: pure-fn fold discarded a throwing op — got \`$inline_throw_got\`, want \`$inline_throw_want\`"; exit 1
-fi
+for mode in --opt --dev; do
+  inline_throw_out="$(dirname "$out")/inline-throw-bin${mode}"
+  if ! JOLT_PWD="$inline_throw_app" "$jolt" build -m app.core -o "$inline_throw_out" "$mode" >/dev/null 2>&1; then
+    echo "  FAIL: inline-throw $mode build exited non-zero"; exit 1
+  fi
+  inline_throw_got="$(cd "$inline_throw_app" && "$inline_throw_out" 2>&1)"
+  if [ "$inline_throw_got" != "$inline_throw_want" ]; then
+    echo "  FAIL: inline-throw $mode produced $inline_throw_got, expected $inline_throw_want"; exit 1
+  fi
+done
 
 # scalar-replace moves a dropped record binding's field args to each field
 # read. Moved into a fn literal they left the literal's captures naming the

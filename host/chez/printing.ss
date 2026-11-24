@@ -298,17 +298,61 @@
 (define pr-user-method-write #f)
 (define (set-pr-user-method-write! f) (set! pr-user-method-write f))
 
+;; *print-meta* is written by the built-in printers (core_print's print-meta
+;; call in each IMeta method), so a user print-method that takes x over writes
+;; no ^meta: it replaced the method that would have.
+;;
+;; Under *print-dup* every value goes through the print-dup multimethod instead,
+;; as pr-on sends it on the JVM: pr-dup-write is the java layer's hook that hands
+;; x to print-dup with the Writer behind p (io-streams.ss), and the thread's
+;; print-dup slot says a print is under way. A print-dup method that hands its
+;; value to print-method lands back here for the elements.
+(define pr-dup-write #f)
+(define (set-pr-dup-write! f) (set! pr-dup-write f))
+(define-syntax pr-dup-mode?
+  (syntax-rules () ((_) (eq? (virtual-register jolt-vreg-print-dup) #t))))
 (define (pr-to! p x)
-  (if (pr-print-meta?)
-      (let ((m (pr-user-meta x)))
-        (if (jolt-nil? m)
-            (pr-dispatch-to! p x)
-            (begin (put-string p "^") (pr-dispatch-to! p m) (put-string p " ")
-                   (pr-dispatch-to! p x))))
-      (pr-dispatch-to! p x)))
-(define (pr-dispatch-to! p x)
+  (cond ((pr-dup-mode?) (pr-dup-write x p))
+        ((and pr-user-method-write (pr-user-method-write x p)))
+        (else (pr-builtin-to! p x))))
+;; x's print-method: the user's, else the built-in. print-method's :default
+;; prints its own value through this, never back to print-dup.
+(define (pr-plain-to! p x)
   (unless (and pr-user-method-write (pr-user-method-write x p))
-    (pr-own-to! p x)))
+    (pr-builtin-to! p x)))
+(define (pr-dispatch-to! p x)
+  (cond ((pr-dup-mode?) (pr-dup-write x p))
+        ((and pr-user-method-write (pr-user-method-write x p)))
+        (else (pr-own-to! p x))))
+
+;; Run thunk with the thread's print-dup slot set to on (#t or #f), restored
+;; after. Under print-dup a string or a char prints readably whatever
+;; *print-readably* says (core_print.clj's (or *print-dup* *print-readably*)), so
+;; the readably override (rt.ss) is set with it, and unset again when a print
+;; inside leaves print-dup. Both restores are masked at their far edge
+;; (locks.ss), so an interrupt cannot leave the thread in either mode.
+(define (call-in-print-dup-mode on thunk)
+  (let ((prev (virtual-register jolt-vreg-print-dup))
+        (prev-readably (virtual-register jolt-vreg-print-readably))
+        (lv (jolt-locks-held)))
+    (jolt-locks-enter!)
+    (dynamic-wind
+      (lambda ()
+        (set-virtual-register! jolt-vreg-print-dup on)
+        (set-virtual-register! jolt-vreg-print-readably (if on #t 0)))
+      (jolt-masked-body thunk)
+      (jolt-masked-after lv
+        (begin (set-virtual-register! jolt-vreg-print-dup prev)
+               (set-virtual-register! jolt-vreg-print-readably prev-readably))))))
+;; body with the slot matching on, the usual case (no print-dup anywhere) costing
+;; one comparison and no closure
+(define-syntax with-print-dup-mode
+  (syntax-rules ()
+    ((_ on body ...)
+     (let ((on? on))
+       (if (eq? on? (pr-dup-mode?))
+           (begin body ...)
+           (call-in-print-dup-mode on? (lambda () body ...)))))))
 ;; jolt's own rendering of x to p, the user method for x itself not consulted
 ;; (the values inside x still go through pr-to! and so still reach theirs)
 (define (pr-own-to! p x)
@@ -399,7 +443,7 @@
     (else (put-string p (jolt-pr-readable-base x)))))
 ;; A map's entries in iteration order -- the order pmap-fold's cons-accumulation
 ;; reconstructs (collections.ss): an array map front to back, a hash map's trie
-;; ascending with a collision bucket's list reversed.
+;; ascending with a collision bucket's list in order.
 (define (pr-pmap-for-each m proc)
   (let ((root (pmap-root m)))
     (if (hnode? root)
@@ -410,15 +454,7 @@
               (proc (vector-ref root i) (vector-ref root (fx+ i 1)))
               (loop (fx+ i 2))))))))
 (define (pr-node-for-each node proc)
-  (let* ((arr (hnode-arr node)) (n (vector-length arr)))
-    (let loop ((i 0))
-      (when (fx<? i n)
-        (let ((child (vector-ref arr i)))
-          (cond ((hnode? child) (pr-node-for-each child proc))
-                ((hcoll? child)
-                 (for-each (lambda (e) (proc (car e) (cdr e))) (reverse (hcoll-alist child))))
-                (else (proc (car child) (cdr child)))))
-        (loop (fx+ i 1))))))
+  (node-fold-fwd node (lambda (k v acc) (proc k v) acc) #f))
 ;; pr-ns-maps-shared-ns over the map itself, without collecting its entries
 (define (pr-ns-maps-shared-ns-of m)
   (and (fx>? (pmap-cnt m) 0)
@@ -444,6 +480,21 @@
   (unless pr-meta-cell (set! pr-meta-cell (jolt-var "clojure.core" "*print-meta*")))
   (and (jolt-truthy? (jolt-var-get pr-meta-cell))
        (jolt-pr-readable?)))
+;; The streaming printer's: print-meta writes metadata under *print-dup* too. A
+;; print under *print-dup* only ever streams (io-streams.ss), so the string
+;; renderer above keeps the one test.
+(define (pr-stream-meta?)
+  (or (pr-dup-mode?) (pr-print-meta?)))
+;; print-meta's text for m: a lone truthy :tag prints as the tag (^String x),
+;; anything else as the map
+(define pr-tag-kw (keyword #f "tag"))
+(define (pr-meta-shown m)
+  (if (fx=? (jolt-count m) 1)
+      (let ((t (jolt-get m pr-tag-kw jolt-nil)))
+        (if (jolt-truthy? t) t m))
+      m))
+(define (pr-meta-to! p m)
+  (put-string p "^") (pr-dispatch-to! p (pr-meta-shown m)) (put-string p " "))
 ;; The metadata to print before x, or jolt-nil. A var prints as #'ns/name (its
 ;; {:ns :name} is derived, not user metadata) and a procedure is opaque — skip both.
 ;; Empty metadata prints nothing, as print-meta's (pos? (count m)) has it.
@@ -453,12 +504,15 @@
       (let ((m (jolt-meta x)))
         (if (or (jolt-nil? m) (fx=? 0 (jolt-count m))) jolt-nil m))))
 
+;; ^meta only on the built-in path, as pr-to! above
 (define (jolt-pr-readable x)
   (cond ((pr-print-meta?)
          (let ((m (pr-user-meta x)))
            (if (jolt-nil? m)
                (jolt-pr-readable-dispatch x)
-               (string-append "^" (jolt-pr-readable-dispatch m) " " (jolt-pr-readable-dispatch x)))))
+               (or (and pr-user-method-render (pr-user-method-render x))
+                   (string-append "^" (jolt-pr-readable-dispatch (pr-meta-shown m)) " "
+                                  (if (pr-fast-type? x) (jolt-pr-readable-base x) (pr-own-string x)))))))
         ;; a collection is written into one port rather than built level by
         ;; level; a scalar's or a host object's text is one string already
         (else (jolt-pr-readable-dispatch x))))
@@ -469,10 +523,9 @@
 ;; borrows one for its own type -- (defmethod print-method IPersistentMap ...)
 ;; calling the saved original -- does not come back to itself.
 (define (pr-builtin-to! p x)
-  (if (pr-print-meta?)
+  (if (pr-stream-meta?)
       (let ((m (pr-user-meta x)))
-        (unless (jolt-nil? m)
-          (put-string p "^") (pr-dispatch-to! p m) (put-string p " "))
+        (unless (jolt-nil? m) (pr-meta-to! p m))
         (pr-own-to! p x))
       (pr-own-to! p x)))
 
@@ -493,10 +546,9 @@
   (if (pr-shape-native? shape x)
       (pr-builtin-to! p x)
       (begin
-        (when (pr-print-meta?)
+        (when (pr-stream-meta?)
           (let ((m (pr-user-meta x)))
-            (unless (jolt-nil? m)
-              (put-string p "^") (pr-dispatch-to! p m) (put-string p " "))))
+            (unless (jolt-nil? m) (pr-meta-to! p m))))
         (if (jolt-print-hash?)
             (put-string p "#")
             (with-deeper-print

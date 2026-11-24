@@ -58,17 +58,26 @@
   (let ((t (current-time 'time-monotonic)))
     (+ (time-second t) (/ (exact->inexact (time-nanosecond t)) 1e9))))
 (define (with-writers hammer! body)
-  (let ((stop? (box #f)) (running 0) (mu (make-mutex)))
+  (let ((stop? (box #f)) (started 0) (running 0) (mu (make-mutex)) (cv (make-condition)))
     (let spawn ((w 0))
       (when (fx<? w writers)
         (with-mutex mu (set! running (fx+ running 1)))
         (fork-thread (lambda ()
-                       (let loop ((i w))
+                       (hammer! w)
+                       (with-mutex mu
+                         (set! started (fx+ started 1))
+                         (when (fx=? started writers) (condition-broadcast cv)))
+                       (let loop ((i (fx+ w 7)))
                          (unless (unbox stop?)
                            (hammer! i)
                            (loop (fx+ i 7))))
                        (with-mutex mu (set! running (fx- running 1)))))
         (spawn (fx+ w 1))))
+    (with-mutex mu
+      (let wait-start ()
+        (unless (fx=? started writers)
+          (condition-wait cv mu)
+          (wait-start))))
     (let ((result (body)))
       (set-box! stop? #t)
       (let ((deadline (+ (mono-secs) 30)))
@@ -162,6 +171,108 @@
             bad)))))
 (printf "  ~a attempts, ~a spurious failure(s)\n" (* n4 rounds) spurious4)
 (ok "4. sa-box-cas! never refused a box that held the expected value" (= spurious4 0))
+
+;; --- 5. static-deferred-force under neighbour box contention -----------------
+;; PersistentTreeMap/EMPTY and PersistentTreeSet/EMPTY publish lazily through
+;; static-deferred-force. With raw box-cas!, a spurious arm64 failure left the
+;; cell unset and returned #f instead of the collection.
+(printf "\n== 5. static-deferred-force with 8 threads set-box!-ing the neighbouring box ==\n")
+(let* ((runs 0)
+       (obj (list 'singleton))
+       (d (make-static-deferred (lambda () (set! runs (fx+ runs 1)) obj))))
+  (ok "5. static-deferred-force returns the thunk's value" (eq? obj (static-deferred-force d)))
+  (ok "5. ...caches the same object without re-running the thunk"
+      (and (eq? obj (static-deferred-force d)) (fx=? runs 1))))
+(let* ((runs 0)
+       (d (make-static-deferred (lambda () (set! runs (fx+ runs 1)) #f))))
+  (ok "5. static-deferred-force caches a falsy value (#f)"
+      (and (eq? #f (static-deferred-force d))
+           (eq? #f (static-deferred-force d))
+           (fx=? runs 1))))
+;; Synchronized two-thread race: both threads enter the same thunk, thread 1
+;; publishes winner-val first, then thread 2 returns loser-val; both must get
+;; winner-val (including when winner-val is #f).
+(define (test-deferred-race winner-val loser-val)
+  (let* ((mu (make-mutex))
+         (cv (make-condition))
+         (entered 0)
+         (published? #f)
+         (loser-res 'unset)
+         (loser-done? #f)
+         (d (make-static-deferred
+              (lambda ()
+                (let ((id (with-mutex mu
+                            (set! entered (fx+ entered 1))
+                            (condition-broadcast cv)
+                            entered)))
+                  (if (fx=? id 1)
+                      (begin
+                        (with-mutex mu
+                          (let wait-both ()
+                            (unless (fx>=? entered 2)
+                              (condition-wait cv mu)
+                              (wait-both))))
+                        winner-val)
+                      (begin
+                        (with-mutex mu
+                          (let wait-pub ()
+                            (unless published?
+                              (condition-wait cv mu)
+                              (wait-pub))))
+                        loser-val)))))))
+    (fork-thread
+      (lambda ()
+        (let ((r (static-deferred-force d)))
+          (with-mutex mu
+            (set! published? #t)
+            (set! loser-res r)
+            (set! loser-done? #t)
+            (condition-broadcast cv)))))
+    (let ((w-res (static-deferred-force d)))
+      (with-mutex mu
+        (set! published? #t)
+        (condition-broadcast cv)
+        (let wait-done ()
+          (unless loser-done?
+            (condition-wait cv mu)
+            (wait-done))))
+      (and (eq? w-res winner-val)
+           (eq? loser-res winner-val)
+           (eq? (static-deferred-force d) winner-val)))))
+(ok "5. racing threads both observe the winning object"
+    (test-deferred-race (list 'winner) (list 'loser)))
+(ok "5. racing threads both observe a falsy (#f) winner"
+    (test-deferred-race #f (list 'loser)))
+;; Allocate each deferred's cell box right beside its hammered neighbour box so
+;; they share a cache line, and cycle through a compact pool across rounds.
+(define n5 4096)
+(define rounds5 150)
+(define dpairs (let ((v (make-vector n5)))
+                 (let fill ((i 0))
+                   (when (fx<? i n5)
+                     (let* ((target (box static-deferred-unset))
+                            (neighbor (box 0))
+                            (d (make-static-deferred* (lambda () i) target)))
+                       (vector-set! v i (cons d neighbor)))
+                     (fill (fx+ i 1))))
+                 v))
+(define bad5
+  (with-writers
+    (lambda (i) (set-box! (cdr (vector-ref dpairs (fxmod i n5))) i))
+    (lambda ()
+      (let round ((r 0) (bad 0))
+        (if (fx<? r rounds5)
+            (round (fx+ r 1)
+                   (let loop ((i 0) (bad bad))
+                     (if (fx<? i n5)
+                         (let* ((d (car (vector-ref dpairs i)))
+                                (_ (set-box! (static-deferred-cell d) static-deferred-unset))
+                                (v (static-deferred-force d)))
+                           (loop (fx+ i 1) (if (eqv? v i) bad (fx+ bad 1))))
+                         bad)))
+            bad)))))
+(printf "  ~a forces, ~a bad result(s)\n" (* n5 rounds5) bad5)
+(ok "5. static-deferred-force never returned unset/#f under neighbour writes" (= bad5 0))
 
 (printf "\ncas-test: ~a checks, ~a failure(s)\n" total fails)
 (if (= fails 0)

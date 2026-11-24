@@ -115,6 +115,21 @@
                    (sa-load-shared-object #f)
                    (and (sa-foreign-entry? name)
                         (sa-foreign-procedure conv name args res)))))
+         #'(if (eq? (sa-os-family) 'windows) win unx)))
+      ;; Two conventions: __collect_safe with (__varargs_after n), a variadic C
+      ;; function that blocks (FileChannel.lock's F_SETLKW, java/nio-file.ss).
+      ;; The Windows branch drops both, as above; a caller that needs the call to
+      ;; be collect-safe there binds its own Windows entry.
+      ((_ conv1 conv2 name (quote args) (quote res))
+       (with-syntax
+           ((win #'(guard (e (#t #f))
+                   (sa-load-shared-object #f)
+                   (and (sa-foreign-entry? name)
+                        (sa-foreign-procedure-runtime name (quote args) (quote res) #f))))
+            (unx #'(guard (e (#t #f))
+                   (sa-load-shared-object #f)
+                   (and (sa-foreign-entry? name)
+                        (sa-foreign-procedure conv1 conv2 name args res)))))
          #'(if (eq? (sa-os-family) 'windows) win unx))))))
 
 ;; Same, for an entry point that BLOCKS (a pipe read, sigwait). The call must be
@@ -1538,6 +1553,7 @@
 (define jolt-vreg-site 2)        ; #&('ns/fn' . line) innermost, ('ns/fn' . line) outer, or 0
 (define jolt-vreg-catch-line 3)  ; the site at the throw a catch clause is handling
 (define jolt-vreg-print-readably 4)  ; the print family's *print-readably* override; 0 = unset
+(define jolt-vreg-print-dup 15)  ; #t while this thread prints under *print-dup* (java/io-streams.ss)
 (define jolt-vreg-current-fiber 0)  ; fibers.ss: the running fiber record, or 0 (fixnum) when not on a fiber
 ;; slot 1: fibers.ss jolt-vreg-park-unwinding — a park escape is unwinding this carrier
 ;; slot 5: hasheq.ss jolt-vreg-hasheq-caches — this thread's string hash cache and weak admission buckets
@@ -1565,6 +1581,10 @@
 ;; slot 13: ticks.ss jolt-vreg-ticks
 ;; slot 14: printing.ss jolt-vreg-deref-printing — the cycle check's state for
 ;;   the IDeref values this thread is printing
+;; slot 15: jolt-vreg-print-dup (above) — #t while this thread prints under
+;;   *print-dup*, so the native printer sends each element to print-dup; set and
+;;   cleared at the print entries (java/io-streams.ss), read per element. Not 12:
+;;   the Gambit kernel still keeps its outer site there.
 ;; Effective *print-readably* for the readable renderer's string/char cases. The
 ;; print family stashes its override in the slot above — a virtual-register write
 ;; is ~1ns vs a pmap alloc + fold + two thread-parameter writes per dynamic
@@ -2008,7 +2028,8 @@
 (define (jolt-host-call method target . args)
   (cond
     ((and (string=? method "isDirectory") (string? target)) (if (file-directory? target) #t #f))
-    ((and (string=? method "listFiles") (string? target)) (list->cseq (directory-list target)))
+    ;; in the OS's order, as java.io/nio list (Chez's directory-list is it reversed)
+    ((and (string=? method "listFiles") (string? target)) (list->cseq (reverse (directory-list target))))
     (else (record-method-dispatch target method (apply jolt-vector args)))))
 
 ;; --- var cells: late-bound global roots (Clojure vars) -----------------------
@@ -2785,12 +2806,15 @@
 ;; limited-string walkers never truncate.
 (define plevel-cell #f)
 (define plength-cell #f)
+;; Neither limits a print under *print-dup*, which has to read back whole.
 (define (jolt-print-level)
   (unless plevel-cell (set! plevel-cell (jolt-var "clojure.core" "*print-level*")))
-  (let ((v (jolt-var-get plevel-cell))) (and (number? v) v)))
+  (let ((v (jolt-var-get plevel-cell)))
+    (and (number? v) (not (eq? (virtual-register jolt-vreg-print-dup) #t)) v)))
 (define (jolt-print-length)
   (unless plength-cell (set! plength-cell (jolt-var "clojure.core" "*print-length*")))
-  (let ((v (jolt-var-get plength-cell))) (and (number? v) v)))
+  (let ((v (jolt-var-get plength-cell)))
+    (and (number? v) (not (eq? (virtual-register jolt-vreg-print-dup) #t)) v)))
 (define jolt-print-depth (make-thread-parameter 0))
 ;; A collection at depth >= *print-level* renders as "#". The top-level collection
 ;; is depth 0, so *print-level* 0 collapses any collection, 1 keeps the outermost.
@@ -3474,13 +3498,30 @@
 ;; (str x) at one argument on Chez (backend_scheme emit-var-invoke): a string is
 ;; itself and a StringBuilder its contents, the two a reader's token loop hands
 ;; it; anything else is jolt-str, clojure.core/str's procedure. Through the var
-;; it cost ~50 ns against .toString's ~15.
+;; it cost ~50 ns against .toString's ~15. C is the var's cell, read at the
+;; site: while the var's fn (what jolt-var-fn reads) is jolt-str the answer is
+;; inline, and anything else it holds (with-redefs, a redefinition) is called
+;; with the argument instead (#1768). Without C (minting the seed) there is no
+;; var read. C is always a var cell (the emitter spells it only around one), so
+;; its slots are read unchecked, as jolt-var-fn reads them. One fn read and one
+;; eq? is the whole guard: 3.3 -> 4.0 ns on (str s), where a separate root and
+;; binding test then a second branch on the result measured 4.5.
 (define-syntax jolt-str1/i
   (syntax-rules ()
-    ((_ e) (let ((v e))
-             (cond ((string? v) v)
-                   ((sb-builder-jhost? v) (sb-str v))
-                   (else (jolt-str v)))))))
+    ((_ e) (let ((v e)) (jolt-str1/i-body v)))
+    ((_ c0 e) (let* ((c c0)
+                     ;; what a call through the var reads (jolt-var-fn; str is
+                     ;; never *ns*), read ahead of the argument
+                     (f (if (sa-record-slot c 6) (var-cell-deref-bound c) (sa-record-slot c 2)))
+                     (v e))
+                (cond ((eq? f jolt-str) (jolt-str1/i-body v))
+                      ((procedure? f) (f v))
+                      (else (jolt-invoke f v)))))))
+(define-syntax jolt-str1/i-body
+  (syntax-rules ()
+    ((_ v) (cond ((string? v) v)
+                 ((sb-builder-jhost? v) (sb-str v))
+                 (else (jolt-str v))))))
 ;; (nth coll i) and (nth coll i not-found) on Chez (calls.clj native-op): an
 ;; in-range index into a vector or a string answers inline -- destructuring a
 ;; pair is two of these, and tools.reader destructures every [line column] it
@@ -3653,7 +3694,6 @@
 ;; and would re-class a comparator the boot already hands out.
 (register-enum-class! "java.util.Comparators$NaturalOrderComparator"
   (list (cons "INSTANCE" tm-natural-order)))
-(lazy-load "host/chez/java/enum-colls.ss")           ; EnumSet / EnumMap over the enum model
 (load "host/chez/java/linked-hash.ss")          ; LinkedHashMap / LinkedHashSet
 (load "host/chez/java/host-static-classes.ss")  ; instantiable host object classes
 ;; jolt.host/class-names and all-classes (#1663): reads the tables loaded above.
@@ -3675,6 +3715,9 @@
 ;; extensions sit over every prior shim.
 (load "host/chez/java/io.ss")
 (load "host/chez/java/nio-file.ss")             ; java.nio.file: Path / Paths / PathMatcher
+;; After nio-file.ss: it adds PosixFilePermissions/fromString, which answers an
+;; EnumSet, to the class nio-file.ss registers.
+(lazy-load "host/chez/java/enum-colls.ss")           ; EnumSet / EnumMap over the enum model
 (load "host/chez/terminal.ss")                  ; the console under the REPL line editor
 
 ;; #inst values + the java.util/java.text date layer: jinst (RFC3339 ms), Date,
@@ -3880,6 +3923,9 @@
 ;; and reads proc-name-tbl to write a fn as its var's name.
 (load "host/chez/java/image-codecs.ss")         ; how the host's values travel in an image
 (load "host/chez/state-image.ss")
+
+;; Guarded path edits emitted by the Chez backend.
+(load "host/chez/assoc-in.ss")
 
 ;; The stall watch (see "a stalled collection says so" above): after every
 ;; load, so a rendezvous that times out finds the reporter's dependencies.

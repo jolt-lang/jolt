@@ -226,6 +226,8 @@
     ;; (sealed #t) only lets Chez check the type faster; nothing to do here
     ((_ (name ctor pred) (parent p) (fields spec ...) (nongenerative uid) (sealed s))
      (define-record-type (name ctor pred) (parent p) (fields spec ...) (nongenerative uid)))
+    ((_ name (fields spec ...) (nongenerative uid) (sealed s))
+     (define-record-type name (fields spec ...) (nongenerative uid)))
     ((_ (name ctor pred) (parent p) (fields spec ...) (nongenerative uid))
      (define name (make-jolt-record-type 'name 'ctor 'pred 'p
                                          (jolt-record-field-names (spec ...)))))
@@ -935,9 +937,11 @@
 ;; Gambit has no arity masks and its static sites do not probe one: the
 ;; wrapper is the member, and a wrong-count call fails inside it.
 (define (host-arity-like f wrapper) wrapper)
-;; A member-table write, which on Chez also moves the epoch its static-site caches
-;; validate against. Gambit's sites do not cache (host-statics.ss), so it is the write.
-(define (class-statics-member-set! h member v) (hashtable-set! h member v))
+;; class-model.ss promotes Long/TYPE and its siblings in place. On Chez that is a
+;; locked write that also moves the epoch the static-site caches validate
+;; against; Gambit's sites do not cache (host-statics.ss) and its boot is one
+;; thread, so it is the merge.
+(define (class-statics-replace! name members) (register-class-statics! name members))
 
 ;; Chez gensym accepts a STRING prefix; Gambit only a symbol. Normalize.
 (define %gambit-gensym gensym)

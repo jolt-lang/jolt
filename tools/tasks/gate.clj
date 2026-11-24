@@ -32,7 +32,7 @@
     fieldnum fieldjoin contagion
     hasheq narrowhash
     protoret accfix pic narrow directlink linkedrace mintgate directcall defmetacells staticsite
-    arraymap recfast recfold arraybacking largebytesgc largefxgc unitcontext numeric oparity s64wrap
+    arraymap hamt recfast recfold arraybacking largebytesgc largefxgc unitcontext numeric oparity s64wrap
     toplevelinline mathfl flonumdisp flarr
     fnform poolshape coreproc traceemit traceeval tracecompilecost degradedbacktrace
     inline inline-body guardedinline dcerefs shakelocal manifestcheck readmecheck portcheck
@@ -41,14 +41,14 @@
     normalizecheck hostregistry hostarity enummodel imagecoverage lazyshims foreignhandles
     dispatchalloc hostsite regexmatcher winpath winplatform winparity statlayout lockcheck
     mmepochcheck parkcheck shelloutcheck errnocheck irvalidate seeddefs devbootsmoke
-    gatebootsmoke aotcachesmoke aotcachepathsmoke aotcachesourcepathsmoke aotcachestarfilesmoke
+    gatebootsmoke aotcachesmoke aotworkersmoke aotcachepathsmoke aotcachesourcepathsmoke aotcachestarfilesmoke
     aotfingerprint vfaslceiling vfaslstrings buildscaling buildnatives buildsegments
     compilepathsmoke makefilesmoke versionsmoke attributioncheck noticecheck taskparity
-    systemstreams closedstdout stderrsplit userdirpaths mimetypes utf8decode
+    systemstreams closedstdout stderrsplit filelock deleteonclose userdirpaths mimetypes utf8decode
     certify gambitcheck gambitkernel gambitgencheck gambitseedcheck gambitboot gambiteval
     gambitunbound gambitvars gambitstatics gambittwins gambitprofile grenadinecheck fibers
     fiberspoll gosm asynctimer ticks interruptnest monitorescape windescape threadsafety
-    maskedacquire ioerrno cas flow])
+    maskedacquire ioerrno cas flow native nativebuild])
 
 ;; The full gate (dev machine): the CI gate plus the self-host byte fixpoint.
 (def test-gates '[submodules selfhost ci])
@@ -56,9 +56,10 @@
 ;; Gates that judge a constant-factor timing ratio. They run on their own once
 ;; every other gate has finished: beside a parallel neighbour, a burst on one
 ;; arm moved a ratio by 1.5-3x (fastpathratio over its ceiling in 9 of 134 CI
-;; jobs, 2026-11-03..04; stdlibratio the same way, jolt-h1d). A scaling gate
+;; jobs, 2026-11-03..04; stdlibratio the same way, jolt-h1d; pmoverhead read
+;; 0.65-1.87 beside its shard for a quiet 1.05-1.15). A scaling gate
 ;; (n vs 4n of the same work) is not listed: interference moves both arms alike.
-(def quiet-gates '#{fastpathratio stdlibratio})
+(def quiet-gates '#{fastpathratio stdlibratio pmoverhead})
 
 (def receipt "target/gate-receipt")
 

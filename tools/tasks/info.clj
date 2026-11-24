@@ -23,7 +23,7 @@
     '[corpus cts sci scifunctional certify documented documented-record unit libconformance libperf]]
 
    ["Values and collections"
-    '[values hasheq narrowhash transient sortedcoll rrbprop rrbscaling arraymap arraybacking recfast
+    '[values hasheq narrowhash transient sortedcoll rrbprop rrbscaling arraymap hamt arraybacking recfast
       recordinline recordshadow complexity cas s64wrap flonumprint flonumdisp utf8decode
       stateimage imagecoverage]]
 
@@ -58,16 +58,16 @@
 
    ["jolt build and the AOT cache"
     '[buildsmoke buildlibsmoke buildnatives buildsegments reprobuildsmoke profilebuildsmoke
-      staticnativesmoke embeddedresources joltsmoke aotcachesmoke aotcachepathsmoke
+      staticnativesmoke embeddedresources joltsmoke aotcachesmoke aotworkersmoke aotcachepathsmoke
       aotcachesourcepathsmoke aotcachestarfilesmoke aotfingerprint compilepathsmoke devbootsmoke
       gatebootsmoke vfaslceiling vfaslstrings stdlibfasl]]
 
    ["FFI, natives and zlib"
     '[ffi ffidupsym ffiloadfail foreignhandles statlayout errnocheck ioerrno zlibunit
-      zlibnativesmoke zlibregistersmoke]]
+      zlibnativesmoke zlibregistersmoke native nativebuild nativeproofs]]
 
    ["Host runtime"
-    '[systemstreams closedstdout stderrsplit mimetypes noexecsmoke hostarity hostprops
+    '[systemstreams closedstdout stderrsplit filelock deleteonclose mimetypes noexecsmoke hostarity hostprops
       hostregistry enummodel lazyshims deadhost adaptercheck portcheck census normalizecheck]]
 
    ["Regex"

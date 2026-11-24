@@ -63,6 +63,37 @@
 (defn map-node [pairs] {:op :map :pairs pairs})
 (defn set-node [items] {:op :set :items items})
 
+(defn distinct-const-keys?
+  "Can these literal keys (or set elements) skip the runtime duplicate check?
+  Even an all-constant list can have duplicates after constant folding."
+  [ks]
+  (or (empty? (rest ks))
+      (and (every? (fn [k] (= :const (:op k))) ks)
+           (apply distinct? (map :val ks)))))
+
+(defn const-coll-node?
+  "Is the entire literal constant? For eager construction every nested map
+  and set must also be able to skip its duplicate check."
+  ([n] (const-coll-node? n false))
+  ([n eager?]
+   (and (map? n)
+        (case (:op n)
+          (:const :quote :regex) true
+          (:vector :set)
+          (and (or (not eager?) (= :vector (:op n)) (distinct-const-keys? (:items n)))
+               (every? #(const-coll-node? % eager?) (:items n)))
+          :map
+          (and (or (not eager?) (distinct-const-keys? (map first (:pairs n))))
+               (every? #(and (const-coll-node? (first %) eager?)
+                             (const-coll-node? (second %) eager?)) (:pairs n)))
+          false))))
+
+(defn eager-const-coll-node?
+  "Can the entire literal be built once, ahead of its call site? Unlike
+  const-coll-node?, no nested map or set may need a runtime duplicate check."
+  [n]
+  (const-coll-node? n true))
+
 (defn quote-node [form] {:op :quote :form form})
 (defn throw-node [expr] {:op :throw :expr expr})
 
@@ -134,6 +165,7 @@
 ;; :invoke       :fn :args                        :fn :args
 ;; :def          :ns :name                        :init? :meta-expr?   (init absent = declare)
 ;; :let          :bindings :body                  binding inits, :body
+;; :let-values   :names :init :body               multiple-value :init, :body
 ;; :loop         :bindings :body                  binding inits, :body
 ;; :recur        :args                            :args
 ;; :fn           :arities                          each arity :body
@@ -152,6 +184,8 @@
 ;; :ffi-fn       :csym :argtypes :rettype         —   (:pointer-call: csym nil,
 ;;                                                     the C fn pointer is arg 0)
 ;; :ffi-callable :fn :argtypes :rettype           :fn
+;; :native-region :sym :src :kinds :result :mode  :args :fallback :raise
+;;                (a jolt.native region call site)
 ;; :regex        :source                          —
 ;; :inst         :source                          —
 ;; :uuid         :source                          —
@@ -181,6 +215,8 @@
 ;;   :num-kind :num-read     numeric pass (jolt.passes.numeric) — an :invoke's
 ;;                           proven :double/:long arithmetic kind, and a field
 ;;                           read's numeric kind.
+;;   :boxed-map-read         scalarized map read with the source lookup's boxed
+;;                           arithmetic semantics (inline -> numeric).
 ;;   :fl-aget :fl-aset       an aget/aset over a ^doubles array, lowered to the
 ;;   :v-aget :v-aset         unboxed flvector path / to the direct backing path for
 ;;   :b-aset :v-alength      the other array kinds / to the byte store, which owns
@@ -229,9 +265,9 @@
 ;;   :letrec                 a :let that must lower to letrec* (mutual recursion).
 (def node-ops
   #{:const :local :var :the-var :host :host-static :host-new :if :do :invoke :def
-    :let :loop :recur :fn :vector :map :set :quote :throw :coerce :try :host-call
+    :let :let-values :loop :recur :fn :vector :map :set :quote :throw :coerce :try :host-call
     :set-var :set-field :defmacro :ffi-layout :ffi-fn :ffi-callable :regex :inst :uuid :bigdec
-    :the-ns :load-time-value :inline-guard})
+    :the-ns :load-time-value :inline-guard :native-region})
 
 ;; op -> the keys a node of that op must carry. Optional keys (:init, annotations)
 ;; are not listed. Kept conservative for the leaf/host ops so a shape change
@@ -240,7 +276,8 @@
   {:const [:val] :local [:name] :var [:ns :name] :the-var [:ns :name]
    :host [:name] :host-static [:class :member] :host-new [:class :args]
    :if [:test :then :else] :do [:statements :ret] :invoke [:fn :args]
-   :def [:ns :name] :let [:bindings :body] :loop [:bindings :body] :recur [:args]
+   :def [:ns :name] :let [:bindings :body] :let-values [:names :init :body]
+   :loop [:bindings :body] :recur [:args]
    :fn [:arities] :vector [:items] :map [:pairs] :set [:items] :quote [:form]
    :throw [:expr] :coerce [:kind :expr] :try [:body]
    :host-call [:target :method :args] :set-var [:the-var :val]
@@ -248,7 +285,8 @@
    :ffi-layout [:layout]
    :ffi-fn [:csym :argtypes :rettype] :ffi-callable [:fn :argtypes :rettype]
    :regex [:source] :inst [:source] :uuid [:source] :bigdec [:source]
-   :the-ns [:name] :load-time-value [:expr] :inline-guard [:fn :ns :name :token]})
+   :the-ns [:name] :load-time-value [:expr] :inline-guard [:fn :ns :name :token]
+   :native-region [:sym :src :kinds :result :mode :args :fallback :raise]})
 
 ;; Problems with THIS node's shape (not its children): an unknown or missing :op,
 ;; or a missing required key. Returns a seq of message strings (empty when valid).
@@ -340,12 +378,14 @@
    :set-field [[:obj :node] [:val :node]]
    :defmacro [[:fn :node]]
    :ffi-callable [[:fn :node]]
+   :native-region [[:args :nodes] [:fallback :node] [:raise :node]]
    :inline-guard [[:fn :node]]
    :invoke [[:fn :node] [:args :nodes]]
    :vector [[:items :nodes]]
    :set [[:items :nodes]]
    :map [[:pairs :pairs]]
    :let [[:bindings :bindings] [:body :node]]
+   :let-values [[:init :node] [:body :node]]
    :loop [[:bindings :bindings] [:body :node]]
    :recur [[:args :nodes]]
    :fn [[:arities :arities]]
@@ -400,6 +440,65 @@
                  (if (and (= shape :opt) (not v))
                    acc
                    (reduce-ir-child f acc shape v))))))))
+
+(defn reduce-ir-children-with-path
+  "Fold f (acc child path) over the same children as reduce-ir-children.
+  A path consists of map keys and vector indices relative to the walk root."
+  [f acc node path]
+  (reduce
+    (fn [a [k shape]]
+      (let [v (get node k)
+            p (conj path k)]
+        (case shape
+          :opt (if v (f a v p) a)
+          :nodes (reduce-kv (fn [a i child] (f a child (conj p i))) a v)
+          :pairs (reduce-kv (fn [a i [left right]]
+                              (f (f a left (conj p i 0)) right (conj p i 1)))
+                            a v)
+          :bindings (reduce-kv (fn [a i b] (f a (nth b 1) (conj p i 1))) a v)
+          :arities (reduce-kv (fn [a i ar] (f a (:body ar) (conj p i :body))) a v)
+          (f a v p))))
+    acc (get ir-child-layout (:op node))))
+
+;; The scope rule of a binding form, in one place. let* and loop bind in
+;; sequence: an init sees only the binders before it. A :letrec let (letfn) does
+;; not: every init sees every binder, so a sibling's name inside an init is the
+;; sibling, never an outer binding of the same name. A pass that threads a scope
+;; through a let's bindings goes through here, so none of them can read a letfn
+;; sibling as what an outer local of its name held (or rename it as that local).
+;;
+;; rename: (fn [name] name'), the name the binder has from now on.
+;; bind:   (fn [scope name name' fact] scope'), brings it into scope; fact is
+;;         what visit learned about its value, nil when not known yet.
+;; visit:  (fn [scope init] [init' fact]), one init in the scope it sees.
+;;
+;; A :letrec let binds every name with no fact before the first init, then
+;; re-binds each with its fact once visited. Answers [scope' bindings' facts].
+(defn letrec? [node] (boolean (get node :letrec)))
+
+(defn thread-bindings [node scope rename bind visit]
+  (let [binds (get node :bindings)
+        n (count binds)
+        names (mapv (fn [b] (rename (nth b 0))) binds)
+        scope0 (if (letrec? node)
+                 (loop [i 0 s scope]
+                   (if (< i n) (recur (inc i) (bind s (nth (nth binds i) 0) (nth names i) nil)) s))
+                 scope)]
+    (loop [i 0 s scope0 out [] facts []]
+      (if (< i n)
+        (let [b (nth binds i)
+              r (visit s (nth b 1))]
+          (recur (inc i)
+                 (bind s (nth b 0) (nth names i) (nth r 1))
+                 (conj out [(nth names i) (nth r 0)])
+                 (conj facts (nth r 1))))
+        [s out facts]))))
+
+;; Hoisting a let init's bindings into the enclosing let (flatten-lets) is only
+;; sound for a plain let: a :letrec one's fns read each other, and in the
+;; enclosing let* the first would read its sibling before it was bound (#1808).
+(defn hoistable-let? [init]
+  (and (= :let (get init :op)) (not (letrec? init))))
 
 ;; All schema problems in the tree rooted at node, via reduce-ir-children (so an
 ;; unknown op — which recurses over no children — is still reported for itself).
