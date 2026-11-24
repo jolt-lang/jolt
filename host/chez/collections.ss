@@ -14,14 +14,17 @@
 ;; ============================================================================
 ;; No copy here is a checked Scheme loop: the runtime compiles at
 ;; optimize-level 2, where such a loop pays a type and bounds check per element
-;; (a 64-slot copy measured 390ns). Whole vectors and computed ranges (a node
-;; update, vec-copy-range) are the target's block copy INTO A FRESH
-;; vector (sa-vector-copy / sa-subvector): no initializing fill and no write
-;; barrier per slot, 19ns for 32 slots against 82 for the unchecked loop below
-;; and 86 for Chez's vector-copy!, which is that same barriered loop. What still
-;; copies into a vector made first (the HAMT node edits, the array-map's append/remove)
-;; runs the unchecked loop or the checked bulk move. Never a bare vector-copy:
-;; the vendored irregex redefines that name at top level as a one-argument loop.
+;; (a 64-slot copy measured 390ns). Whole vectors, computed ranges, and appends
+;; (a node update, vec-copy-range, vec-append2) are the target's block copy
+;; INTO A FRESH vector (sa-vector-copy / sa-subvector / sa-vector-append): no
+;; initializing fill and no write barrier per slot, 19ns for 32 slots against
+;; 82 for the unchecked loop below and 86 for Chez's vector-copy!, which is
+;; that same barriered loop. vec-remove2 block-copies the longer surviving side
+;; with sa-subvector and fills only the shorter side (at most half the slots,
+;; none at the ends); what still copies into a vector made first (the HAMT node
+;; edits) runs the unchecked loop or the checked bulk move. Never a bare
+;; vector-copy: the vendored irregex redefines that name at top level as a
+;; one-argument loop.
 (define (vec-copy-range v start end) (sa-subvector v start end))
 ;; slots 0..n-1 of v into out, unchecked: out was just made at least n long
 (define (vec-fill-prefix! out v n)
@@ -37,21 +40,24 @@
   (let ((out (sa-vector-copy v)))
     (vector-set! out i x)
     out))
-;; the two below serve the array-mode map's k/v slot vector
+;; the two below serve the array-mode map's k/v slot vector (and vec-remove2
+;; also drops entries from HAMT nodes)
 (define (vec-append2 v k x)           ; copy of v with k and x appended
-  (let* ((n (vector-length v)) (out (make-vector (fx+ n 2))))
-    (vec-fill-prefix! out v n)
-    (vector-set! out n k) (vector-set! out (fx+ n 1) x)
-    out))
+  (if (fx=? (vector-length v) 0)
+      (vector k x)
+      (sa-vector-append v (vector k x))))
 (define (vec-remove2 v i)             ; copy of v with slots i and i+1 dropped
-  (let* ((n (vector-length v)) (out (make-vector (fx- n 2))))
-    (vec-fill-prefix! out v i)
-    ;; the tail, shifted down two: j runs i+2..n-1 into i..n-3
-    (let loop ((j (fx+ i 2)))
-      (when (sa-ufx<? j n)
-        (sa-uvector-set! out (sa-ufx- j 2) (sa-uvector-ref v j))
-        (loop (sa-ufx+ j 1))))
-    out))
+  (let* ((n (vector-length v)) (m (fx- n 2)))
+    (if (fx<=? (fx+ i i) m)
+        (let ((out (sa-subvector v 2 n)))
+          (when (fx>? i 0) (vec-fill-prefix! out v i))
+          out)
+        (let ((out (sa-subvector v 0 m)))
+          (let loop ((j (fx+ i 2)))
+            (when (sa-ufx<? j n)
+              (sa-uvector-set! out (sa-ufx- j 2) (sa-uvector-ref v j))
+              (loop (sa-ufx+ j 1))))
+          out))))
 
 ;; ============================================================================
 ;; persistent vector — 32-way trie + tail (Clojure's PersistentVector)
