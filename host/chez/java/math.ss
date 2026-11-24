@@ -129,9 +129,11 @@
 ;; toward zero (Java's ^long cast) so a double like 7.0 becomes 7, then compute
 ;; on exact integers so the result is a long, not a double.
 (define (jolt-math-floor-div a b)
-  (let ((a (exact (truncate a))) (b (exact (truncate b)))) (floor (/ a b))))
+  (let ((a (exact (truncate a))) (b (exact (truncate b))))
+    (if (eqv? b 0) (jolt-l-div0-throw) (floor (/ a b)))))
 (define (jolt-math-floor-mod a b)
-  (let ((a (exact (truncate a))) (b (exact (truncate b)))) (- a (* b (floor (/ a b))))))
+  (let ((a (exact (truncate a))) (b (exact (truncate b))))
+    (if (eqv? b 0) (jolt-l-div0-throw) (- a (* b (floor (/ a b)))))))
 
 ;; --- IEEE 754 bit-level ops ---------------------------------------------------
 ;; The JDK defines copySign/nextUp/nextDown/nextAfter/ulp/getExponent on the raw
@@ -139,7 +141,9 @@
 ;; double. The pattern comes from the host (sa-flonum->bits): an unsigned 64-bit
 ;; integer, sign bit on top, 11 exponent bits, 52 mantissa bits. For a negative
 ;; double a larger pattern is a larger magnitude. A NaN reads as the JVM's
-;; canonical one, as doubleToLongBits answers it.
+;; canonical one, as doubleToLongBits answers it; dbl->raw-bits keeps its sign
+;; and payload, as doubleToRawLongBits does (a flonum carries both through
+;; every move and the host's bit cast).
 (define dbl-sign-bit (expt 2 63))
 (define dbl-mant-unit (expt 2 52))
 (define dbl-min-value 4.9406564584124654e-324)
@@ -155,6 +159,7 @@
     (if (nan? x)
         (+ (* 2047 dbl-mant-unit) (expt 2 51))
         (sa-flonum->bits x))))
+(define (dbl->raw-bits x) (sa-flonum->bits (exact->inexact x)))
 (define (bits->dbl b) (sa-bits->flonum b))
 
 (define (jolt-math-copy-sign m s)
@@ -275,6 +280,14 @@
 (define (real-or-nan x) (if (and (number? x) (real? x)) (exact->inexact x) +nan.0))
 (define (m1c f) (lambda (x) (real-or-nan (f (->dbl x)))))
 (define (m2c f) (lambda (a b) (real-or-nan (f (->dbl a) (->dbl b)))))
+;; Math.pow, and clojure.math/pow which is it: Java's special cases, not C's. A
+;; NaN exponent is NaN even over a base of 1.0, and a base of magnitude 1.0 to an
+;; infinite power is NaN, where expt (C's pow) answers 1.0 for both. The proven-
+;; double lowering, jolt-fl-pow in seq.ss, makes the same two checks.
+(define (jolt-math-pow a b)
+  (if (or (nan? b) (and (infinite? b) (= (abs a) 1.0)))
+      +nan.0
+      (real-or-nan (expt a b))))
 ;; the clojure.math fns implemented above take their numbers as given; these
 ;; take any jolt number first, as the m1/m2 wrappers do (a Float is the double
 ;; it widens to, which is what clojure.math's ^double parameters receive)
@@ -282,7 +295,7 @@
 (define (n2 f) (lambda (a b) (f (jolt-need-num a) (jolt-need-num b))))
 (def-var! "clojure.math" "sqrt" (m1c sqrt))
 (def-var! "clojure.math" "cbrt" (n1 jolt-math-cbrt))
-(def-var! "clojure.math" "pow" (m2c expt))
+(def-var! "clojure.math" "pow" (lambda (a b) (jolt-math-pow (->dbl a) (->dbl b))))
 (def-var! "clojure.math" "exp" (m1 exp))
 (def-var! "clojure.math" "expm1" (n1 jolt-math-expm1))
 (def-var! "clojure.math" "log" (m1c log))
@@ -432,7 +445,7 @@
         ;; cbrt/log10 (and hypot/expm1/log1p below) share the clojure.math impls
         ;; above so Math/x and clojure.math/x never diverge.
         (cons "cbrt" (lambda (x) (jolt-math-cbrt (->dbl x))))
-        (cons "pow" (lambda (a b) (real-or-nan (expt a b))))
+        (cons "pow" (lambda (a b) (jolt-math-pow a b)))
         ;; hypot/expm1/log1p route to the numerically-stable clojure.math impls
         ;; so Math/hypot doesn't overflow and expm1/log1p keep
         ;; full precision near zero.
@@ -441,8 +454,8 @@
         (cons "ceil" (lambda (x) (->dbl (ceiling x))))
         (cons "rint" (lambda (x) (->dbl (round x))))            ; round-half-even -> double
         ;; Math.floorDiv/floorMod: integer floor division / modulus (long -> long).
-        (cons "floorDiv" (lambda (a b) (exact (floor (/ a b)))))
-        (cons "floorMod" (lambda (a b) (exact (- a (* b (floor (/ a b)))))))
+        (cons "floorDiv" (lambda (a b) (if (zero? b) (jolt-l-div0-throw) (exact (floor (/ a b))))))
+        (cons "floorMod" (lambda (a b) (if (zero? b) (jolt-l-div0-throw) (exact (- a (* b (floor (/ a b))))))))
         (cons "sin" (lambda (x) (->dbl (sin x)))) (cons "cos" (lambda (x) (->dbl (cos x))))
         (cons "tan" (lambda (x) (->dbl (tan x)))) (cons "asin" (lambda (x) (real-or-nan (asin x))))
         (cons "acos" (lambda (x) (real-or-nan (acos x)))) (cons "atan" (lambda (x) (->dbl (atan x))))
@@ -471,12 +484,14 @@
 
 ;; ---- Double / Float bit casts -----------------------------------------------
 ;; Over the bit patterns above, as the JVM's signed long/int. doubleToLongBits
-;; folds every NaN into the canonical 0x7ff8000000000000; the raw form would keep
-;; a NaN's payload, which no host here exposes, so the two agree.
+;; folds every NaN into the canonical 0x7ff8000000000000; doubleToRawLongBits
+;; keeps a NaN's sign and payload.
 (define (unsigned->signed u width)
   (if (>= u (expt 2 (- width 1))) (- u (expt 2 width)) u))
 (define (jolt-double->long-bits x)
   (unsigned->signed (dbl->bits (jolt-need-num x)) 64))
+(define (jolt-double->raw-long-bits x)
+  (unsigned->signed (dbl->raw-bits (jolt-need-num x)) 64))
 (define (jolt-long-bits->double n)
   (bits->dbl (modulo (exact (jolt-need-num n)) (expt 2 64))))
 
@@ -490,6 +505,18 @@
              ((infinite? x) #x7f800000)
              ((= x 0.0) 0)
              (else (flt-mag->bits (exact (abs x))))))))
+;; floatToRawIntBits: a NaN keeps its sign and payload. A float NaN is held as
+;; the double it widens to, its 23-bit payload in the top of the double's 52
+;; (bits->flt below builds it that way, flsingle leaves a narrowed NaN that way),
+;; so the payload is the double's shifted back down. A double NaN with nothing
+;; in those bits narrows to a quiet NaN, as the JVM's d2f does.
+(define (flt->raw-bits x)
+  (let ((d (jolt-double x)))
+    (if (nan? d)
+        (let* ((b (sa-flonum->bits d))
+               (m (bitwise-and (bitwise-arithmetic-shift-right b 29) #x7fffff)))
+          (+ (if (>= b dbl-sign-bit) (expt 2 31) 0) #x7f800000 (if (= m 0) #x400000 m)))
+        (flt->bits d))))
 ;; The pattern, sign clear, of an exact positive rational M rounded once to
 ;; single precision. Taking M exact rather than a double is what lets a caller
 ;; ask about a decimal without rounding it to a double first (byte-buffer.ss
@@ -509,12 +536,19 @@
 (define (bits->flt b)
   (let* ((r (bitwise-and b #x7fffffff))
          (field (bitwise-arithmetic-shift-right r 23))
-         (mant (bitwise-and r #x7fffff))
-         (mag (cond ((= field 255) (if (= mant 0) +inf.0 +nan.0))
-                    ((= field 0) (exact->inexact (* mant (expt 2 -149))))
-                    (else (exact->inexact (* (+ (expt 2 23) mant) (expt 2 (- field 150))))))))
-    (if (>= b (expt 2 31)) (- mag) mag)))
+         (mant (bitwise-and r #x7fffff)))
+    (if (and (= field 255) (not (= mant 0)))
+        ;; a NaN, built bit by bit so its sign and payload survive (a hardware
+        ;; widening would quiet a signaling one)
+        (sa-bits->flonum (+ (if (>= b (expt 2 31)) dbl-sign-bit 0)
+                            (* 2047 dbl-mant-unit)
+                            (* mant (expt 2 29))))
+        (let ((mag (cond ((= field 255) +inf.0)
+                         ((= field 0) (exact->inexact (* mant (expt 2 -149))))
+                         (else (exact->inexact (* (+ (expt 2 23) mant) (expt 2 (- field 150))))))))
+          (if (>= b (expt 2 31)) (- mag) mag)))))
 (define (jolt-float->int-bits x) (unsigned->signed (flt->bits (jolt-float->flonum x)) 32))
+(define (jolt-float->raw-int-bits x) (unsigned->signed (flt->raw-bits (jolt-float->flonum x)) 32))
 (define (jolt-int-bits->float n)
   (make-jfloat (bits->flt (modulo (exact (jolt-need-num n)) (expt 2 32)))))
 
@@ -531,7 +565,7 @@
 (register-class-statics! "Double"
   (list (cons "compare" (lambda (a b) (jolt-double-compare a b)))
         (cons "doubleToLongBits" (lambda (x) (jolt-double->long-bits x)))
-        (cons "doubleToRawLongBits" (lambda (x) (jolt-double->long-bits x)))
+        (cons "doubleToRawLongBits" (lambda (x) (jolt-double->raw-long-bits x)))
         (cons "longBitsToDouble" (lambda (n) (jolt-long-bits->double n)))))
 ;; Float.toString: the shortest decimal that reads back as the float, which is
 ;; not a double's shortest digits now that (float 0.1) holds the float's exact
@@ -588,5 +622,5 @@
         (cons "NEGATIVE_INFINITY" (make-jfloat -inf.0))
         (cons "NaN" (make-jfloat +nan.0))
         (cons "floatToIntBits" (lambda (x) (jolt-float->int-bits x)))
-        (cons "floatToRawIntBits" (lambda (x) (jolt-float->int-bits x)))
+        (cons "floatToRawIntBits" (lambda (x) (jolt-float->raw-int-bits x)))
         (cons "intBitsToFloat" (lambda (n) (jolt-int-bits->float n)))))

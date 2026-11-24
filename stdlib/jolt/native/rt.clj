@@ -17,6 +17,7 @@
     4 (throw (NegativeArraySizeException. (str a)))
     5 (throw (IllegalArgumentException. (str "Value out of range for long: " d)))
     6 (throw (OutOfMemoryError. "native region: allocation failed"))
+    8 (throw (ArithmeticException. "Divide by zero"))
     7 (throw (IllegalArgumentException.
               (str "native region: " a " does not fit a borrowed long-array, which"
                    " holds fixnums (-2^60 to 2^60-1); widen the array outside the region")))
@@ -38,7 +39,7 @@
         (and (= b -1) (= a Long/MIN_VALUE)) a
         :else (quot a b)))
 (defn rem* [a b] (if (zero? b) (raise! 3 0 0 0.0) (rem a b)))
-(defn mod* [a b] (if (zero? b) (raise! 3 0 0 0.0) (mod a b)))
+(defn mod* [a b] (if (zero? b) (raise! 8 0 0 0.0) (mod a b)))
 
 (defn index
   "RT.intCast of an array index: outside the int range is an overflow."

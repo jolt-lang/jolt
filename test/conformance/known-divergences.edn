@@ -1879,6 +1879,54 @@
            :jvm "2"
            :jolt "1"}
    :note "Distinct objects of every other kind stay distinct keys."}
+  ;; Which ArithmeticException message a zero divisor gets follows the overload
+  ;; the JVM compiler picked: quot/rem over two primitive longs are Java's / and
+  ;; %, "/ by zero"; the Object overloads say "Divide by zero". jolt proves a
+  ;; primitive long from a ^long hint, a long cast, a literal-init loop local, an
+  ;; interop call answering an int, or two integer literals, and lowers those to
+  ;; the long ops with Java's message. A let-bound literal or a clojure.core fn
+  ;; returning an int (count) is primitive on the JVM but not proven here.
+  {:category :numeric-model
+   :behavior "(let [a 5 b 0] (rem a b)) and (rem (count xs) 0)"
+   :jvm "ArithmeticException \"/ by zero\""
+   :jolt "ArithmeticException \"Divide by zero\""
+   :check {:expr "(try (let [a 5 b 0] (rem a b)) (catch ArithmeticException e (.getMessage e)))"
+           :jvm "\"/ by zero\""
+           :jolt "\"Divide by zero\""}
+   :note "Only the message differs; the class is the same. Seeding every let-bound integer literal as a primitive long would change unhinted integer code outside loops from jolt's arbitrary precision to overflow-checked longs, a wider change than a message."}
+  ;; A float is held as the double it widens to. intBitsToFloat builds a NaN's
+  ;; double bit by bit so floatToRawIntBits gets its payload back, signaling bit
+  ;; included; the JVM's f2d widening quiets a signaling NaN.
+  {:category :host-model
+   :behavior "(double (Float/intBitsToFloat 0x7f800001)), a signaling float NaN widened"
+   :jvm "the quiet NaN 0x7ff8000020000000"
+   :jolt "the signaling NaN 0x7ff0000020000000"
+   :check {:expr "(Double/doubleToRawLongBits (double (Float/intBitsToFloat 0x7f800001)))"
+           :jvm "9221120237577961472"
+           :jolt "9218868437764276224"}
+   :note "floatToRawIntBits and floatToIntBits of the float itself agree with the JVM, as does any arithmetic on it (the hardware quiets it there). Quieting in the cast would put a NaN test on every Float-to-double widening."}
+  ;; Math's long-only methods (floorDiv, floorMod, addExact and the rest) take any
+  ;; number and truncate it; the JVM has no double overload for them.
+  {:category :host-model
+   :behavior "(Math/floorDiv 5.5 2)"
+   :jvm "IllegalArgumentException \"No matching method floorDiv found taking 2 args\""
+   :jolt "2"
+   :check {:expr "(try (Math/floorDiv 5.5 2) (catch IllegalArgumentException _ :iae))"
+           :jvm ":iae"
+           :jolt "2"}
+   :note "A superset: a long argument answers as on the JVM."}
+  ;; A DataInputStream over one of jolt's own streams shares its port rather than
+  ;; calling it, so read(nil, off, len) is refused at the DataInputStream, with
+  ;; InputStream's array-length NPE, where the JDK hands the null on to the
+  ;; wrapped stream and a FileInputStream's native read throws with no message.
+  {:category :host-model
+   :behavior "(.read (DataInputStream. (FileInputStream. f)) nil 0 1)"
+   :jvm "NullPointerException with no message"
+   :jolt "NullPointerException \"Cannot read the array length because \\\"b\\\" is null\""
+   :check {:expr "(let [f (java.io.File/createTempFile \"kdiv\" \".bin\")] (spit f \"ab\") (with-open [i (java.io.DataInputStream. (java.io.FileInputStream. f))] (try (.read i nil 0 1) (catch NullPointerException e (.getMessage e)))))"
+           :jvm "nil"
+           :jolt "\"Cannot read the array length because \\\"b\\\" is null\""}
+   :note "Over a ByteArrayInputStream or a BufferedInputStream the message is the JDK's; the class is right everywhere."}
 ]
  :entries
  [;; sorted-map/sorted-set are a B+tree, not PersistentTreeMap's red-black tree,

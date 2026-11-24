@@ -37,11 +37,13 @@
 ;; its "No matching method" miss: without the arity, (Math/floor 4.5 1) lowered
 ;; to (flfloor 4.5 1.0) and failed Chez's compile-time arity check instead. (Chez
 ;; flatan and fllog take a second argument; Math/atan and Math/log do not.)
+;; pow is jolt-fl-pow (host/chez/seq.ss), flexpt behind the two special cases
+;; where Java's pow and C's disagree.
 (def ^:private math-fl-ops
   {"sqrt" ["flsqrt" 1] "sin" ["flsin" 1] "cos" ["flcos" 1] "tan" ["fltan" 1]
    "asin" ["flasin" 1] "acos" ["flacos" 1] "atan" ["flatan" 1] "atan2" ["flatan" 2]
    "exp" ["flexp" 1] "log" ["fllog" 1] "floor" ["flfloor" 1] "ceil" ["flceiling" 1]
-   "pow" ["flexpt" 2] "abs" ["flabs" 1]})
+   "pow" ["jolt-fl-pow" 2] "abs" ["flabs" 1]})
 
 ;; java.lang.Math members that are integer-in/integer-out on the JVM, as
 ;; [op arity] over the jolt-l-* fixnum macros (host/chez/seq.ss). Without this a
@@ -52,8 +54,8 @@
 ;; The jolt-l-* helpers, not bare fx ops: a :long is promised to be within the
 ;; 64-bit range, which is WIDER than Chez's 61-bit fixnum, so a bare fxmin would
 ;; crash on a legitimate :long. Each one tests its operands and falls back to the
-;; generic op, exactly as the arithmetic path does. floorMod reuses jolt-l-mod —
-;; Math.floorMod is Scheme's modulo — and floorDiv gets jolt-floor-quotient, since
+;; generic op, exactly as the arithmetic path does. floorMod is jolt-l-floor-mod —
+;; Scheme's modulo, with Java's "/ by zero" — and floorDiv gets jolt-floor-quotient, since
 ;; the quot above truncates toward zero where floorDiv floors.
 ;;
 ;; Only members the Math shim (host/chez/java/host-static-methods.ss) actually
@@ -66,7 +68,7 @@
 (def ^:private math-lng-ops
   {"abs" ["jolt-l-abs" 1]
    "min" ["jolt-l-min" 2] "max" ["jolt-l-max" 2]
-   "floorDiv" ["jolt-floor-quotient" 2] "floorMod" ["jolt-l-mod" 2]})
+   "floorDiv" ["jolt-floor-quotient" 2] "floorMod" ["jolt-l-floor-mod" 2]})
 
 ;; Interop methods that answer a Chez FIXNUM when the receiver is proven (the
 ;; :target-type stamp jolt.passes.types/the analyzer puts on a :host-call). Both
@@ -467,6 +469,12 @@
   (and (some (fn [c] (= c :long)) cls)
        (every? (fn [c] (or (= c :wild) (= c :long))) cls)))
 
+;; quot and rem over two fixnum literals: the JVM compiles them to its
+;; primitive (long, long) overload, which is Java's / and %, so the long op's
+;; zero divisor ("/ by zero") is the one to raise.
+(defn- literal-long-division? [nm cls]
+  (and (contains? #{"quot" "rem"} nm) (= 2 (count cls)) (every? (fn [c] (= c :wild)) cls)))
+
 ;; :bigdec tolerates any integer literal (:wild or :wild-big).
 (defn- bigdec-operands? [cls]
   (and (some (fn [c] (= c :bigdec)) cls)
@@ -495,7 +503,7 @@
     (cond
       (and ds (pos? n) (dbl-operands? nm cls argnodes))
       (dbl-invoke ds node1 cls argnodes)
-      (and ls (pos? n) (long-operands? cls))
+      (and ls (pos? n) (or (long-operands? cls) (literal-long-division? nm cls)))
       [(propagate ls) (assoc node1 :num-kind :long)]
       ;; bigdec: every operand a bigdec (integer literals allowed, coerced at
       ;; runtime). A flonum operand blocks this (double contagion) and falls
