@@ -348,20 +348,26 @@ Every receiver in `bench38` asserts its runtime class at startup via `(.getName 
 | `ctrl-conj2-list` | 31.29 | **27.23** | 31.25 | **1.15x** | miss control: 5-elem list (no rest list) |
 | `dissoc2-m5-present` | 59.37 | **28.05** | 59.17 | **2.11x** | 2-key `dissoc` on 5-key array map, both present |
 | `dissoc2-m5-absent` | 35.62 | **9.96** | 35.68 | **3.58x** | 2-key `dissoc` on 5-key array map, both absent (`identical?`, 0 alloc) |
-| `dissoc3-m5-present` | 72.04 | **28.55** | 72.10 | **2.52x** | 3-key `dissoc` on 5-key array map, all present |
-| `dissoc3-m5-absent` | 43.07 | **10.49** | 42.86 | **4.10x** | 3-key `dissoc` on 5-key array map, all absent (`identical?`, 0 alloc) |
-| `dissoc4-m5-present` | 80.98 | **27.65** | 80.70 | **2.92x** | 4-key `dissoc` on 5-key array map, all present |
-| `dissoc4-m5-absent` | 54.89 | **12.09** | 56.53 | **4.61x** | 4-key `dissoc` on 5-key array map, all absent (`identical?`, 0 alloc) |
+| `dissoc3-m5-present` | 71.73 | **26.48** | 71.73 | **2.71x** | 3-key `dissoc` on 5-key array map, all present (re-measured after `amap-dissoc-keys` macro; prev 28.55 ns) |
+| `dissoc3-m5-absent` | 42.44 | **10.26** | 43.44 | **4.19x** | 3-key `dissoc` on 5-key array map, all absent (`identical?`, 0 alloc; re-measured, prev 10.49 ns) |
+| `dissoc4-m5-present` | 79.66 | **26.06** | 80.23 | **3.07x** | 4-key `dissoc` on 5-key array map, all present (re-measured after `amap-dissoc-keys` macro; prev 27.65 ns) |
+| `dissoc4-m5-absent` | 54.48 | **11.79** | 54.70 | **4.63x** | 4-key `dissoc` on 5-key array map, all absent (`identical?`, 0 alloc; re-measured, prev 12.09 ns) |
 | `dissoc2-m12-present` | 75.11 | **41.72** | 72.90 | **1.77x** | 2-key `dissoc` on 12-keyword array map |
 | `dissoc2-m24-present` | 99.77 | **62.58** | 99.46 | **1.59x** | 2-key `dissoc` on 24-keyword array map |
-| `dissoc3-m24-present` | 153.32 | **80.96** | 146.46 | **1.85x** | 3-key `dissoc` on 24-keyword array map |
-| `dissoc4-m24-present` | 199.33 | **79.94** | 199.41 | **2.49x** | 4-key `dissoc` on 24-keyword array map |
+| `dissoc3-m24-present` | 143.95 | **82.51** | 145.53 | **1.75x** | 3-key `dissoc` on 24-keyword array map (re-measured after `amap-dissoc-keys` macro; prev 80.96 ns) |
+| `dissoc4-m24-present` | 196.39 | **80.18** | 197.55 | **2.46x** | 4-key `dissoc` on 24-keyword array map (re-measured after `amap-dissoc-keys` macro; prev 79.94 ns) |
 | `dissoc2-update-m5` | 86.33 | **52.70** | 85.96 | **1.63x** | `(update outer-m :m dissoc :k1 :k3)` |
 | `dissoc2-valpos-m5` | 60.31 | **28.64** | 59.83 | **2.10x** | indirect 2-key `(f m5 :k1 :k3)` |
 | `ctrl-dissoc2-hash-24` | 116.03 | **95.28** | 113.09 | **1.20x** | miss control: 24-key hash-mode map (wrappers no longer `apply`) |
-| `ctrl-dissoc2-rec-ext` | 88.39 | **69.23** | 92.49 | **1.31x** | miss control: record ext-map keys |
-| `ctrl-dissoc2-rec-field` | 220.15 | **198.61** | 217.33 | **1.10x** | miss control: record declared field + ext key |
+| `ctrl-dissoc2-rec-ext` | 86.11 | **72.99** | 86.11 | **1.18x** | miss control: record ext-map keys (re-measured after folding through `jrec-dissoc-many`; prev 69.23 ns, still faster than parent) |
+| `ctrl-dissoc2-rec-field` | 215.07 | **202.16** | 214.79 | **1.06x** | miss control: record declared field + ext key (re-measured after folding through `jrec-dissoc-many`; prev 198.61 ns, still faster than parent) |
 | `ctrl-dissoc2-nonstable` | 61.65 | **43.59** | 60.57 | **1.40x** | miss control: string + keyword on 5-key array map |
+
+### Notes on timings and simplification
+
+The two-element `conj` gain is about 4x because the single-step path it replaces (`vec-snoc`, `host/chez/collections.ss` near line 142) still uses `make-vector` plus a copy loop, so each old step cost about 24.5 ns. The miss-control rows got faster because `jolt-conj` no longer builds a rest list or calls `fold-left`, and `jolt-dissoc` loses a rest list and an `apply` in each of the two wrappers.
+
+Replacing the duplicated 3-key and 4-key array-map `dissoc` clauses with the `amap-dissoc-keys` `syntax-rules` macro leaves the 3/4-key rows unchanged within measurement noise (the 2-key clause stays on `vec-remove4`), and folding record receivers through `jrec-dissoc-many` adds ~3.6–3.8 ns relative to the duplicated inline record clauses while remaining faster than the parent commit (`72.99` vs `86.11` ns for ext-map keys, `202.16` vs `214.93` ns for declared field + ext key).
 
 ### Existing `bench/run.sh` row (`coll-ops 100000`, `JOLT_GC_TRIP_BYTES=16m`, A1 -> B -> A2)
 
@@ -381,5 +387,5 @@ Every receiver in `bench38` asserts its runtime class at startup via `(.getName 
 
 ### Gate status
 
-- Filtered full `SHARD-POOL` (205 of 208 targets, excluding the three host environmental failures `certify` [requires JDK 21], `lazyretain` [requires GNU `timeout`], and `filelock` [re-tested solo at `-j1` and reproduced the pre-existing `starved after 10000 cycles` failure]): `200` parallel `-j8` + `devbootsmoke`/`gatebootsmoke` at `-j1` + `fastpathratio`/`stdlibratio`/`pmoverhead` at `-j1` — all **205/205** targets exited 0, including `selfhost`, `arraymap` (112/112 with the 466-case exhaustive `conj` matrix, 40,248-case exhaustive `dissoc` matrix, 1,500-trial randomized differential `dissoc` test, and compiled fn allocation assertions; both matrices were also proved with seeded mutants), `sortedcoll` (145/145), `recfast` (518/518), `rrbprop` (11,170/11,170), `portcheck`, `deadhost`, `recordshadow`, `footprint`, `vfaslceiling`, `attributioncheck`, `gambitseedcheck`, `gambitgencheck`, and `gambittwins`.
+- Filtered full `SHARD-POOL` (205 of 208 targets, excluding the three host environmental failures `certify` [requires JDK 21], `lazyretain` [requires GNU `timeout`], and `filelock` [pre-existing `starved after 10000 cycles` failure on this host]): `200` parallel `-j8` + `devbootsmoke`/`gatebootsmoke` at `-j1` + `fastpathratio`/`stdlibratio`/`pmoverhead` at `-j1` — all **205/205** targets exited 0, including `selfhost`, `arraymap` (116/116 with the 466-case exhaustive `conj` matrix, 40,248-case exhaustive `dissoc` matrix, 1,500-trial randomized differential `dissoc` test, compiled fn allocation assertions, and 1-arg/5+/non-stable-position/record/sorted-map variadic clause tests; mutant-checked tests: the exhaustive `conj` matrix, the exhaustive `dissoc` matrix, and the 1-element value-position `conj` metadata test by removing `meta-carry-conj` from that clause and observing `arraymap` fail at 115/116), `sortedcoll` (145/145), `recfast` (518/518), `rrbprop` (11,170/11,170), `portcheck`, `deadhost`, `recordshadow`, `footprint`, `vfaslceiling`, `attributioncheck`, `gambitseedcheck`, `gambitgencheck`, and `gambittwins`.
 - Gambit did not run: `gambitcheck`, `gambitkernel`, `gambiteval`, `gambitboot`, `gambitunbound`, `gambitvars`, `gambitstatics`, and `gambitprofile` skipped because Gambit is not installed on this machine. All new identifiers in `collections.ss`, `records-coll.ss`, and `host-table.ss` were audited against the Gambit boot files, and `host/gambit/records-gambit.ss` was regenerated via `make gambitgen` and verified by `gambitgencheck`.
