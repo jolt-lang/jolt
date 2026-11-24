@@ -18,6 +18,7 @@
             [jolt.passes.numeric :as numeric]
             [jolt.passes.inline :refer [inline-node flatten-lets scalar-replace direct-call-edges
                                         begin-growth-budget! end-growth-budget! guarded-candidate?]]
+            [jolt.passes.loop-maps :refer [lower-fixed-map-loops]]
             [jolt.passes.types :refer [run-inference reinfer-def
                                        set-record-shapes! set-protocol-methods!
                                        param-seeds-for param-num-seeds-for
@@ -68,17 +69,11 @@
 ;; every copy of a stashed body must hand back the same one (rt.ss
 ;; jolt-site-const). A constant collection literal is one construction --
 ;; its elements are part of it, not sites of their own.
-(defn- const-elem? [n]
-  (let [op (:op n)]
-    (cond (or (= op :const) (= op :quote) (= op :regex)) true
-          (or (= op :vector) (= op :set)) (every? const-elem? (:items n))
-          (= op :map) (every? const-elem? (apply concat (:pairs n)))
-          :else false)))
 (defn- site-const? [n]
   (let [op (:op n)]
     (cond (= op :quote) (let [f (:form n)] (not (or (form-char? f) (form-literal? f))))
           (= op :regex) true
-          (or (= op :vector) (= op :set) (= op :map)) (const-elem? n)
+          (or (= op :vector) (= op :set) (= op :map)) (jolt.ir/const-coll-node? n)
           :else false)))
 (defn- stamp-site-consts* [n prefix counter]
   (cond (not (map? n)) n
@@ -242,7 +237,7 @@
                                           (println (str "[inline] " (:ns node) "/" (:name node) " rounds " (inc i))))
                                         n2))))))
         _ (pt :growth (fn [] (end-growth-budget!)))]
-    (infer-optimized unit opt)))
+    (infer-optimized unit (pt :loop-fields (fn [] (lower-fixed-map-loops opt))))))
 
 ;; Guarded inlining (the open-world spine, jolt.host/guarded-inline?): the same
 ;; inline fixpoint, each splice behind a test that the callee's var still holds

@@ -7,15 +7,17 @@
   access, fixnum bit ops, static host calls. Each takes its operands already
   emitted, through an order-args fn of the caller's."
   (:require [clojure.string :as str]
+            [jolt.host :refer [seed-callable?]]
+            [jolt.ir :as ir]
             [jolt.op-registry :as op-registry]
             [jolt.backend-scheme.names :refer [chez-str-lit munge-name]]
             [jolt.backend-scheme.session :as session
              :refer [*array-vecs* *self-wrap* *site-call* *trace-self* *trace-site*
-                     clone-site? ctor-shapes fresh-label marker-safe-fqn?
-                     note-tail-call! target trace-frames? unsafe-prefix var-cache?]]
+                     clone-site? ctor-shapes direct-link? fresh-label marker-safe-fqn?
+                     note-tail-call! seed-mint? target trace-frames? unsafe-prefix var-cache?]]
             [jolt.backend-scheme.hoist
-             :refer [*cache-cells* *const-pool* cached-tag-desc const-coll-node?
-                     hoist-const hoist-const-per-site]]))
+             :refer [*cache-cells* *const-pool* cached-tag-desc
+                     hoist-const hoist-const-per-site hoist-seed-root]]))
 
 ;; The op-registry tables the call heads read, bound to local names as
 ;; jolt.backend-scheme binds them (qualified refs, not :refer — see the note
@@ -77,7 +79,7 @@
       ;; 98000 ordering temporaries, one hoisted constant in every form wrapped in
       ;; an ordering let* it cannot need. The reference emits no ordering
       ;; temporaries for constants at all; they are constant-pool loads.
-      (const-coll-node? n)))
+      (ir/eager-const-coll-node? n)))
 
 ;; A var VALUE read is effect-free but order-SENSITIVE: a mutating sibling
 ;; (def/alter-var-root/set!) changes what it yields, so it must not move across
@@ -666,4 +668,32 @@
                                                   " (and " d " (" pred " " x ") (eq? (jrec-desc " x ") " d ")))"))))
                                        (range (quot (count as) 2))))
                      ")"))))
+
+;; Closed-world direct call to a SEED var — clojure.core and the other
+;; namespaces the runtime image boots with. Such a var is preloaded ahead of
+;; every app def and never emitted by this build, so the def binds its root
+;; procedure once at load and the site applies it directly: no var-cell-deref
+;; (7 ns), no jolt-invokeN (5 ns) — true? went 16 -> 4 ns.
+;; jolt.host/seed-callable? applies the same closed-world rule an app def gets
+;; (not ^:dynamic/^:redef, not redefined by the app) plus "root is a procedure
+;; whose arity mask admits this arity", so a keyword/map/multimethod-valued var
+;; and a wrong-arity call keep jolt-invoke. seed-callable? answers the callee's
+;; jv$ binding name for a var the seed minted direct-linked (def-var-linked!),
+;; and the site applies that top-level variable: the same one load, and a later
+;; def / alter-var-root / with-redefs of the var writes through to it (rt.ss
+;; var-root-set!), so the site follows a redefinition. A seed var the runtime
+;; defined itself (a Scheme def-var!) has no binding to name; its root is
+;; hoisted once at load, and a redefinition is invisible to that site, as under
+;; the JVM's direct linking. `jolt run` never direct-links. Off while MINTING
+;; the seed: the vars this arm would bind are the ones being emitted.
+(defn emit-seed-callable-invoke [fnode args tail? tl ich order-args]
+  (when (and (direct-link?) (not (seed-mint?)))
+    (when-let [sc (seed-callable? nil (:ns fnode) (:name fnode) (count args))]
+      (let [head (if (string? sc) sc (hoist-seed-root (:ns fnode) (:name fnode)))]
+        (order-args (fn [as] (emit-call tail? head as tl ich)))))))
+
+(defn record-ctor-shape [fnode n]
+  (when-let [shape (get (ctor-shapes) (str (:ns fnode) "/" (:name fnode)))]
+    (when (and (= (count (get shape :fields)) n) (<= n 6))
+      shape)))
 

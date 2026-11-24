@@ -2338,19 +2338,23 @@
 ;; the thunk, and the first read runs it and keeps the answer, so every read
 ;; after that is the same object, as a JVM static final is. Two threads racing
 ;; the first read each run it; the CAS keeps one answer and both return that.
+(define static-deferred-unset (list 'static-deferred-unset))
 (define-record-type (static-deferred make-static-deferred* static-deferred?)
   (fields thunk cell) (nongenerative jolt-static-deferred-v1))
-(define (make-static-deferred thunk) (make-static-deferred* thunk (box #f)))
+(define (make-static-deferred thunk)
+  (make-static-deferred* thunk (box static-deferred-unset)))
 (define (static-deferred-force d)
   (let* ((b (static-deferred-cell d)) (v (unbox b)))
-    (if v
+    (if (not (eq? v static-deferred-unset))
         (begin (memory-order-acquire) v)
         (let ((nv ((static-deferred-thunk d))))
           ;; publish nv's fields before the box points at it (arm64)
           (memory-order-release)
-          (box-cas! b #f nv)
-          (memory-order-acquire)
-          (unbox b)))))
+          (if (sa-box-cas! b static-deferred-unset nv)
+              nv
+              (let ((winner (unbox b)))
+                (memory-order-acquire)
+                winner))))))
 (define (static-value v) (if (static-deferred? v) (static-deferred-force v) v))
 (define (host-static-ref class member) (host-static-ref* class member #t))
 ;; AUTOLOAD? is #f on the one look again after a miss autoloaded: a class the

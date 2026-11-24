@@ -373,13 +373,22 @@
       (run-all-until-all fibs 15.0 "every parked take completed")
       (/ (exact->inexact (- (mono-nanos) t0)) PARK-N))))
 
+;; park-batch-ns returns once its fibers have every value, which can be before
+;; the pump thread it forked has exited; a full collect raises "cannot collect
+;; when multiple threads are active" until it has. Retry, as fibers-io-test does.
+(define (collect-when-alone)
+  (let retry ((n 0))
+    (guard (e (#t (if (fx<? n 100)
+                      (begin (sleep (make-time 'time-duration 10000000 0)) (retry (fx+ n 1)))
+                      (raise e))))
+      (collect (collect-maximum-generation)))))
 (define (chan-measure)                  ; -> #(cal imm park), fastest of each
   (let ((best (make-vector 3 #f))
         (arms (vector cal-batch-ns imm-batch-ns park-batch-ns)))
     (do ((r 0 (fx+ r 1))) ((fx=? r 5) best)
       (do ((k 0 (fx+ k 1))) ((fx=? k 3))
         (let ((a (fxmod (fx+ r k) 3)))
-          (collect (collect-maximum-generation))
+          (collect-when-alone)
           (let ((ns ((vector-ref arms a))))
             (vector-set! best a (if (vector-ref best a) (min (vector-ref best a) ns) ns))))))))
 (define (chan-imm-ratio m) (/ (vector-ref m 1) (max 0.2 (vector-ref m 0))))

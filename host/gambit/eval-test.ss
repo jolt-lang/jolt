@@ -29,6 +29,88 @@
 (check "{:a 1 :b 2}" "{:a 1, :b 2}")
 (check "(conj [1 2] 3)" "[1 2 3]")
 (check "(assoc {:a 1} :b 2)" "{:a 1, :b 2}")
+;; The compiler proof names the shared pmap dispatch arm. A custom driver can
+;; retain an earlier version and return its own Reduced value.
+(let* ((prove (var-deref "jolt.passes.facts" "reducer-confinement-at"))
+       (unit ((var-deref "jolt.backend-scheme" "current-unit")))
+       (source "(fn [m] (reduce-kv (fn [a k v] (assoc a k v)) {} m))")
+       (ir (jolt-ce-analyze (make-analyze-ctx "user") (jolt-ce-read source)))
+       (path (jolt-vector (keyword #f "arities") 0 (keyword #f "body")))
+       (proof (prove unit ir path (keyword #f "opaque-accumulator-frames")))
+       (guard-spec (jolt-get proof (keyword #f "guard")))
+       (custom (jolt-compile-eval
+                 "(reify clojure.lang.IKVReduce
+                    (kvreduce [_ f seed]
+                      (let [old (f seed :a 1)] (reduced [seed old (f old :b 2)]))))" "user"))
+       (run (jolt-compile-eval source "user"))
+       (result (jolt-invoke run custom)))
+  (unless (and (jolt-nil? (prove unit ir path))
+               (equal? "pmap?" (jolt-get guard-spec (keyword #f "predicate")))
+               (pmap? (jolt-invoke run (jolt-compile-eval "{:a 1}" "user")))
+               (not (pmap? custom))
+               (jolt-reduced? result)
+               (string=? "[{} {:a 1} {:a 1, :b 2}]" (jolt-pr-readable (jolt-reduced-val result))))
+    (printf "  FAIL   reduce-kv native guard and custom traversal\n")
+    (set! failures (+ failures 1))))
+
+;; The native host can see the previous map through an opaque callable, even
+;; though Gambit's public jolt.debug frames are empty.
+(let* ((a (keyword #f "a"))
+       (b (keyword #f "b"))
+       (source "(fn [f m] (reduce-kv (fn [acc k v] (assoc acc k (f k))) {} m))")
+       (input (jolt-compile-eval "(array-map :a 1 :b 2)" "user")))
+  (define (previous-map cont)
+    (let frames ((fr cont))
+      (if (not fr)
+          jolt-nil
+          (let slots ((i (##continuation-fs fr)))
+            (if (= i 0)
+                (frames (##continuation-next fr))
+                (let ((x (and (##continuation-slot-live? fr i) (##continuation-ref fr i))))
+                  (if (and (pmap? x) (= 1 (pmap-cnt x)) (eqv? 1 (jolt-get x a)))
+                      x
+                      (slots (- i 1)))))))))
+  (define (step k) (if (eq? a k) 1 (##continuation-capture previous-map)))
+  (for-each
+    (lambda (optimize?)
+      (set-optimize! optimize?)
+      (set-direct-link-flag! optimize?)
+      (let* ((ctx (make-analyze-ctx "user"))
+             (ir (jolt-ce-run-passes (jolt-ce-analyze ctx (jolt-ce-read source)) ctx))
+             (unit ((var-deref "jolt.backend-scheme" "current-unit")))
+             (path (jolt-vector (keyword #f "arities") 0 (keyword #f "body")))
+             (proof ((var-deref "jolt.passes.facts" "reducer-confinement-at") unit ir path))
+             (run (jolt-compile-eval source "user"))
+             (result (jolt-invoke run step input)))
+        (unless (and (jolt-nil? proof) (string=? "{:a 1}" (jolt-pr-readable (jolt-get result b))))
+          (printf "  FAIL   Gambit native frames, optimize=~a\n" optimize?)
+          (set! failures (+ failures 1)))))
+    '(#f #t))
+  (set-optimize! #f)
+  (set-direct-link-flag! #f))
+
+(check "(let [source (apply array-map (interleave [:a :b :c :d :e :f :g :h :i] (range 9)))
+              p (reduce-kv (fn [a k v] (assoc a k v)) {} source)
+              t (persistent! (reduce-kv assoc! (transient {}) source))]
+          [(= p t) (= clojure.lang.PersistentArrayMap (class p))
+           (= clojure.lang.PersistentHashMap (class t)) (= (keys p) (keys t))])"
+       "[true true true false]")
+(check "(let [s (with-meta (set (range 128)) {:tag :left})
+               r (reduce disj s [13 35 57])
+               d (clojure.set/difference s r)]
+          [(= d (jolt.host/try-set-difference s r disj))
+           (= #{13 35 57} d) (count d) (meta d)])"
+       "[true true 3 {:tag :left}]")
+(check "(let [s (set (range 128)) bigger (conj s :extra) seen (atom [])
+               keep (fn [acc key] (swap! seen conj key) acc)]
+          (with-redefs [disj keep]
+            (let [same (clojure.set/difference s s)
+                  same-trace @seen
+                  _ (reset! seen [])
+                  larger (clojure.set/difference s bigger)]
+              [(identical? s same) (identical? s larger)
+               (= (vec s) same-trace @seen)])))"
+       "[true true true]")
 ;; lazy seqs + HOFs through the prelude
 (check "(map inc [1 2 3])" "(2 3 4)")
 (check "(->> (range 100) (filter odd?) (map #(* % %)) (reduce +))" "166650")

@@ -55,9 +55,35 @@
 (gate-check "text scan catches var-cell-lookup literal" (has? "app.core/target" (dce-sexp-refs-str str4)) #t)
 (gate-check "union catches var-cell-lookup form" (has? "app.core/target" (dce-app-refs ir str4)) #t)
 
+;; Boot-time identity guards can miss when the shaker omits a Var. The
+;; optional capture neither creates a cell nor turns a non-procedure root
+;; into a match. A normal lookup of that same Var remains visible to the scan.
+(let* ((ns "dce.gate")
+       (name "guard-target")
+       (optional "(capture-optional-guard-procedure \"dce.gate\" \"guard-target\")")
+       (missing (capture-optional-guard-procedure ns name)))
+  (gate-check "optional capture isn't a root" (dce-sexp-refs-str optional) '())
+  (gate-check "optional capture leaves the Var absent" (var-cell-lookup ns name) #f)
+  (gate-check "missing capture does not match false" (eq? missing #f) #f)
+  (let* ((cell (jolt-var ns name))
+         (unbound (var-cell-root cell)))
+    (gate-check "unbound capture does not match the unbound root"
+                (eq? (capture-optional-guard-procedure ns name) unbound) #f)
+    (def-var! ns name list)
+    (let ((standard (capture-optional-guard-procedure ns name)))
+      (gate-check "present capture matches the original procedure" (eq? standard list) #t)
+      (var-root-set! cell #f)
+      (gate-check "a rebound root misses the captured procedure"
+                  (eq? standard (var-cell-root cell)) #f)
+      (gate-check "optional capture of a non-procedure root does not match it"
+                  (eq? (capture-optional-guard-procedure ns name) #f) #f)))
+  (let ((both (string-append "(begin " optional " (var-cell-lookup \"dce.gate\" \"guard-target\"))")))
+    (gate-check "the runtime scan catches a mandatory lookup beside an optional one"
+                (dce-sexp-refs (read (open-input-string both)) '()) '("dce.gate/guard-target"))))
+
 ;; --- dce-runtime-core-roots guard -------------------------------------------
 ;; A runtime .ss shim that references a clojure.core fn by name (a literal
-;; (var-deref "clojure.core" "NAME") or jolt-var) is invisible to the app IR
+;; var-deref, jolt-var or var-cell-lookup) is invisible to the app IR
 ;; graph, so the named fn must survive the prelude shake — i.e. be a root in
 ;; dce-runtime-core-roots — or a tree-shaken app silently ships a prunable var
 ;; the shim dereferences at runtime. Scan the runtime shims (everything under
@@ -66,6 +92,9 @@
 ;; clojure.core FN reference (dynamic vars, names starting with *, are never
 ;; pruned and are excluded) is rooted. A new shim reference that isn't rooted
 ;; fails this gate instead of shipping a shakeable root.
+;; capture-optional-guard-procedure in post-prelude.ss explicitly tolerates
+;; absence. Its callers' ordinary dispatch still needs the linked Var, which
+;; is visible in the app's emitted Scheme.
 (define (dce-shim-files)
   (let ((skip? (lambda (f)
                  (or (and (fx>? (string-length f) 4)

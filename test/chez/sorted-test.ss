@@ -282,6 +282,35 @@
        (per (quotient (bytes-of (lambda () (jolt-invoke0 f)) 5) n)))
   (printf "  full next-walk of a 40k sorted map: ~a bytes/entry\n" per)
   (ok "a full walk allocates no more than the eager vector walk did (<= 200 bytes per entry, was ~376)" (<= per 200)))
+;; into a sorted coll asks counted? for the source's size, not a fixed list of
+;; types: a short list (Counted on the JVM) goes in by plain conj as a short
+;; vector does, instead of gathering a buffer first.
+(let* ((fv (jolt-compile-eval "(let [v [5 3 1 4 2]] (fn [] (into (sorted-set) v)))" "user"))
+       (fl (jolt-compile-eval "(let [l '(5 3 1 4 2)] (fn [] (into (sorted-set) l)))" "user"))
+       (bv (bytes-of (lambda () (jolt-invoke0 fv)) 2000))
+       (bl (bytes-of (lambda () (jolt-invoke0 fl)) 2000)))
+  (printf "  into (sorted-set) of 5: vector ~a bytes, list ~a\n" bv bl)
+  (ok (format "a short counted list goes in like a short vector (~a vs ~a bytes)" bl bv)
+      (<= bl (+ bv (quotient bv 10)))))
+;; a set batch of known size fills its flat k v buffer in place: one 2n vector,
+;; not a cons per element on top (118 bytes/entry before, 102 after; the rest is
+;; apply's arg list, the sort's scratch vector and the bulk-loaded nodes)
+(let* ((n 4096)
+       (f (jolt-compile-eval (format "(let [v (vec (shuffle (range ~a)))] (fn [] (apply sorted-set v)))" n) "user"))
+       (per (quotient (bytes-of (lambda () (jolt-invoke0 f)) 10) n)))
+  (printf "  apply sorted-set of 4096 shuffled: ~a bytes/entry\n" per)
+  (ok (format "a counted set batch fills its buffer in place (~a bytes/entry, limit 110)" per) (<= per 110)))
+;; a Counted deftype is a batch of known size too, and one whose count is wrong
+;; still builds the coll its elements make
+(ev "(deftype CountedBag [xs n] clojure.lang.Counted (count [_] n) clojure.lang.Seqable (seq [_] (seq xs)))")
+(is "(seq (into (sorted-set) (CountedBag. [3 1 2] 3)))" "(1 2 3)")
+(is "(= (range 100) (seq (into (sorted-set) (CountedBag. (shuffle (range 100)) 100))))" "true")
+(is "(= (range 100) (seq (into (sorted-set) (CountedBag. (shuffle (range 100)) 2))))" "true")
+(is "(= (range 100) (seq (into (sorted-set) (CountedBag. (shuffle (range 100)) 1000))))" "true")
+(is "(= (range 100) (seq (apply sorted-set (CountedBag. (shuffle (range 100)) 2))))" "true")
+(is "(= (range 100) (seq (apply sorted-set (CountedBag. (shuffle (range 100)) 1000))))" "true")
+(is "(= (range 100) (seq (conj (sorted-set) 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99)))" "true")
+(is "(let [m (into (sorted-map) (CountedBag. (map (fn [i] [i (* 2 i)]) (shuffle (range 50))) 7))] [(count m) (first m) (last m)])" "[50 [0 0] [49 98]]")
 ;; a bounded subseq walks on from the node it found: one comparator call per
 ;; entry for the bound, plus the seek. Re-descending from the root for every node
 ;; without a right child made it O(n log n) calls (~24k here).

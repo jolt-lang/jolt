@@ -147,3 +147,7 @@
                        (if (negative? b) (positive? a) (negative? a)))
                   (- q 1)
                   q))))
+;; post-prelude.ss's loop-map helpers (the fused loop-map emitter writes both in
+;; call position): the standard-update capture is a plain define there.
+(%eval-fn (define (jolt-loop-map-update? f) (eq? f jolt-loop-map-standard-update)))
+(%eval-fn (define (jolt-loop-map-memo) (box #f)))

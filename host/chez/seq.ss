@@ -2419,17 +2419,25 @@
 ;; record, a sorted map, a host map arm) folds over its keys, the reference's
 ;; IPersistentMap arm. nil folds to init.
 (define (kv-step f) (if (procedure? f) (lambda (acc k v) (jolt-site-kept (f acc k v))) (lambda (acc k v) (jolt-invoke3 f acc k v))))
+;; Keep kv-step in the ordinary walker's compilation scope so the host can
+;; specialize its procedure and IFn arms. The confined path already has a
+;; Scheme step and uses the same array, trie and collision traversal.
+(define-syntax walk-pmap-kv
+  (syntax-rules ()
+    ((_ m step init)
+     (let ((root (pmap-root m)))
+       (if (not (hnode? root))
+           (let ((n (vector-length root)))
+             (let loop ((i 0) (acc init))
+               (cond ((jolt-reduced? acc) acc)
+                     ((fx>=? i n) acc)
+                     (else (loop (fx+ i 2) (step acc (vector-ref root i) (vector-ref root (fx+ i 1))))))))
+           ;; hash mode walks the trie in the seq view's order (hamt-kv-reduce
+           ;; below), stopping at a reduced accumulator anywhere
+           (hamt-kv-reduce root step init))))))
 (define (pmap-kv-reduce m f init)
-  (let ((step (kv-step f)) (root (pmap-root m)))
-    (if (not (hnode? root))
-        (let ((n (vector-length root)))
-          (let loop ((i 0) (acc init))
-            (cond ((jolt-reduced? acc) acc)
-                  ((fx>=? i n) acc)
-                  (else (loop (fx+ i 2) (step acc (vector-ref root i) (vector-ref root (fx+ i 1))))))))
-        ;; hash mode walks the trie in the seq view's order, stopping at a
-        ;; reduced accumulator anywhere
-        (hamt-kv-reduce root step init))))
+  (let ((step (kv-step f)))
+    (walk-pmap-kv m step init)))
 ;; collections.ss node-fold-fwd's walk with a stop at a reduced accumulator.
 ;; Here, not there, so jolt-reduced? (this file's record predicate) is open-coded
 ;; rather than called per entry.

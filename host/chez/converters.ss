@@ -255,10 +255,26 @@
     ((iface-method coll "reduce" 3) (jolt-into (make-pvec (vector)) coll))
     (else (make-pvec (list->vector (seq->list coll))))))
 
-(define (jolt-keyword . args)
-  (cond
-    ((= (length args) 1)
-     (let ((a (car args)))
+;; The one-argument string spelling splits on the FIRST slash, except at
+;; either end: this is that slash's index, or #f. A macro, and each caller
+;; applies its own interner, so (keyword "x") still calls keyword directly: a split procedure
+;; that took the interner cost every one-argument string keyword ~1.5ns, and
+;; binding it to a local ~0.5ns. Gambit expands syntax-rules without hygiene,
+;; so the operand is evaluated, once, before the macro binds a name of its own.
+(define-syntax keyword-split-index
+  (syntax-rules ()
+    ((_ str)
+     (let ((a str))
+       (let loop ((i 0))
+         (cond ((>= i (string-length a)) #f)
+               ((char=? (string-ref a i) #\/) (and (> i 0) (< i (- (string-length a) 1)) i))
+               (else (loop (+ i 1)))))))))
+
+;; Per-arity clauses: a rest list cost every (keyword ...) call an allocation
+;; and two length walks, which showed in symbol->keyword loops.
+(define jolt-keyword
+  (case-lambda
+    ((a)
        (cond
          ((jolt-nil? a) jolt-nil)
          ((keyword? a) a)
@@ -266,21 +282,17 @@
          ;; (keyword "x/y") => :x/y with ns "x" — destructure's {:keys [x/y]} builds
          ;; the key this way, so without the split the namespaced key never matches.
          ((string? a)
-          (let ((si (let loop ((i 0))
-                      (cond ((>= i (string-length a)) #f)
-                            ((char=? (string-ref a i) #\/) i)
-                            (else (loop (+ i 1)))))))
-            (if (and si (> si 0) (< si (- (string-length a) 1)))
+          (let ((si (keyword-split-index a)))
+            (if si
                 (keyword (substring a 0 si) (substring a (+ si 1) (string-length a)))
                 (keyword #f a))))
          ((jolt-symbol? a)
           (let ((ns (symbol-t-ns a)))
             (keyword (if (or (jolt-nil? ns) (not ns) (eq? ns '())) #f ns) (symbol-t-name a))))
-         (else jolt-nil))))
-    ((= (length args) 2)
-     (keyword (let ((ns (car args))) (if (jolt-nil? ns) #f ns))
-              (jolt-need-string (cadr args))))
-    (else (throw-jvm (quote ArityException) "Wrong number of args passed to: keyword"))))
+         (else jolt-nil)))
+    ((ns name)
+     (keyword (if (jolt-nil? ns) #f ns) (jolt-need-string name)))
+    (args (throw-jvm (quote ArityException) "Wrong number of args passed to: keyword"))))
 
 (define (jolt-symbol-new . args)
   (cond

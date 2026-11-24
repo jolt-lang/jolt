@@ -21,10 +21,56 @@
 ;; literal replace-all (JVM semantics) — the common "-" -> "_" / quoting case.
 ;; The overlay replace routes through to-str + str-replace-all's pattern-type
 ;; dispatch (~400ns); route the literal case straight to the native scan.
-(let ((ov-replace (var-deref "clojure.string" "replace")))
-  (def-var! "clojure.string" "replace"
+(define jolt-string-replace
+  (let ((ov-replace (var-deref "clojure.string" "replace")))
     (case-lambda
       ((s match replacement)
        (if (and (string? match) (string? replacement))
            (str-replace-literal (str-coerce s) match replacement)
            (jolt-invoke ov-replace s match replacement))))))
+(def-var! "clojure.string" "replace" jolt-string-replace)
+
+;; A confined reduce-kv whose callback only hands its accumulator to a final
+;; (assoc acc K V); jolt.passes.facts/reducer-confinement-at proves that shape.
+;; The emitter passes `step`, the same callback with that assoc re-targeted
+;; to jolt-reduce-kv-collect, and the whole fold runs through it. It evaluates
+;; every key and value expression in order, as the ordinary fold does, and
+;; accumulates the computed entries as an immutable list, so a continuation
+;; that re-enters the fold carries its own entries. A builder then writes them
+;; with interrupts off; nothing in that region calls user code. The first key
+;; that cannot be hashed natively freezes the entries so far, and from there
+;; the collector is the ordinary step's assoc on a persistent map.
+
+;; The builder region is bounded so a fiber, signal or GC can run again soon.
+(define pmap-builder-max-entries 256)
+(define (pmap-builder-key? k)
+  (or (keyword-t? k) (and (string? k) (fx<=? (string-length k) 128))
+      (fixnum? k) (char? k) (jolt-nil? k)))
+
+(define (jolt-reduce-kv-builder-source? source)
+  (and (pmap? source)
+       ;; For one or two writes the ordinary array copies cost less than setup.
+       (fx<=? 3 (pmap-cnt source) pmap-builder-max-entries)))
+
+(define (reduce-kv-entries? acc) (or (pair? acc) (null? acc)))
+
+(define (reduce-kv-freeze entries)
+  (if (null? entries)
+      empty-pmap
+      (let ((entries (reverse entries)))
+        (dynamic-wind
+          disable-interrupts
+          (lambda ()
+            (let ((t (pmap-builder-new (length entries))))
+              (for-each (lambda (e) (pmap-builder-put! t (car e) (cdr e))) entries)
+              (jolt-persistent! t)))
+          enable-interrupts))))
+
+(define (jolt-reduce-kv-collect acc k v)
+  (cond ((not (reduce-kv-entries? acc)) (jolt-assoc3 acc k v))
+        ((pmap-builder-key? k) (cons (cons k v) acc))
+        (else (jolt-assoc3 (reduce-kv-freeze acc) k v))))
+
+(define (jolt-reduce-kv-build seed source step)
+  (let ((r (walk-pmap-kv source (kv-step step) '())))
+    (if (reduce-kv-entries? r) (reduce-kv-freeze r) r)))

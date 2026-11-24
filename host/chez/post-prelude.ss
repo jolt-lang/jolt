@@ -1,5 +1,45 @@
 ;; post-prelude overrides — loaded AFTER the assembled clojure.core
 ;; prelude, so these win over the overlay's own def-var!.
+
+;; An identity guard can capture a procedure without making its Var a runtime
+;; root. The linked call sites keep their own Vars alive and take ordinary
+;; dispatch on a guard miss. Capture before app code can change the root. A
+;; missing or unbound Var gets a private token, so even a call through a
+;; non-procedure such as #f cannot accidentally enable the fast path.
+(define (capture-optional-guard-procedure ns name)
+  (let* ((cell (var-cell-lookup ns name))
+         (root (and cell (var-cell-root cell))))
+    (if (procedure? root) root (gensym "missing-guard-procedure"))))
+
+(define jolt-vector-filter-map-comp
+  (capture-optional-guard-procedure "clojure.core" "comp"))
+
+(define jolt-assoc-in-original
+  (capture-optional-guard-procedure "clojure.core" "assoc-in"))
+
+;; Guard the linked root read at each scalar update site. The update guard
+;; and the memo run on every loop write, so they are spliced (as
+;; jolt-identical? is) rather than called.
+(define jolt-loop-map-standard-update
+  (capture-optional-guard-procedure "clojure.core" "update"))
+(define-syntax jolt-loop-map-update?
+  (syntax-rules ()
+    ((_ f) (eq? f jolt-loop-map-standard-update))))
+
+;; A version is the original map or a memo shared by continuations of the
+;; same write. Competing or resumed escapes publish one persistent map.
+(define-syntax jolt-loop-map-memo
+  (syntax-rules ()
+    ((_) (box #f))))
+(define (jolt-loop-map-value version)
+  (if (box? version) (unbox version) version))
+(define (jolt-loop-map-save! memo m)
+  (if (sa-box-cas! memo #f m) m (unbox memo)))
+
+;; Inspect the same seed procedure the ordinary destructurer would invoke.
+(define (jolt-loop-map-standard-seq? proc)
+  (eq? proc jolt-seq?))
+
 ;;
 ;; A few clojure.core predicates are implemented in the overlay by inspecting a
 ;; tagged value's :jolt/type key (e.g. (get x :jolt/type)). That key doesn't

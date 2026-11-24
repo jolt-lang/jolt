@@ -133,7 +133,9 @@
    ;; jolt.passes.inline scratch: the fixpoint dirty flag run-passes reads/resets and
    ;; the alpha-rename counter for inlined binders.
    :dirty (atom false)
-   :fresh-counter (atom 0)})
+   :fresh-counter (atom 0)
+   ;; jolt.passes.facts keeps only the most recently requested body revision.
+   :body-facts (atom nil)})
 
 ;; build a per-run env: a snapshot of the installed config plus this run's flags and
 ;; fresh accumulator/guard cells. escapes/user-sigs reference the unit's sweep-level
@@ -1133,6 +1135,10 @@
     :var (infer-var-value node env)
     :invoke (infer-invoke node tenv env)
     :let (infer-let node tenv env)
+    :let-values
+    (let [init (nd (infer (:init node) tenv env))
+          [t body] (infer (:body node) (apply dissoc tenv (:names node)) env)]
+      [t (assoc node :init init :body body)])
     :loop (infer-loop node tenv env)
     :recur (infer-recur node tenv env)
     :fn (infer-fn node tenv env)
