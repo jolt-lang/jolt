@@ -54,7 +54,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an action that throws breaks the barrier, and the other waiters get
   `BrokenBarrierException`. While the action runs, a new arrival, `reset` and
   the queries wait for it, and a waiter whose timeout runs out or that is
-  interrupted still gets its index, as on the JDK. It waits the way
+  interrupted still gets its index, as on the JDK. The action itself may call
+  `isBroken`, `getNumberWaiting` and `reset` on its barrier. It waits the way
   `CountDownLatch` does, so a fiber that awaits parks and gives its carrier up.
 
 - **`java.io.DataInputStream` and `java.io.DataOutputStream`, and the
