@@ -100,3 +100,134 @@ Inspecting `JOLT_GC_LOG=1` and `host/chez/rt.ss:977-1050` identified the exact c
 | `hm-hash` | 35.04 ms | 34.69 ms | 40.19 ms | 38.39 ms |
 | `hm-replace` | 31.90 ms | 35.32 ms | 40.58 ms | 38.25 ms |
 | `hs-build` | 31.60 ms | 31.91 ms | 35.20 ms | 33.95 ms |
+
+## jolt-39
+
+Single-allocation multi-pair `assoc` for 2..4 pairs on non-promoting array-mode maps with callback-free keys (`keyword-t?`, `fixnum?`, `char?`), plus direct `nil` construction, implemented as `case-lambda` fixed clauses (5, 7, 9, and 3 args, ahead of variadic fallback) on `jolt-assoc` in `host/chez/collections.ss`.
+
+- **Parent commit measured against:** `c450a26f9` (`perf/coll-edit-fusion`)
+- **Date:** 2026-11-23
+- **Machine:** Apple M3 Ultra (Virtual), macOS 15.7.3
+- **Chez:** 10.4.1 (`JOLT_CHEZ=/Users/admin/src/jolt/.cache/local/chezscheme-10.4.1/bin/scheme`)
+- **Build flags:** `bin/jolt build -m <ns> -o <out> --direct-link --opt`
+- **Nursery pin:** `JOLT_GC_TRIP_BYTES=16m` (isolates adaptive nursery doubling investigated in `jolt-44`)
+- **Gambit:** not installed on this machine; `portcheck`, `gambitseedcheck`, `gambitgencheck`, and `gambittwins` passed; Gambit-runtime gates (`gambitcheck`, `gambitkernel`, `gambiteval`, `gambitboot`, `gambitunbound`, `gambitvars`, `gambitstatics`, `gambitprofile`) did not run.
+
+### Corpus arity split (50 repos, `/tmp/jolt-opt-corpus-20261123`)
+
+Scanned 15,313 `.clj`/`.cljc`/`.cljs` files (0 parse errors) with a standalone out-of-tree Clojure tokenizer/parser separating direct `(assoc m k1 v1 ...)`, thread-first `(-> / some-> / cond-> ... (assoc k1 v1 ...))`, and value-position `(swap! / update / update-in ... assoc k1 v1 ...)` sites:
+
+| Pairs | Direct `(assoc m ...)` | Threaded `(-> ... (assoc ...))` | Combined direct + threaded | Multi-pair share | Value-pos (`swap!`/`update`/`update-in`) |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 10,231 | 7,001 | 17,232 | — | 1,259 |
+| **2** | **1,890** (67.9%) | **494** (62.7%) | **2,384** | **66.7%** | **142** |
+| **3** | **487** (17.5%) | **165** (20.9%) | **652** | **18.3%** | **38** |
+| **4** | **207** (7.4%) | **53** (6.7%) | **260** | **7.3%** | **22** |
+| 5 | 86 | 33 | 119 | 3.3% | 9 |
+| 6+ | 114 | 43 | 157 | 4.4% | 4 |
+| **Total ≥2** | **2,784** | **788** | **3,572** | **100.0%** | **215** |
+
+Cumulative 2..4 pairs covers **92.3%** (3,296 / 3,572) of multi-pair direct+threaded sites (92.8% of direct-only sites; >97% all-keyword-literal), plus 202 multi-pair and 1,259 1-pair value-position sites and downstream emission demand from `jolt-41` (`assoc`-chain fusion) and `jolt-43` (mixed `assoc`/`update` fusion). All three arities (2, 3, and 4 pairs) are shipped, plus the 1-pair clause on `jolt-assoc` for value-position callers.
+
+### Mechanism choice (plan section 8): `case-lambda` on `jolt-assoc` vs `:fixed` registry helpers
+
+Measured at 2 pairs with identical fast-path body under `JOLT_GC_TRIP_BYTES=16m` (1,000,000 iters, 7 runs, median ns/op):
+
+| Row | `case-lambda` on `jolt-assoc` (run 1 / run 2) | `:fixed` `jolt-assoc5` only | Hybrid (`:fixed` + `case-lambda`) |
+|---|---:|---:|---:|
+| `assoc2-3-new` | 18.98 / 19.55 | 18.86 | 18.74 |
+| `assoc2-3-exist` | 15.54 / 16.15 | 15.51 | 16.82 |
+| `assoc2-12-new` | 34.23 / 33.21 | 32.82 | 34.42 |
+| `assoc2-24-array-new` | 49.04 / 51.57 | 50.78 | 49.54 |
+| `assoc2-24-array-exist` | 45.07 / 45.35 | 47.78 | 45.94 |
+| `assoc2-nil` | 8.61 / 8.57 | 8.67 | 8.46 |
+| `swap2-3-exist` | **49.51 / 50.20** | 76.56 | 49.80 |
+| `swap1-3-exist` | **31.54 / 31.63** | 33.91 | 32.18 |
+| `update2-3-exist` | **140.79 / 141.57** | 170.97 | 144.67 |
+| `valpos2-3-exist` | **29.63 / 29.36** | 56.29 | 30.17 |
+
+**Decision:** `case-lambda` on `jolt-assoc` (clauses ordered by frequency: 5, 7, 9, 3 args, variadic). With the 5-arg clause first, direct-call throughput matches `:fixed` `jolt-assoc5` (18.24 / 14.81 ns/op at 2M iters below), value-position calls (`swap!`, `update`, indirect `assoc`) gain 1.21x–1.91x where `:fixed` gains nothing, and neither `jolt-core/jolt/op_registry.clj` nor the compiler seeds need changes (`selfhost` and `gambitseedcheck` stay green on the committed tree). `jolt-38` should reuse `case-lambda` on `jolt-conj` and `jolt-dissoc`; `jolt-41` and `jolt-43` emit `(jolt-assoc m k1 v1 ...)` directly.
+
+### Emitted Scheme (before and after)
+
+Real call sites from `clj-kondo/impl/analyzer.clj` (`:4467`, `:4839`, `:4843`):
+
+```clojure
+(fn [ctx] (assoc ctx :arg-types nil :in-fn-literal true))
+(fn [ctx lang filename uri] (assoc ctx :base-lang lang :lang lang :filename filename :uri uri))
+```
+
+Because `jolt-assoc` carries the fixed `case-lambda` clauses directly (no `:fixed` registry rewrite), the emitted call head is unchanged before and after and dispatches directly into the fixed 5/7/9-arg clause without allocating a rest-arg list:
+
+```scheme
+;; 2-pair (before and after):
+(jolt-assoc ctx _kc$3 jolt-nil _kc$4 #t)
+;; 4-pair (before and after):
+(jolt-assoc ctx _kc$13 lang _kc$14 lang _kc$15 filename _kc$16 uri)
+```
+
+### Commands
+
+```sh
+# Built before and after host/chez/collections.ss edits:
+(cd /tmp/jolt-39-bench && "$REPO/bin/jolt" build -m bench39 -o /tmp/jolt-39-bench/bench39-{base,cand} --direct-link --opt)
+(cd bench && JOLT_PWD="$PWD" "$REPO/bin/jolt" build -m coll-ops -o /tmp/jolt-39-bench/coll-ops-{base,cand} --direct-link --opt)
+# Timed interleaved A1 -> B -> A2 (7 runs of 2,000,000 ops after 3 warmup runs, System/gc before each run):
+JOLT_GC_TRIP_BYTES=16m /tmp/jolt-39-bench/bench39-base 2000000
+JOLT_GC_TRIP_BYTES=16m /tmp/jolt-39-bench/bench39-cand 2000000
+JOLT_GC_TRIP_BYTES=16m /tmp/jolt-39-bench/bench39-base 2000000
+# coll-ops (n=100000, 5 runs, min ms per op):
+JOLT_GC_TRIP_BYTES=16m /tmp/jolt-39-bench/coll-ops-{base,cand,base} 100000
+```
+
+### Benchmark map construction and asserted representations
+
+Every receiver in `bench39` asserts its runtime class at startup via `(.getName ^Class (class obj))`:
+
+- `m3`: `{:k0 0 :k1 1 :k2 2}` — `clojure.lang.PersistentArrayMap` (3 keys, literal)
+- `m12`: `(reduce (fn [m i] (assoc m (keyword (str "k" i)) i)) {} (range 12))` — `clojure.lang.PersistentArrayMap` (12 keyword keys, array-mode)
+- `m24`: `(reduce (fn [m i] (assoc m (keyword (str "k" i)) i)) {} (range 24))` — `clojure.lang.PersistentArrayMap` (24 keyword keys, array-mode under the 64-keyword limit)
+- `hm24`: `(apply hash-map (mapcat (fn [i] [(keyword (str "k" i)) i]) (range 24)))` — `clojure.lang.PersistentHashMap` (24 keyword keys, hash-mode control)
+- `v32`: `(vec (range 32))` — `clojure.lang.PersistentVector` (32 elements, tail-full control)
+- `rec`: `(->Rec 1 2 3)` from `(defrecord Rec [a b c])` — `bench39.Rec` (record control, declared-field and ext-map rows)
+- `outer`: `{:sub m3 :other 1}` — `clojure.lang.PersistentArrayMap` (nested map for `update` row)
+
+### Ad hoc AOT results (median ns/op of 7 runs x 2,000,000 ops, `JOLT_GC_TRIP_BYTES=16m`, A1 -> B -> A2)
+
+| Row | Parent A1 (ns/op) | Candidate B (ns/op) | Parent A2 (ns/op) | Speedup (avg A / B) | Notes |
+|---|---:|---:|---:|---:|---|
+| `assoc2-3-new` | 49.78 | **18.24** | 47.44 | **2.67x** | 2 pairs, both new on 3-key array map |
+| `assoc2-3-exist` | 42.96 | **14.81** | 41.27 | **2.84x** | 2 pairs, both existing on 3-key array map |
+| `assoc2-3-mix` | 44.70 | **17.13** | 45.52 | **2.63x** | 2 pairs, 1 existing + 1 new on 3-key array map |
+| `assoc2-12-new` | 68.16 | **31.10** | 70.41 | **2.23x** | 2 pairs, both new on 12-keyword array map |
+| `assoc2-12-exist` | 56.02 | **27.54** | 58.33 | **2.08x** | 2 pairs, both existing on 12-keyword array map |
+| `assoc2-24-array-new` | 93.10 | **48.13** | 96.40 | **1.97x** | 2 pairs, both new on 24-keyword array map |
+| `assoc2-24-array-exist` | 75.87 | **46.15** | 81.14 | **1.70x** | 2 pairs, both existing on 24-keyword array map |
+| `assoc2-nil` | 48.97 | **7.99** | 49.65 | **6.17x** | 2 pairs on `nil` (direct array map build) |
+| `assoc3-3-new` | 70.39 | **31.91** | 72.55 | **2.24x** | 3 pairs, all new on 3-key array map |
+| `assoc3-3-exist` | 59.59 | **17.59** | 61.33 | **3.44x** | 3 pairs, all existing on 3-key array map |
+| `assoc4-3-new` | 94.29 | **40.63** | 96.30 | **2.35x** | 4 pairs, all new on 3-key array map |
+| `assoc4-3-exist` | 106.65 | **38.78** | 109.07 | **2.78x** | 4 pairs, all existing on 12-keyword array map |
+| `swap2-3-exist` | 75.06 | **49.28** | 77.49 | **1.55x** | `(swap! a assoc :k0 i :k2 (+ i 1))` value-pos |
+| `swap1-3-exist` | 33.91 | **31.60** | 34.84 | **1.09x** | `(swap! a assoc :k0 i)` 1-pair value-pos |
+| `update2-3-exist` | 168.41 | **140.27** | 171.44 | **1.21x** | `(update outer :sub assoc :k0 i :k2 (+ i 1))` |
+| `valpos2-3-exist` | 54.51 | **29.46** | 54.26 | **1.85x** | indirect `(f m3 :k0 i :k2 (+ i 1))` |
+| `ctrl-hash-24` | 104.38 | 105.29 | 105.24 | 1.00x | miss-path control (24-key hash-mode map) |
+| `ctrl-vec-32` | 65.64 | 63.60 | 64.15 | 1.02x | miss-path control (32-elem tail-full vector) |
+| `ctrl-rec-field` | 62.36 | 63.19 | 62.32 | 0.99x | miss-path control (record declared fields) |
+| `ctrl-rec-ext` | 90.41 | 88.60 | 90.13 | 1.02x | miss-path control (record ext-map keys) |
+| `ctrl-nonstable-3` | 54.59 | 51.36 | 53.05 | 1.05x | miss-path control (string keys, fallback without rest list) |
+
+### Existing `bench/run.sh` row (`coll-ops 100000`, `JOLT_GC_TRIP_BYTES=16m`, A1 -> B -> A2)
+
+| Row | Parent A1 (ms) | Candidate B (ms) | Parent A2 (ms) | Ratio (avg A / B) |
+|---|---:|---:|---:|---:|
+| `small-assoc` (`(assoc m :b 0 :z 1)`) | 1.16 | **0.54** | 1.25 | **2.23x** |
+| `small-merge` | 0.87 | 0.84 | 0.90 | 1.05x |
+| `hm-replace` | 23.94 | 24.74 | 25.56 | 1.00x |
+| `v-assoc` | 8.98 | 8.92 | 10.64 | 1.10x |
+| `coll-ops` total mean | 230.6 | 237.3 | 251.5 | 1.02x |
+
+### Design note on zero-`set!` 3- and 4-pair clauses
+
+An initial 3/4-pair implementation using local `(let ((c cnt) ...) (set! ...))` boxed every assigned local under Chez's source-loaded test runner (144 bytes/call for 3-pair, 176 bytes/call for 4-pair on no-op batches). Rewriting those steps as pure `let*` bindings with an all-existing fast branch dropped no-op allocation to 0 extra bytes on all three arities (24-keyword array map bytes/op: 2p 544 vs 1,024; 3p 576 vs 1,552; 4p 608 vs 2,096; no-op 0/0/0).
