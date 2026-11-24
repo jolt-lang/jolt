@@ -1235,5 +1235,47 @@
   (ok "compiled all-absent 2/3/4-key dissoc allocates 0 extra bytes"
       (and (= bd2-abs bd-base) (= bd3-abs bd-base) (= bd4-abs bd-base))))
 
+;; --- the clauses of the variadic entries the matrices above do not reach ------
+;; 1 element / 1 key arrives here only in value position (swap!, reduce, apply,
+;; update); 5+ takes the rest clause. Each is its own clause in jolt-conj,
+;; jolt-dissoc and the two jolt-dissoc wrappers, so each needs its own check.
+(is "1-element (value position) and 5+ element conj keep the receiver's metadata"
+    "(let [v (with-meta [1] {:m 1}) l (with-meta '(1) {:m 1}) s (with-meta #{1} {:m 1}) a (atom v)]
+       [(meta (reduce conj v [2 3])) (meta (swap! a conj 2)) (meta (apply conj l [2])) (meta (apply conj s [2]))
+        (meta (conj v 2 3 4 5 6)) (meta (conj l 2 3 4 5 6)) (conj v 2 3 4 5 6)])"
+    "[{:m 1} {:m 1} {:m 1} {:m 1} {:m 1} {:m 1} [1 2 3 4 5 6]]")
+(is "1-key (value position) and 5+ key dissoc keep the receiver's metadata"
+    "(let [m (with-meta {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6} {:m 1}) a (atom m)]
+       [(meta (swap! a dissoc :a)) (meta (reduce dissoc m [:a :b])) (meta (apply dissoc m [:a]))
+        (meta (dissoc m :a :b :c :d :e)) (dissoc m :a :b :c :d :e)])"
+    "[{:m 1} {:m 1} {:m 1} {:m 1} {:f 6}]")
+;; the keys are built at run time so they are equal to, never eq? to, the map's
+(is "a present non-stable key in ANY position of a 2/3/4-key dissoc takes the fallback"
+    "(pr-str
+       (let [m {:a 1 \"x\" 2 [1 2] 3 :b 4 :c 5} x (str \\x) v (vector 1 2)]
+         [(dissoc m :a x) (dissoc m x :a)
+          (dissoc m :a x :b) (dissoc m :a :b v) (dissoc m v :a :b)
+          (dissoc m :a x :b :c) (dissoc m :a :b v :c) (dissoc m :a :b :c x) (dissoc m x :a :b :c)]))"
+    "[{[1 2] 3, :b 4, :c 5} {[1 2] 3, :b 4, :c 5} {[1 2] 3, :c 5} {\"x\" 2, :c 5} {\"x\" 2, :c 5} {[1 2] 3} {\"x\" 2} {[1 2] 3} {[1 2] 3}]")
+(is "record and sorted-map receivers through the 1-key and 5+ key clauses"
+    "(do (defrecord VR [a b])
+         (defrecord NPR [a b] clojure.lang.Counted (count [_] 99))
+         (deftype VW [m log]
+           clojure.lang.IPersistentMap
+           (without [_ k] (swap! log conj k) (VW. (dissoc m k) log))
+           clojure.lang.Counted (count [_] (count m)))
+         (let [log (atom [])
+               a (atom (VW. {:a 1 :b 2} log))
+               _ (swap! a dissoc :a)
+               r (with-meta (assoc (->VR 1 2) :p 1 :q 2 :r 3 :s 4 :t 5) {:m 1})
+               r5 (dissoc r :p :q :r :s :t)
+               np (with-meta (assoc (->NPR 1 2) :x 1) {:m 1})
+               sm (atom (with-meta (sorted-map :a 1 :b 2 :c 3) {:m 1}))]
+           [@log (count @a)
+            (= r5 (->VR 1 2)) (instance? VR r5) (meta r5)
+            (dissoc np :x :a :zz) (meta (dissoc np :x :a :zz)) (meta (dissoc np :x :zz :yy))
+            (keys (swap! sm dissoc :a)) (meta @sm) (keys (apply dissoc @sm [:c]))]))"
+    "[[:a] 1 true true {:m 1} {:b 2} {:m 1} {:m 1} (:b :c) {:m 1} (:b)]")
+
 (printf "arraymap-test: ~a/~a passed\n" (- total fails) total)
 (exit (if (= fails 0) 0 1))
