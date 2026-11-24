@@ -532,6 +532,102 @@
   (ok "randomized differential multi-pair assoc (1500 trials, 2..4 pairs) matches left fold of jolt-assoc3" diff-ok)
   (ok "randomized all-no-op multi-pair assoc returns identical? receiver" noop-ok))
 
+;; Exhaustive small matrix: bases of 0-9 (kw plain, kw with-meta, fixnum/nil)
+;; and 60-64 (kw plain, kw with-meta), every 2-, 3-, and 4-pair key tuple from
+;; a 7-key pool (existing keys, new keywords, and a new fixnum), compared with
+;; a left fold of jolt-assoc1 (+ meta-carry) on contents, slot order,
+;; array/hash mode, and metadata.
+(let ()
+  (define kw-base-keys (list->vector (map (lambda (i) (keyword #f (string-append "ek" (number->string i)))) (iota 64))))
+  (define nx0 (kw "nx0")) (define nx1 (kw "nx1")) (define nx2 (kw "nx2"))
+  (define nx3 (kw "nx3")) (define nx4 (kw "nx4")) (define nx5 (kw "nx5")) (define nx6 (kw "nx6"))
+  (define (mk-base sz kw? with-meta?)
+    (let ((m (let lp ((i 0) (acc empty-pmap))
+               (if (fx=? i sz)
+                   acc
+                   (lp (fx+ i 1) (jolt-assoc1 acc (if kw? (vector-ref kw-base-keys i) i) i))))))
+      (if with-meta?
+          (jolt-with-meta m (make-pmap (vector (kw "sz") sz) 1))
+          m)))
+  (define (pool-for sz kw?)
+    (let ((bk (lambda (i) (if kw? (vector-ref kw-base-keys i) i))))
+      (if (fx<=? sz 9)
+          ;; Up to 3 existing keys + 3 new keywords + 1 new fixnum (4 distinct new stable keys)
+          (vector (if (fx>=? sz 1) (bk 0) nx4)
+                  (if (fx>=? sz 2) (bk 1) nx5)
+                  (if (fx>=? sz 3) (bk (fx- sz 1)) nx6)
+                  nx0 nx1 nx2 999)
+          ;; Sizes 60..64: 2 existing keys + 4 new keywords (tests 60+4=64 and 61+4=65) + 1 new fixnum
+          (vector (bk 0) (bk (fx- sz 1)) nx0 nx1 nx2 nx3 999))))
+  (define cases 0)
+  (define matrix-ok #t)
+  (define (fail-case label m ks got want)
+    (when matrix-ok
+      (printf "  exhaustive mismatch (~a, cnt=~a, ks=~a): got=~a want=~a\n"
+              label (if (jolt-nil? m) 'nil (pmap-cnt m)) ks (jolt-pr-str got) (jolt-pr-str want))
+      (set! matrix-ok #f)))
+  (define (run-base label m pool)
+    (let ((plen (vector-length pool)))
+      ;; 2-pair (7^2 = 49)
+      (do ((a 0 (fx+ a 1))) ((or (fx=? a plen) (not matrix-ok)))
+        (let ((k1 (vector-ref pool a))
+              (w1 (jolt-assoc1 m (vector-ref pool a) 101)))
+          (do ((b 0 (fx+ b 1))) ((or (fx=? b plen) (not matrix-ok)))
+            (let* ((k2 (vector-ref pool b))
+                   (got (jolt-assoc m k1 101 k2 102))
+                   (want (meta-carry m (jolt-assoc1 w1 k2 102))))
+              (set! cases (fx+ cases 1))
+              (unless (amap-same-result? got want)
+                (fail-case label m (list k1 k2) got want))))))
+      ;; 3-pair (7^3 = 343)
+      (do ((a 0 (fx+ a 1))) ((or (fx=? a plen) (not matrix-ok)))
+        (let* ((k1 (vector-ref pool a))
+               (w1 (jolt-assoc1 m k1 101)))
+          (do ((b 0 (fx+ b 1))) ((or (fx=? b plen) (not matrix-ok)))
+            (let* ((k2 (vector-ref pool b))
+                   (w2 (jolt-assoc1 w1 k2 102)))
+              (do ((c 0 (fx+ c 1))) ((or (fx=? c plen) (not matrix-ok)))
+                (let* ((k3 (vector-ref pool c))
+                       (got (jolt-assoc m k1 101 k2 102 k3 103))
+                       (want (meta-carry m (jolt-assoc1 w2 k3 103))))
+                  (set! cases (fx+ cases 1))
+                  (unless (amap-same-result? got want)
+                    (fail-case label m (list k1 k2 k3) got want))))))))
+      ;; 4-pair (7^4 = 2401)
+      (do ((a 0 (fx+ a 1))) ((or (fx=? a plen) (not matrix-ok)))
+        (let* ((k1 (vector-ref pool a))
+               (w1 (jolt-assoc1 m k1 101)))
+          (do ((b 0 (fx+ b 1))) ((or (fx=? b plen) (not matrix-ok)))
+            (let* ((k2 (vector-ref pool b))
+                   (w2 (jolt-assoc1 w1 k2 102)))
+              (do ((c 0 (fx+ c 1))) ((or (fx=? c plen) (not matrix-ok)))
+                (let* ((k3 (vector-ref pool c))
+                       (w3 (jolt-assoc1 w2 k3 103)))
+                  (do ((d 0 (fx+ d 1))) ((or (fx=? d plen) (not matrix-ok)))
+                    (let* ((k4 (vector-ref pool d))
+                           (got (jolt-assoc m k1 101 k2 102 k3 103 k4 104))
+                           (want (meta-carry m (jolt-assoc1 w3 k4 104))))
+                      (set! cases (fx+ cases 1))
+                      (unless (amap-same-result? got want)
+                        (fail-case label m (list k1 k2 k3 k4) got want))))))))))))
+  ;; nil base
+  (run-base "nil" jolt-nil (pool-for 0 #t))
+  ;; 0..9 and 60..64 keyword bases (plain and with-meta)
+  (for-each
+    (lambda (sz)
+      (let ((p (pool-for sz #t)))
+        (run-base (format "kw-~a" sz) (mk-base sz #t #f) p)
+        (run-base (format "kw-~a-meta" sz) (mk-base sz #t #t) p)))
+    '(0 1 2 3 4 5 6 7 8 9 60 61 62 63 64))
+  ;; 1..9 fixnum bases (tests 8-entry non-kw boundary and hash-mode at 9)
+  (for-each
+    (lambda (sz)
+      (run-base (format "fx-~a" sz) (mk-base sz #f #f) (pool-for sz #f)))
+    '(1 2 3 4 5 6 7 8 9))
+  (printf "  exhaustive multi-pair assoc matrix: ~a cases checked\n" cases)
+  (ok "exhaustive small matrix (bases 0-9, 60-64, nil; all 2/3/4-pair 7-key tuples) matches jolt-assoc1 fold"
+      matrix-ok))
+
 ;; Directed promotion-order tests: 7-entry ("x", :k) vs (:k, "x") and stable (99, :k) vs (:k, 99)
 (let ((m7 (evv "(reduce (fn [m i] (assoc m i i)) {} (range 7))")))
   (ok "7-entry + (\"x\", :k) stays array mode; + (:k, \"x\") promotes to hash mode"
@@ -657,15 +753,17 @@
        [@a u m5 odd-err])"
     "[{:a 11, :b 22, :c 33, :d 40, :e 50, :f 60, :g 70} {:sub {:x 2, :y 3}} {:a 1, :b 2, :c 3, :d 4, :e 5} :iae]")
 
-;; Emission & reachability checks: direct multi-pair assoc emits jolt-assoc
-;; (case-lambda fixed clauses) and allocates a single output slot vector.
-(ok "direct 2/3/4-pair assoc emits direct jolt-assoc call (case-lambda fast entry)"
-    (and (has? (emitf "(fn [m] (assoc m :a 1 :b 2))") "(jolt-assoc ")
-         (has? (emitf "(fn [m] (assoc m :a 1 :b 2 :c 3))") "(jolt-assoc ")
-         (has? (emitf "(fn [m] (assoc m :a 1 :b 2 :c 3 :d 4))") "(jolt-assoc ")))
+;; Reachability & allocation checks: compiled direct multi-pair assoc reaches
+;; the case-lambda fixed clauses and allocates a single output slot vector.
 (let* ((m24 (evv "(reduce (fn [m i] (assoc m (keyword (str \"k\" i)) i)) {} (range 24))"))
+       (f2 (evv "(fn [m] (assoc m :ka 1 :kb 2))"))
+       (f3 (evv "(fn [m] (assoc m :ka 1 :kb 2 :kc 3))"))
+       (f4 (evv "(fn [m] (assoc m :ka 1 :kb 2 :kc 3 :kd 4))"))
        (ka (kw "ka")) (kb (kw "kb")) (kc (kw "kc")) (kd (kw "kd"))
        (k0 (kw "k0")) (k1 (kw "k1")) (k2 (kw "k2")) (k3 (kw "k3"))
+       (b2-clj  (bytes-of (lambda () (jolt-invoke1 f2 m24))))
+       (b3-clj  (bytes-of (lambda () (jolt-invoke1 f3 m24))))
+       (b4-clj  (bytes-of (lambda () (jolt-invoke1 f4 m24))))
        (b2-fast (bytes-of (lambda () (jolt-assoc m24 ka 1 kb 2))))
        (b2-fold (bytes-of (lambda () (jolt-assoc3 (jolt-assoc3 m24 ka 1) kb 2))))
        (b3-fast (bytes-of (lambda () (jolt-assoc m24 ka 1 kb 2 kc 3))))
@@ -676,8 +774,15 @@
        (b2-noop (bytes-of (lambda () (jolt-assoc m24 k0 0 k1 1))))
        (b3-noop (bytes-of (lambda () (jolt-assoc m24 k0 0 k1 1 k2 2))))
        (b4-noop (bytes-of (lambda () (jolt-assoc m24 k0 0 k1 1 k2 2 k3 3)))))
-  (printf "  multi-pair assoc bytes on 24-kw map: 2p ~a vs ~a, 3p ~a vs ~a, 4p ~a vs ~a; no-op ~a/~a/~a (base ~a)\n"
+  (printf "  compiled multi-pair assoc bytes on 24-kw map: 2p ~a vs ~a, 3p ~a vs ~a, 4p ~a vs ~a\n"
+          b2-clj b2-fold b3-clj b3-fold b4-clj b4-fold)
+  (printf "  direct multi-pair assoc bytes on 24-kw map: 2p ~a vs ~a, 3p ~a vs ~a, 4p ~a vs ~a; no-op ~a/~a/~a (base ~a)\n"
           b2-fast b2-fold b3-fast b3-fold b4-fast b4-fold b2-noop b3-noop b4-noop b-base)
+  (ok "compiled (fn [m] (assoc m :ka 1 :kb 2)) reaches single-allocation fast path"
+      (< b2-clj (- b2-fold 256)))
+  (ok "compiled 3- and 4-pair assoc reach single-allocation fast path"
+      (and (< (* 2 b3-clj) b3-fold)
+           (< (* 2 b4-clj) b4-fold)))
   (ok "2-pair assoc allocates a single output vector (strictly less than 2x jolt-assoc3)"
       (< b2-fast (- b2-fold 256)))
   (ok "3-pair assoc allocates a single output vector (under half of 3x jolt-assoc3)"
