@@ -59,7 +59,10 @@
 ;; jobs, 2026-11-03..04; stdlibratio the same way, jolt-h1d; pmoverhead read
 ;; 0.65-1.87 beside its shard for a quiet 1.05-1.15). A scaling gate
 ;; (n vs 4n of the same work) is not listed: interference moves both arms alike.
-(def quiet-gates '#{fastpathratio stdlibratio pmoverhead})
+;; gambitunbound is here for memory, not timing: its gsc -target js compile
+;; peaks near 14GB on the 16GB runner, so a neighbour's build beside that peak
+;; ran the runner out of memory.
+(def quiet-gates '#{fastpathratio stdlibratio pmoverhead gambitunbound})
 
 (def receipt "target/gate-receipt")
 
