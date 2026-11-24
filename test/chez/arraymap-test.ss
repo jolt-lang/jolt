@@ -411,5 +411,281 @@
                      (empty? (clojure.set/difference s bigger)))))
          (finally (.setDynamic v false))))"
     "true")
+;; --- multi-pair assoc (2..4 pairs) single-allocation fast path ---------------
+(define (assoc-fold3 m kvs)
+  (let loop ((acc m) (rest kvs))
+    (if (null? rest)
+        acc
+        (loop (jolt-assoc3 acc (car rest) (cadr rest)) (cddr rest)))))
+
+(define (assoc-apply-n m kvs)
+  (case (length kvs)
+    ((4) (jolt-assoc m (list-ref kvs 0) (list-ref kvs 1)
+                       (list-ref kvs 2) (list-ref kvs 3)))
+    ((6) (jolt-assoc m (list-ref kvs 0) (list-ref kvs 1)
+                       (list-ref kvs 2) (list-ref kvs 3)
+                       (list-ref kvs 4) (list-ref kvs 5)))
+    ((8) (jolt-assoc m (list-ref kvs 0) (list-ref kvs 1)
+                       (list-ref kvs 2) (list-ref kvs 3)
+                       (list-ref kvs 4) (list-ref kvs 5)
+                       (list-ref kvs 6) (list-ref kvs 7)))
+    (else (apply jolt-assoc m kvs))))
+
+(define (amap-same-result? a b)
+  (and (pmap? a) (pmap? b)
+       (eq? (pmap-array? a) (pmap-array? b))
+       (fx=? (pmap-cnt a) (pmap-cnt b))
+       (jolt=2 a b)
+       (jolt=2 (jolt-meta a) (jolt-meta b))
+       (or (not (pmap-array? a))
+           (let ((ra (pmap-root a)) (rb (pmap-root b)))
+             (and (fx=? (vector-length ra) (vector-length rb))
+                  (let lp ((i 0))
+                    (or (fx=? i (vector-length ra))
+                        (and (jolt=2 (vector-ref ra i) (vector-ref rb i))
+                             (lp (fx+ i 1))))))))))
+
+;; Randomized differential test against left fold of jolt-assoc3 across
+;; sizes around 8 and 64, mixed stable/non-stable keys, duplicates, and meta.
+(let ()
+  (define rng 2463534242)
+  (define (next-u32)
+    (let* ((x (bitwise-and #xffffffff (bitwise-xor rng (bitwise-arithmetic-shift-left rng 13))))
+           (x (bitwise-and #xffffffff (bitwise-xor x (bitwise-arithmetic-shift-right x 17))))
+           (x (bitwise-and #xffffffff (bitwise-xor x (bitwise-arithmetic-shift-left x 5)))))
+      (set! rng x)
+      x))
+  (define (r-int n) (modulo (next-u32) n))
+  (define kw-pool (list->vector (map (lambda (i) (keyword #f (string-append "dk" (number->string i)))) (iota 72))))
+  (define fx-pool (list->vector (iota 24)))
+  (define ch-pool (vector #\a #\b #\c #\d #\e #\f #\g #\h))
+  (define nonstable-pool (vector "s0" "s1" "s2" (jolt-symbol #f "sym0") (jolt-vector 1 2) jolt-nil))
+  (define vals (vector 0 1 2 3 4 #f #t jolt-nil "v"))
+  (define (pick-key mode)
+    (case mode
+      ((kw) (vector-ref kw-pool (r-int 72)))
+      ((stable) (case (r-int 6)
+                  ((0 1 2 3) (vector-ref kw-pool (r-int 72)))
+                  ((4) (vector-ref fx-pool (r-int 24)))
+                  (else (vector-ref ch-pool (r-int 8)))))
+      (else (case (r-int 8)
+              ((0 1 2 3) (vector-ref kw-pool (r-int 72)))
+              ((4) (vector-ref fx-pool (r-int 24)))
+              ((5) (vector-ref ch-pool (r-int 8)))
+              (else (vector-ref nonstable-pool (r-int (vector-length nonstable-pool))))))))
+  (define (make-base sz kw-only?)
+    (let lp ((i 0) (m empty-pmap))
+      (if (fx=? i sz)
+          (if (fx=? (r-int 3) 0)
+              (jolt-with-meta m (make-pmap (vector (kw "tag") sz) 1))
+              m)
+          (let ((k (if kw-only?
+                       (vector-ref kw-pool i)
+                       (if (fx<? i 16) (vector-ref fx-pool i) (vector-ref kw-pool i)))))
+            (lp (fx+ i 1) (jolt-assoc3 m k (vector-ref vals (r-int (vector-length vals)))))))))
+  (define (pick-existing-or-new m mode)
+    (if (and (pmap-array? m) (fx>? (pmap-cnt m) 0) (fx<? (r-int 10) 5))
+        (let* ((r (pmap-root m))
+               (slot (fx* 2 (r-int (pmap-cnt m)))))
+          (vector-ref r slot))
+        (pick-key mode)))
+  (define sizes '(0 1 2 3 6 7 8 9 12 60 61 62 63 64 65))
+  (define diff-ok #t)
+  (define noop-ok #t)
+  (let loop-trial ((t 0))
+    (when (and (< t 1500) diff-ok noop-ok)
+      (let* ((sz (list-ref sizes (r-int (length sizes))))
+             (kw-only? (or (> sz 8) (fx=? (r-int 2) 0)))
+             (m (make-base sz kw-only?))
+             (pairs (+ 2 (r-int 3)))     ; 2, 3, or 4 pairs
+             (key-mode (case (r-int 5) ((0 1) 'kw) ((2 3) 'stable) (else 'mixed)))
+             (kvs (let mk ((j 0) (ks '()) (acc '()))
+                    (if (fx=? j pairs)
+                        (reverse acc)
+                        (let* ((k (if (and (pair? ks) (fx=? (r-int 5) 0))
+                                      (list-ref ks (r-int (length ks))) ; force batch duplicate
+                                      (pick-existing-or-new m key-mode)))
+                               (v (vector-ref vals (r-int (vector-length vals)))))
+                          (mk (fx+ j 1) (cons k ks) (cons v (cons k acc)))))))
+             (got (assoc-apply-n m kvs))
+             (want (assoc-fold3 m kvs)))
+        (unless (amap-same-result? got want)
+          (printf "  diff mismatch trial ~a: sz=~a pairs=~a got=~a want=~a\n"
+                  t sz pairs (jolt-pr-str got) (jolt-pr-str want))
+          (set! diff-ok #f))
+        ;; Also check all-no-op identity when m is an array map with stable keys
+        (when (and (pmap-array? m) (fx>? (pmap-cnt m) 0))
+          (let* ((r (pmap-root m))
+                 (noop-kvs
+                   (let mk ((j 0) (acc '()))
+                     (if (fx=? j pairs)
+                         (reverse acc)
+                         (let* ((slot (fx* 2 (r-int (pmap-cnt m))))
+                                (k (vector-ref r slot))
+                                (v (vector-ref r (fx+ slot 1))))
+                           (mk (fx+ j 1) (cons v (cons k acc)))))))
+                 (res (assoc-apply-n m noop-kvs)))
+            (unless (eq? res m)
+              (printf "  no-op identity failed trial ~a: sz=~a pairs=~a\n" t sz pairs)
+              (set! noop-ok #f)))))
+      (loop-trial (+ t 1))))
+  (ok "randomized differential multi-pair assoc (1500 trials, 2..4 pairs) matches left fold of jolt-assoc3" diff-ok)
+  (ok "randomized all-no-op multi-pair assoc returns identical? receiver" noop-ok))
+
+;; Directed promotion-order tests: 7-entry ("x", :k) vs (:k, "x") and stable (99, :k) vs (:k, 99)
+(let ((m7 (evv "(reduce (fn [m i] (assoc m i i)) {} (range 7))")))
+  (ok "7-entry + (\"x\", :k) stays array mode; + (:k, \"x\") promotes to hash mode"
+      (let ((a (jolt-assoc m7 "x" 1 (kw "k") 2))
+            (b (jolt-assoc m7 (kw "k") 2 "x" 1)))
+        (and (pmap-array? a) (not (pmap-array? b))
+             (amap-same-result? a (assoc-fold3 m7 (list "x" 1 (kw "k") 2)))
+             (amap-same-result? b (assoc-fold3 m7 (list (kw "k") 2 "x" 1))))))
+  (ok "7-entry + stable (99, :k) stays array mode; + (:k, 99) promotes to hash mode (2/3/4 pairs)"
+      (let ((a2 (jolt-assoc m7 99 1 (kw "k") 2))
+            (b2 (jolt-assoc m7 (kw "k") 2 99 1))
+            (a3 (jolt-assoc m7 99 1 (kw "k1") 2 (kw "k2") 3))
+            (b3 (jolt-assoc m7 (kw "k1") 2 99 1 (kw "k2") 3))
+            (a4 (jolt-assoc m7 99 1 (kw "k1") 2 (kw "k2") 3 (kw "k3") 4))
+            (b4 (jolt-assoc m7 (kw "k1") 2 (kw "k2") 3 99 1 (kw "k3") 4)))
+        (and (pmap-array? a2) (not (pmap-array? b2))
+             (pmap-array? a3) (not (pmap-array? b3))
+             (pmap-array? a4) (not (pmap-array? b4))
+             (amap-same-result? a2 (assoc-fold3 m7 (list 99 1 (kw "k") 2)))
+             (amap-same-result? b2 (assoc-fold3 m7 (list (kw "k") 2 99 1)))
+             (amap-same-result? a3 (assoc-fold3 m7 (list 99 1 (kw "k1") 2 (kw "k2") 3)))
+             (amap-same-result? b3 (assoc-fold3 m7 (list (kw "k1") 2 99 1 (kw "k2") 3)))
+             (amap-same-result? a4 (assoc-fold3 m7 (list 99 1 (kw "k1") 2 (kw "k2") 3 (kw "k3") 4)))
+             (amap-same-result? b4 (assoc-fold3 m7 (list (kw "k1") 2 (kw "k2") 3 99 1 (kw "k3") 4)))))))
+
+;; Directed 64-keyword promotion boundary (2/3/4 pairs)
+(let ((m62 (evv "(reduce (fn [m i] (assoc m (keyword (str \"k\" i)) i)) {} (range 62))"))
+      (m63 (evv "(reduce (fn [m i] (assoc m (keyword (str \"k\" i)) i)) {} (range 63))"))
+      (m64 (evv "(reduce (fn [m i] (assoc m (keyword (str \"k\" i)) i)) {} (range 64))")))
+  (ok "64-keyword boundary: <=64 stays array mode, 65th promotes, existing-only at 64 stays array mode"
+      (and (pmap-array? (jolt-assoc m62 (kw "a") 1 (kw "b") 2))
+           (not (pmap-array? (jolt-assoc m62 (kw "a") 1 (kw "b") 2 (kw "c") 3)))
+           (not (pmap-array? (jolt-assoc m63 (kw "a") 1 (kw "b") 2)))
+           (pmap-array? (jolt-assoc m63 (kw "k0") 99 (kw "a") 1))
+           (pmap-array? (jolt-assoc m64 (kw "k0") 99 (kw "k1") 88))
+           (pmap-array? (jolt-assoc m64 (kw "k0") 99 (kw "k1") 88 (kw "k2") 77 (kw "k3") 66))
+           (not (pmap-array? (jolt-assoc m64 (kw "k0") 99 (kw "new") 1))))))
+
+;; Directed receiver & key-type coverage
+(is "multi-pair assoc on nil (distinct, duplicate, non-stable)"
+    "(pr-str [(assoc nil :a 1 :b 2)
+              (assoc nil :a 1 :a 2)
+              (assoc nil :a 1 :b 2 :a 3)
+              (assoc nil :a 1 :b 2 :c 3 :d 4)
+              (keys (assoc nil :a 1 :b 2 :a 3 :c 4))
+              (assoc nil \"x\" 1 :b 2)
+              (assoc nil [1 2] 1 :b 2 :c 3)])"
+    "[{:a 1, :b 2} {:a 2} {:a 3, :b 2} {:a 1, :b 2, :c 3, :d 4} (:a :b :c) {\"x\" 1, :b 2} {[1 2] 1, :b 2, :c 3}]")
+(ok "multi-pair assoc on nil returns array-mode pmap"
+    (and (pmap-array? (evv "(assoc nil :a 1 :b 2)"))
+         (pmap-array? (evv "(assoc nil :a 1 :b 2 :c 3)"))
+         (pmap-array? (evv "(assoc nil :a 1 :b 2 :c 3 :d 4)"))))
+(ok "multi-pair assoc on hash-mode map preserves hash mode and metadata"
+    (let* ((hm (evv "(with-meta (hash-map :a 1 :b 2) {:m 1})"))
+           (r2 (jolt-assoc hm (kw "a") 10 (kw "c") 30))
+           (r3 (jolt-assoc hm (kw "a") 10 (kw "c") 30 (kw "d") 40))
+           (r4 (jolt-assoc hm (kw "a") 10 (kw "c") 30 (kw "d") 40 (kw "e") 50)))
+      (and (not (pmap-array? r2)) (not (pmap-array? r3)) (not (pmap-array? r4))
+           (jolt=2 (jolt-meta r2) (jolt-meta hm))
+           (jolt=2 (jolt-meta r3) (jolt-meta hm))
+           (jolt=2 (jolt-meta r4) (jolt-meta hm))
+           (jolt=2 r2 (assoc-fold3 hm (list (kw "a") 10 (kw "c") 30)))
+           (jolt=2 r3 (assoc-fold3 hm (list (kw "a") 10 (kw "c") 30 (kw "d") 40)))
+           (jolt=2 r4 (assoc-fold3 hm (list (kw "a") 10 (kw "c") 30 (kw "d") 40 (kw "e") 50))))))
+(is "multi-pair assoc on vector receiver (replace, append, meta)"
+    "(let [v (with-meta [10 20 30] {:tag :v})
+           r2 (assoc v 0 1 2 3)
+           r3 (assoc v 0 1 3 40 4 50)
+           r4 (assoc v 0 1 1 2 2 3 3 4)]
+       [r2 (meta r2) r3 (meta r3) r4 (meta r4)])"
+    "[[1 20 3] {:tag :v} [1 20 30 40 50] {:tag :v} [1 2 3 4] {:tag :v}]")
+(is "multi-pair assoc on defrecord (declared fields, ext keys, meta)"
+    "(do (defrecord AssocRec [a b])
+         (let [r (with-meta (->AssocRec 1 2) {:rm 1})
+               r2 (assoc r :a 10 :c 30)
+               r3 (assoc r :a 10 :b 20 :c 30)
+               r4 (assoc r :a 10 :b 20 :c 30 :d 40)]
+           [[(:a r2) (:b r2) (:c r2) (meta r2) (instance? AssocRec r2)]
+            [(:a r3) (:b r3) (:c r3) (meta r3) (instance? AssocRec r3)]
+            [(:a r4) (:b r4) (:c r4) (:d r4) (meta r4) (instance? AssocRec r4)]]))"
+    "[[10 2 30 {:rm 1} true] [10 20 30 {:rm 1} true] [10 20 30 40 {:rm 1} true]]")
+(is "multi-pair assoc on sorted-map preserves sort order and metadata"
+    "(let [sm (with-meta (sorted-map :b 2 :a 1) {:sm 1})
+           r2 (assoc sm :d 4 :c 3)
+           r3 (assoc sm :e 5 :c 3 :a 10)
+           r4 (assoc sm :f 6 :d 4 :c 3 :e 5)]
+       [(keys r2) (meta r2) (keys r3) (:a r3) (meta r3) (keys r4) (meta r4)])"
+    "[(:a :b :c :d) {:sm 1} (:a :b :c :e) 10 {:sm 1} (:a :b :c :d :e :f) {:sm 1}]")
+(is "multi-pair assoc on custom Associative deftype dispatches assoc in order"
+    "(do (deftype CustomAssoc [m log]
+           clojure.lang.Associative
+           (containsKey [_ k] (contains? m k))
+           (entryAt [_ k] (find m k))
+           (assoc [_ k v]
+             (swap! log conj [k v])
+             (CustomAssoc. (assoc m k v) log))
+           clojure.lang.ILookup
+           (valAt [_ k] (get m k))
+           (valAt [_ k d] (get m k d)))
+         (let [log (atom [])
+               c (CustomAssoc. {:a 0} log)
+               r2 (assoc c :a 1 :b 2)
+               r3 (assoc r2 :c 3 :d 4 :e 5)
+               r4 (assoc r3 :f 6 :g 7 :h 8 :i 9)]
+           [(:a r4) (:i r4) @log]))"
+    "[1 9 [[:a 1] [:b 2] [:c 3] [:d 4] [:e 5] [:f 6] [:g 7] [:h 8] [:i 9]]]")
+(is "multi-pair assoc with non-stable keys (string, vector) falls back cleanly"
+    "(pr-str (let [m (with-meta {:a 1} {:k 1})
+                   r2 (assoc m \"x\" 2 :b 3)
+                   r3 (assoc m [1 2] 2 :b 3 :c 4)
+                   r4 (assoc m :b 2 \"y\" 3 [3 4] 4 :c 5)]
+               [r2 (meta r2) r3 (meta r3) r4 (meta r4)]))"
+    "[{:a 1, \"x\" 2, :b 3} {:k 1} {:a 1, [1 2] 2, :b 3, :c 4} {:k 1} {:a 1, :b 2, \"y\" 3, [3 4] 4, :c 5} {:k 1}]")
+(is "multi-pair assoc via value position (swap!, update, 1-arg, 5-pair, odd-arg error)"
+    "(let [a (atom {:a 1 :b 2})
+           _ (swap! a assoc :a 10 :c 30)
+           _ (swap! a assoc :b 20 :d 40 :e 50)
+           _ (swap! a assoc :a 11 :b 22 :c 33 :f 60)
+           _ (swap! a assoc :g 70)
+           u (update {:sub {:x 1}} :sub assoc :x 2 :y 3)
+           m5 (assoc {} :a 1 :b 2 :c 3 :d 4 :e 5)
+           odd-err (try (assoc {} :a 1 :b) (catch IllegalArgumentException _ :iae))]
+       [@a u m5 odd-err])"
+    "[{:a 11, :b 22, :c 33, :d 40, :e 50, :f 60, :g 70} {:sub {:x 2, :y 3}} {:a 1, :b 2, :c 3, :d 4, :e 5} :iae]")
+
+;; Emission & reachability checks: direct multi-pair assoc emits jolt-assoc
+;; (case-lambda fixed clauses) and allocates a single output slot vector.
+(ok "direct 2/3/4-pair assoc emits direct jolt-assoc call (case-lambda fast entry)"
+    (and (has? (emitf "(fn [m] (assoc m :a 1 :b 2))") "(jolt-assoc ")
+         (has? (emitf "(fn [m] (assoc m :a 1 :b 2 :c 3))") "(jolt-assoc ")
+         (has? (emitf "(fn [m] (assoc m :a 1 :b 2 :c 3 :d 4))") "(jolt-assoc ")))
+(let* ((m24 (evv "(reduce (fn [m i] (assoc m (keyword (str \"k\" i)) i)) {} (range 24))"))
+       (ka (kw "ka")) (kb (kw "kb")) (kc (kw "kc")) (kd (kw "kd"))
+       (k0 (kw "k0")) (k1 (kw "k1")) (k2 (kw "k2")) (k3 (kw "k3"))
+       (b2-fast (bytes-of (lambda () (jolt-assoc m24 ka 1 kb 2))))
+       (b2-fold (bytes-of (lambda () (jolt-assoc3 (jolt-assoc3 m24 ka 1) kb 2))))
+       (b3-fast (bytes-of (lambda () (jolt-assoc m24 ka 1 kb 2 kc 3))))
+       (b3-fold (bytes-of (lambda () (jolt-assoc3 (jolt-assoc3 (jolt-assoc3 m24 ka 1) kb 2) kc 3))))
+       (b4-fast (bytes-of (lambda () (jolt-assoc m24 ka 1 kb 2 kc 3 kd 4))))
+       (b4-fold (bytes-of (lambda () (jolt-assoc3 (jolt-assoc3 (jolt-assoc3 (jolt-assoc3 m24 ka 1) kb 2) kc 3) kd 4))))
+       (b-base  (bytes-of (lambda () m24)))
+       (b2-noop (bytes-of (lambda () (jolt-assoc m24 k0 0 k1 1))))
+       (b3-noop (bytes-of (lambda () (jolt-assoc m24 k0 0 k1 1 k2 2))))
+       (b4-noop (bytes-of (lambda () (jolt-assoc m24 k0 0 k1 1 k2 2 k3 3)))))
+  (printf "  multi-pair assoc bytes on 24-kw map: 2p ~a vs ~a, 3p ~a vs ~a, 4p ~a vs ~a; no-op ~a/~a/~a (base ~a)\n"
+          b2-fast b2-fold b3-fast b3-fold b4-fast b4-fold b2-noop b3-noop b4-noop b-base)
+  (ok "2-pair assoc allocates a single output vector (strictly less than 2x jolt-assoc3)"
+      (< b2-fast (- b2-fold 256)))
+  (ok "3-pair assoc allocates a single output vector (under half of 3x jolt-assoc3)"
+      (< (* 2 b3-fast) b3-fold))
+  (ok "4-pair assoc allocates a single output vector (under half of 4x jolt-assoc3)"
+      (< (* 2 b4-fast) b4-fold))
+  (ok "all-no-op 2/3/4-pair assoc allocates 0 extra bytes"
+      (and (= b2-noop b-base) (= b3-noop b-base) (= b4-noop b-base))))
+
 (printf "arraymap-test: ~a/~a passed\n" (- total fails) total)
 (exit (if (= fails 0) 0 1))
