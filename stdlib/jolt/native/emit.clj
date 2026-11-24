@@ -62,9 +62,12 @@
 (def ^:dynamic *stacks* nil)
 (def ^:dynamic *stack* nil)
 ;; the helper instances that can call themselves (directly or through others),
-;; whose C checks the stack on entry; when there are any, every helper takes
-;; the limit (jn_lo) the entry read once
+;; whose C checks the stack on entry against the limit the region's entry read
 (def ^:dynamic *recursive* #{})
+;; how the current function reaches the thread's status: the entry names the
+;; thread-local, a helper the pointer to it the entry passed down (jn_st), so
+;; a helper call costs no thread-local lookup
+(def ^:dynamic *st* "jn_tls.")
 
 (defn- proven? [node k] (and *fast* (get-in *fast* [(:id node) k])))
 
@@ -111,10 +114,10 @@
 
 (defn- raise! [node code & {:keys [a b d]}]
   (str "{ " (frees (:live node))
-       " jn_tls.code = " (err-codes code) ";"
-       (when a (str " jn_tls.a = " a ";"))
-       (when b (str " jn_tls.b = " b ";"))
-       (when d (str " jn_tls.d = " d ";"))
+       " " *st* "code = " (err-codes code) ";"
+       (when a (str " " *st* "a = " a ";"))
+       (when b (str " " *st* "b = " b ";"))
+       (when d (str " " *st* "d = " d ";"))
        " return " (ret-zero) "; }"))
 
 (declare emit fresh-copy! as-double-if emit-entry emit-stack-array emit-heap-array emit-aclone
@@ -372,8 +375,8 @@
                 t (:type node)
                 r (if (ast/owned? t) (declare-var! (:id node) t) (fresh! (if (#{:unit :never} t) :long t)))]
             (line! r " = " (helper-name (:instance node)) "("
-                   (str/join ", " (cond-> args (seq *recursive*) (conj "jn_lo"))) ");")
-            (line! "if (jn_tls.code) { " (frees (:live node)) " return " (ret-zero) "; }")
+                   (str/join ", " (conj args (if (= *st* "jn_tls.") "&jn_tls" "jn_st"))) ");")
+            (line! "if (" *st* "code) { " (frees (:live node)) " return " (ret-zero) "; }")
             r)
     :new-array (if-let [n-el (get-in *stack* [:sites (:id node)])]
                  (emit-stack-array node n-el)
@@ -500,7 +503,12 @@ __attribute__((noinline, unused)) static uintptr_t jn_stack_limit_slow(void) {
   return jn_tls.stack_lo;
 }
 __attribute__((unused)) static inline uintptr_t jn_stack_limit(void) {
+#ifdef JN_EXTERN_STATUS
+  /* one status for every thread: only good for the thread that read it */
   return (jn_tls.stack_lo && jn_tls.stack_thr == JN_THREAD_ID()) ? jn_tls.stack_lo : jn_stack_limit_slow();
+#else
+  return jn_tls.stack_lo ? jn_tls.stack_lo : jn_stack_limit_slow();
+#endif
 }
 /* Chez's 64-bit flvector layout (scheme.h Sflvector_length / Sflvector_ref) */
 #define JN_FLV_LEN(x) ((int64_t)((uintptr_t)(*((intptr_t *)((uintptr_t)(x) + 1))) >> 4))
@@ -521,9 +529,8 @@ __attribute__((unused)) static inline uintptr_t jn_stack_limit(void) {
 (defn- helper-sig [inst]
   (let [t (:ret inst)]
     (str "static " (if (#{:unit :never} t) "int64_t" (ctype t)) " " (helper-name (:iid inst)) "("
-         (let [ps (cond-> (mapv (fn [p] (str (ctype (:type p)) " " (var-name (:id p)))) (:params inst))
-                    (seq *recursive*) (conj "uintptr_t jn_lo"))]
-           (if (seq ps) (str/join ", " ps) "void"))
+         (str/join ", " (conj (mapv (fn [p] (str (ctype (:type p)) " " (var-name (:id p)))) (:params inst))
+                              "jn_out *jn_st"))
          ")")))
 
 (defn- calls-of
@@ -554,8 +561,8 @@ __attribute__((unused)) static inline uintptr_t jn_stack_limit(void) {
   (when (*recursive* (:iid inst))
     (let [takes (get-in @*region* [:takes (:iid inst) :positions])
           taken (keep-indexed (fn [i p] (when (contains? takes i) (:id p))) (:params inst))]
-      (str "if ((uintptr_t)__builtin_frame_address(0) < jn_lo) { " (frees taken)
-           " jn_tls.code = " (err-codes :stack-overflow) "; return " (ret-zero) "; }"))))
+      (str "if ((uintptr_t)__builtin_frame_address(0) < jn_st->stack_lo) { " (frees taken)
+           " jn_st->code = " (err-codes :stack-overflow) "; return " (ret-zero) "; }"))))
 
 (defn- useful? [facts]
   (some (fn [f] (or (:idx-int f) (:in-bounds f) (some true? (:no-ov f)))) (vals facts)))
@@ -604,6 +611,7 @@ __attribute__((unused)) static inline uintptr_t jn_stack_limit(void) {
             *lines* (atom [])
             *tmp* (atom 0)
             *fn-ret* (:ret inst)
+            *st* "jn_st->"
             *stack* (get *stacks* key)]
     (let [t (:ret inst)
           _ (some-> (stack-guard inst) line!)
@@ -693,7 +701,7 @@ __attribute__((unused)) static inline uintptr_t jn_stack_limit(void) {
                 (swap! *decls* assoc (var-name (:id p))
                        (str (ctype (:type p)) " " (var-name (:id p)) " = { JN_FLV_LEN(p" (:id p) "), "
                             (if (fx-borrowed? (:type p)) "(int64_t *)" "") "JN_FLV_DATA(p" (:id p) ") };"))))
-          _ (when (seq *recursive*) (swap! *decls* assoc "jn_lo" "uintptr_t jn_lo = jn_stack_limit();"))
+          _ (when (seq *recursive*) (line! "jn_stack_limit();"))
           v (emit-versioned (:body region) (:entry *ranges*))
           body @*lines*
           decls (vals @*decls*)

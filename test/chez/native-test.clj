@@ -475,8 +475,8 @@
   (check-eq "the taken array is freed on the overflow" ((:live deep-arr)) 0)
   (check-eq "no bad free on the overflow" ((:bad deep-arr)) 0)
   (check-eq "a region without recursion has no stack guard"
-            (str/includes? (:c (compile-region '[^long n] '((sum-pick (long-array 3) 0 n)))) "jn_lo") false)
-  (check-eq "a recursive helper checks the stack" (str/includes? (:c deep) "jn_lo") true))
+            (str/includes? (:c (compile-region '[^long n] '((sum-pick (long-array 3) 0 n)))) "__builtin_frame_address") false)
+  (check-eq "a recursive helper checks the stack" (str/includes? (:c deep) "__builtin_frame_address") true))
 
 ;; (if c x nil) is a nil-typed if, so the region answers nil in both halves
 (check-run "a when beside nil answers nil" '[^long x] '((when (> x 0) (* x 2))) [[3] [-1]])
