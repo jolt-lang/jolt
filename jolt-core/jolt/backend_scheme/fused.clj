@@ -266,8 +266,43 @@
           (let [arg-nodes (:args node)]
             (emit-assoc-native emit node (native-op (:fn node) (count arg-nodes)) arg-nodes tail?)))))))
 
+(defn- assoc1-call? [node]
+  (and (= :invoke (:op node))
+       (not (:clear-caps node))
+       (= "jolt-assoc3" (native-op (:fn node) (count (:args node))))))
+
+(defn- dissoc1-call? [node]
+  (and (= :invoke (:op node))
+       (not (:clear-caps node))
+       (= "jolt-dissoc2" (native-op (:fn node) (count (:args node))))))
+
+;; Emit-time peephole for adjacent single-key dissoc / single-pair assoc pairs.
+;; Collapses (assoc (dissoc m dk) ak av) -> (jolt-dissoc1-assoc1 m dk ak av) and
+;; (dissoc (assoc m ak av) dk) -> (jolt-assoc1-dissoc1 m ak av dk) under the same
+;; operand rule as emit-assoc-chain. Where both rules could match (e.g. an assoc
+;; chain adjacent to a dissoc), emit-assoc-chain keeps precedence.
+(defn- emit-dissoc-assoc-pair [emit node tail?]
+  (cond
+    (and (assoc1-call? node)
+         (not (some #(identical? node %) *unfused-assoc-nodes*)))
+    (let [[inner ak av] (:args node)]
+      (when (and (dissoc1-call? inner)
+                 (pure-edit-operand? ak)
+                 (pure-edit-operand? av))
+        (let [[m dk] (:args inner)]
+          (emit-assoc-native emit node "jolt-dissoc1-assoc1" [m dk ak av] tail?))))
+
+    (dissoc1-call? node)
+    (let [[inner dk] (:args node)]
+      (when (and (assoc1-call? inner)
+                 (not (assoc-call? (first (:args inner))))
+                 (pure-edit-operand? dk))
+        (let [[m ak av] (:args inner)]
+          (emit-assoc-native emit node "jolt-assoc1-dissoc1" [m ak av dk] tail?))))))
+
 (defn emit-fused-invoke [emit node tail?]
   (or (emit-assoc-chain emit node tail?)
+      (emit-dissoc-assoc-pair emit node tail?)
       (emit-vector-filter-map emit node tail?)
       (emit-assoc-in-chain emit node tail?)
       (emit-reduce-kv-builder emit node tail?)))

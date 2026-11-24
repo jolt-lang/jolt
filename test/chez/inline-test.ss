@@ -1904,6 +1904,10 @@
      "(fn [assoc m x y] (-> m (assoc :a x) (assoc :b y)))")
     ("effectful later operand"
      "(fn [m f] (-> m (assoc :a 1) (assoc :b (f))))")
+    ("pure head with effectful nested arg"
+     "(fn [m f] (-> m (assoc :a 1) (assoc :b (+ (f) 1))))")
+    ("cond-> conditional assoc chain"
+     "(fn [m p x y] (cond-> m true (assoc :a x) p (assoc :b y)))")
     ("non-pure count later operand (kondo:1118 shape)"
      "(fn [ctx arg-vec children pre-post-map]
         (-> ctx
@@ -2115,6 +2119,274 @@
             (set! all-ok #f))
           (trial (+ t 1)))))
     (ok "randomized differential assoc-chain (400 trials around 8/64, mixed keys, no-op)" all-ok)))
+
+;; --- emit-time adjacent dissoc/assoc pair fusion (jolt-46) -------------------
+;; Eligible single-key dissoc -> single-pair assoc pairs emit jolt-dissoc1-assoc1.
+(for-each
+  (lambda (pair)
+    (let* ((label (car pair))
+           (form (cadr pair))
+           (e (code-part (emitf "u" form))))
+      (ok (string-append "dissoc1-assoc1 fuses: " label)
+          (and (= 1 (count-sub e "(jolt-dissoc1-assoc1 "))
+               (= 0 (count-sub e "(jolt-dissoc2 "))
+               (= 0 (count-sub e "(jolt-assoc3 "))))))
+  '(("threaded basic"
+     "(fn [m x] (-> m (dissoc :a) (assoc :b x)))")
+    ("nested basic"
+     "(fn [m x] (assoc (dissoc m :a) :b x))")
+    ("aleph http.clj:483 shape (- end start)"
+     "(fn [rsp end start] (-> rsp (dissoc :aleph/destroy-conn?) (assoc :connection-time (- end start))))")
+    ("pure keyword lookup outer operand"
+     "(fn [m o] (-> m (dissoc :a) (assoc :b (:x o))))")
+    ("nested pure outer operands (+ get some?)"
+     "(fn [m o z] (-> m (dissoc :a) (assoc :b (+ (get o :k 0) 1))))")
+    ("impure inner step + pure outer step"
+     "(fn [f g end start] (-> (f) (dissoc (g)) (assoc :dt (- end start))))")
+    ("same key dk = ak"
+     "(fn [m x] (-> m (dissoc :a) (assoc :a x)))")))
+
+;; Eligible single-pair assoc -> single-key dissoc pairs emit jolt-assoc1-dissoc1.
+(for-each
+  (lambda (pair)
+    (let* ((label (car pair))
+           (form (cadr pair))
+           (e (code-part (emitf "u" form))))
+      (ok (string-append "assoc1-dissoc1 fuses: " label)
+          (and (= 1 (count-sub e "(jolt-assoc1-dissoc1 "))
+               (= 0 (count-sub e "(jolt-dissoc2 "))
+               (= 0 (count-sub e "(jolt-assoc3 "))))))
+  '(("threaded basic"
+     "(fn [m x] (-> m (assoc :a x) (dissoc :b)))")
+    ("nested basic"
+     "(fn [m x] (dissoc (assoc m :a x) :b))")
+    ("pure keyword lookup outer key"
+     "(fn [m x o] (-> m (assoc :a x) (dissoc (:k o))))")
+    ("impure inner step + pure outer key"
+     "(fn [f g h] (-> (f) (assoc (g) (h)) (dissoc :b)))")
+    ("same key ak = dk"
+     "(fn [m x] (-> m (assoc :a x) (dissoc :a)))")))
+
+;; Native ops in every mode: no direct-link or optimize gate required.
+(set-optimize! #f)
+(set-direct-link-flag! #f)
+(let ((e1 (code-part (emitf "u" "(fn [m x] (-> m (dissoc :a) (assoc :b x)))")))
+      (e2 (code-part (emitf "u" "(fn [m x] (-> m (assoc :a x) (dissoc :b)))"))))
+  (ok "dissoc/assoc pairs fuse without direct-link or optimize"
+      (and (= 1 (count-sub e1 "(jolt-dissoc1-assoc1 "))
+           (= 0 (count-sub e1 "(jolt-dissoc2 "))
+           (= 0 (count-sub e1 "(jolt-assoc3 "))
+           (= 1 (count-sub e2 "(jolt-assoc1-dissoc1 "))
+           (= 0 (count-sub e2 "(jolt-dissoc2 "))
+           (= 0 (count-sub e2 "(jolt-assoc3 ")))))
+(set-optimize! #t)
+(set-direct-link-flag! #t)
+
+;; Precedence: assoc-chain keeps precedence when both rules could match.
+(let ((e1 (code-part (emitf "u" "(fn [m] (-> m (dissoc :a) (assoc :b 1) (assoc :c 2)))")))
+      (e2 (code-part (emitf "u" "(fn [m] (-> m (assoc :a 1) (assoc :b 2) (dissoc :c)))")))
+      (e3 (code-part (emitf "u" "(fn [m f] (-> m (dissoc :a) (assoc :b 1) (assoc :c (f))))"))))
+  (ok "assoc-chain keeps precedence over dissoc->assoc pair"
+      (and (= 1 (count-sub e1 "(jolt-assoc "))
+           (= 1 (count-sub e1 "(jolt-dissoc2 "))
+           (= 0 (count-sub e1 "(jolt-dissoc1-assoc1 "))
+           (= 0 (count-sub e1 "(jolt-assoc3 "))))
+  (ok "assoc-chain keeps precedence over assoc->dissoc pair"
+      (and (= 1 (count-sub e2 "(jolt-assoc "))
+           (= 1 (count-sub e2 "(jolt-dissoc2 "))
+           (= 0 (count-sub e2 "(jolt-assoc1-dissoc1 "))
+           (= 0 (count-sub e2 "(jolt-assoc3 "))))
+  (ok "rejected assoc-chain over dissoc does not partially fuse inner pair"
+      (and (= 0 (count-sub e3 "(jolt-assoc "))
+           (= 0 (count-sub e3 "(jolt-dissoc1-assoc1 "))
+           (= 1 (count-sub e3 "(jolt-dissoc2 "))
+           (= 2 (count-sub e3 "(jolt-assoc3 ")))))
+
+;; Ineligible pairs must stay completely unfused.
+(for-each
+  (lambda (pair)
+    (let* ((label (car pair))
+           (form (cadr pair))
+           (e (code-part (emitf "u" form))))
+      (ok (string-append "dissoc/assoc pair does not fuse: " label)
+          (and (= 0 (count-sub e "(jolt-dissoc1-assoc1 "))
+               (= 0 (count-sub e "(jolt-assoc1-dissoc1 "))))))
+  '(("shadowed dissoc (da)"
+     "(fn [dissoc m] (-> m (dissoc :a) (assoc :b 1)))")
+    ("shadowed assoc (da)"
+     "(fn [assoc m] (-> m (dissoc :a) (assoc :b 1)))")
+    ("shadowed dissoc (ad)"
+     "(fn [dissoc m] (-> m (assoc :a 1) (dissoc :b)))")
+    ("shadowed assoc (ad)"
+     "(fn [assoc m] (-> m (assoc :a 1) (dissoc :b)))")
+    ("effectful outer value (da)"
+     "(fn [m f] (-> m (dissoc :a) (assoc :b (f))))")
+    ("effectful outer key (da)"
+     "(fn [m f] (-> m (dissoc :a) (assoc (f) 1)))")
+    ("effectful outer key (ad)"
+     "(fn [m f] (-> m (assoc :a 1) (dissoc (f))))")
+    ("pure head with effectful nested arg (da)"
+     "(fn [m f] (-> m (dissoc :a) (assoc :b (+ (f) 1))))")
+    ("pure head with effectful nested arg (ad)"
+     "(fn [m f] (-> m (assoc :a 1) (dissoc (+ (f) 1))))")
+    ("non-pure count outer operand (da)"
+     "(fn [m xs] (-> m (dissoc :a) (assoc :b (count xs))))")
+    ("non-pure division outer operand (da)"
+     "(fn [m a b] (-> m (dissoc :a) (assoc :b (/ a b))))")
+    ("host-call outer operand (da)"
+     "(fn [m x] (-> m (dissoc :a) (assoc :b (.toString x))))")
+    ("global var outer operand (da)"
+     "(fn [m] (-> m (dissoc :a) (assoc :b assoc-chain-glob)))")
+    ("global var outer operand (ad)"
+     "(fn [m] (-> m (assoc :a 1) (dissoc assoc-chain-glob)))")
+    ("outer local with :clear-caps (^:once, da)"
+     "(fn [m y] (^:once fn* [] (-> m (dissoc :a) (assoc :b y))))")
+    ("outer pure-call arg with :clear-caps (^:once, da)"
+     "(fn [m y] (^:once fn* [] (-> m (dissoc :a) (assoc :b (+ y 1)))))")
+    ("outer local with :clear-caps (^:once, ad)"
+     "(fn [m y] (^:once fn* [] (-> m (assoc :a 1) (dissoc y))))")
+    ("multi-key dissoc inside pair"
+     "(fn [m] (-> m (dissoc :a :b) (assoc :c 1)))")
+    ("multi-pair assoc outside pair"
+     "(fn [m] (-> m (dissoc :a) (assoc :b 1 :c 2)))")
+    ("multi-pair assoc inside pair"
+     "(fn [m] (-> m (assoc :a 1 :b 2) (dissoc :c)))")
+    ("multi-key dissoc outside pair"
+     "(fn [m] (-> m (assoc :a 1) (dissoc :b :c)))")
+    ("cond-> conditional dissoc->assoc"
+     "(fn [m p] (cond-> m true (dissoc :a) p (assoc :b 1)))")))
+
+;; Evaluation-order tests for dissoc/assoc pairs:
+(ok "dissoc->assoc preserves throw-before-effectful-outer-operand order"
+    (eq? #t (ev "(let [ran (atom false)
+                       f (fn [] (reset! ran true) 42)
+                       threw (try
+                               (assoc (dissoc [1 2] 0) :a (f))
+                               false
+                               (catch ClassCastException _ true))]
+                   (and threw (not @ran)))")))
+(ok "assoc->dissoc preserves throw-before-effectful-outer-operand order"
+    (eq? #t (ev "(let [ran (atom false)
+                       f (fn [] (reset! ran true) :a)
+                       threw (try
+                               (dissoc (assoc [1 2] 5 99) (f))
+                               false
+                               (catch IndexOutOfBoundsException _ true))]
+                   (and threw (not @ran)))")))
+(ok "dissoc/assoc pairs preserve left-to-right order of first-step side effects"
+    (clj= (ev "(let [log (atom [])
+                     r1 (-> (do (swap! log conj :m1) {:a 1 :x 0})
+                            (dissoc (do (swap! log conj :dk) :a))
+                            (assoc :dt (- 10 3)))
+                     r2 (-> (do (swap! log conj :m2) {:b 2 :x 0})
+                            (assoc (do (swap! log conj :ak) :c)
+                                   (do (swap! log conj :av) 9))
+                            (dissoc :b))]
+                 [r1 r2 @log])")
+          (ev "[{:x 0 :dt 7} {:x 0 :c 9} [:m1 :dk :m2 :ak :av]]")))
+(ok "dissoc/assoc pairs do not clear ^:once capture in outer step before inner throw"
+    (eq? #t (ev "(let [make-da (fn [m y]
+                                 (^:once fn* [fail?]
+                                   (-> (if fail? [1] m)
+                                       (dissoc :a)
+                                       (assoc :b (+ y 1)))))
+                       make-ad (fn [m y]
+                                 (^:once fn* [fail?]
+                                   (-> (if fail? [1] m)
+                                       (assoc 5 99)
+                                       (dissoc (+ y 1)))))
+                       fda (make-da {:a 1} 41)
+                       fad (make-ad {:a 1 42 2} 41)
+                       t1 (try (fda true) false (catch ClassCastException _ true))
+                       r1 (fda false)
+                       t2 (try (fad true) false (catch IndexOutOfBoundsException _ true))
+                       r2 (fad false)]
+                   (and t1 (= {:b 42} r1) t2 (= {:a 1 5 99} r2)))")))
+(ok "user locals named jolt-dissoc1-assoc1 / jolt-assoc1-dissoc1 do not shadow emitted helpers"
+    (clj= (ev "(let [jolt-dissoc1-assoc1 1 jolt-assoc1-dissoc1 2]
+                 [(-> {:a 1 :b 2} (dissoc :a) (assoc :c jolt-dissoc1-assoc1))
+                  (-> {:a 1 :b 2} (assoc :c jolt-assoc1-dissoc1) (dissoc :a))])")
+          (ev "[{:b 2 :c 1} {:b 2 :c 2}]")))
+
+;; Regression: types.clj record field demotion still fires when assoc is inside a pair.
+(ev "(defrecord PairDemoteRec [a b])")
+(let* ((u ((var-deref "jolt.passes.types" "new-unit")))
+       (ctx (make-analyze-ctx "u"))
+       (parse1 (lambda (s)
+                 (let-values (((f _) (rdr-read-form s 0 (string-length s))))
+                   (jolt-ce-analyze ctx f))))
+       (tweak-src "(defn pdr-tweak [m] (-> m (dissoc :x) (assoc :a \"str\")))")
+       (nodes (jolt-vector
+                (parse1 "(defn pdr-mk [] (->PairDemoteRec 1.0 2.0))")
+                (parse1 tweak-src)))
+       (ft-box (jolt-get u (keyword #f "field-types"))))
+  ((var-deref "jolt.passes.types" "set-record-shapes!") u (chez-record-shapes-map))
+  ((var-deref "jolt.passes.types" "set-protocol-methods!") u (chez-protocol-methods-map))
+  ((var-deref "jolt.passes.types" "wp-infer!") u nodes)
+  (let* ((ftypes ((var-deref "clojure.core" "deref") ft-box))
+         (demoted (jolt-get ftypes "u/->PairDemoteRec"))
+         (tweak-emitted (code-part (emitf "u" tweak-src))))
+    (ok "types.clj record field demotion still fires on dissoc->assoc pair while tweak fuses"
+        (and (jolt-nil? demoted)
+             (= 1 (count-sub tweak-emitted "(jolt-dissoc1-assoc1 "))
+             (= 0 (count-sub tweak-emitted "(jolt-dissoc2 "))
+             (= 0 (count-sub tweak-emitted "(jolt-assoc3 "))))))
+
+;; Compiled fused pair equivalence across all receiver types.
+(ev "(deftype PairInlineCustom [m log]
+       clojure.lang.IPersistentMap
+       (without [_ k] (swap! log conj [:without k]) (PairInlineCustom. (dissoc m k) log))
+       (assoc [_ k v] (swap! log conj [:assoc k v]) (PairInlineCustom. (assoc m k v) log))
+       (assocEx [_ k v] (PairInlineCustom. (assoc m k v) log))
+       clojure.lang.ILookup
+       (valAt [_ k] (get m k))
+       (valAt [_ k d] (get m k d))
+       clojure.lang.Counted
+       (count [_] (count m))
+       clojure.lang.Seqable
+       (seq [_] (seq m)))")
+(ev "(defn pair-da [m dk ak av] (-> m (dissoc dk) (assoc ak av)))")
+(ev "(defn pair-ad [m ak av dk] (-> m (assoc ak av) (dissoc dk)))")
+(ev "(defn pair-aleph [rsp end start] (-> rsp (dissoc :aleph/destroy-conn?) (assoc :connection-time (- end start))))")
+(ok "compiled fused dissoc/assoc pairs match unfused across nil, array-map, hash-map, record, sorted-map, custom"
+    (eq? #t (ev "(let [am (with-meta {:a 1 :b 2 :c 3} {:m :am})
+                       hm (with-meta (hash-map :a 1 :b 2 :c 3) {:m :hm})
+                       r  (with-meta (assoc (->ChainRec 1 2) :x 10) {:m :r})
+                       sm (with-meta (sorted-map :c 3 :a 1 :b 2) {:m :sm})
+                       lda (atom []) lad (atom [])
+                       cda (pair-da (PairInlineCustom. {:a 1 :b 2} lda) :a :c 3)
+                       cad (pair-ad (PairInlineCustom. {:a 1 :b 2} lad) :c 3 :a)
+                       rsp {:status 200 :headers {} :aleph/destroy-conn? false :aleph/keep-alive? true}]
+                   (and
+                     (= (pair-da nil :a :b 2) {:b 2})
+                     (= (pair-ad nil :b 2 :a) {:b 2})
+                     (= (pair-ad nil :a 2 :a) {})
+                     (= (pair-da am :a :d 4) {:b 2 :c 3 :d 4})
+                     (= (vec (keys (pair-da am :a :a 1))) [:b :c :a])
+                     (= (meta (pair-da am :a :d 4)) {:m :am})
+                     (identical? am (pair-da am :z :b 2))
+                     (= (pair-ad am :d 4 :a) {:b 2 :c 3 :d 4})
+                     (= (meta (pair-ad am :d 4 :a)) {:m :am})
+                     (identical? am (pair-ad am :b 2 :z))
+                     (= (pair-aleph rsp 100 42) {:status 200 :headers {} :aleph/keep-alive? true :connection-time 58})
+                     (= (pair-da hm :a :d 4) {:b 2 :c 3 :d 4})
+                     (= (class (pair-da hm :a :d 4)) (class hm))
+                     (= (meta (pair-da hm :a :d 4)) {:m :hm})
+                     (= (pair-ad hm :d 4 :a) {:b 2 :c 3 :d 4})
+                     (= (class (pair-ad hm :d 4 :a)) (class hm))
+                     (= (meta (pair-ad hm :d 4 :a)) {:m :hm})
+                     (= (pair-da r :x :y 20) (assoc (->ChainRec 1 2) :y 20))
+                     (instance? ChainRec (pair-da r :x :y 20))
+                     (= (meta (pair-da r :x :y 20)) {:m :r})
+                     (= (pair-ad r :y 20 :x) (assoc (->ChainRec 1 2) :y 20))
+                     (instance? ChainRec (pair-ad r :y 20 :x))
+                     (= (meta (pair-ad r :y 20 :x)) {:m :r})
+                     (= (keys (pair-da sm :b :d 4)) '(:a :c :d))
+                     (= (meta (pair-da sm :b :d 4)) {:m :sm})
+                     (= (keys (pair-ad sm :d 4 :b)) '(:a :c :d))
+                     (= (meta (pair-ad sm :d 4 :b)) {:m :sm})
+                     (= (:c cda) 3) (nil? (:a cda)) (= @lda [[:without :a] [:assoc :c 3]])
+                     (= (:c cad) 3) (nil? (:a cad)) (= @lad [[:assoc :c 3] [:without :a]])))")))
 
 (set-optimize! #f)
 (set-direct-link-flag! #f)

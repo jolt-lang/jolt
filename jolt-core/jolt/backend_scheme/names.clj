@@ -225,6 +225,8 @@
                   ;; The guarded into/filter/map lowering keeps these runtime
                   ;; entries visible even when a user local has the same name.
                   "pvec-ent" "jolt-vector-filter-map-comp" "jolt-vector-filter-map" "td-filter" "td-map"
+                  ;; Fused single-key dissoc / single-pair assoc pair helpers
+                  "jolt-dissoc1-assoc1" "jolt-assoc1-dissoc1"
                   "jrec1?" "jrec2?" "jrec3?" "jrec4?" "jrec5?" "jrec6?" "jrec7?" "jrec8?"
                   "keyword-t?" "mark-macro!" "set-var-meta!" "throw-jvm"
                   "def-var-linked!" "amap-slots->pmap"

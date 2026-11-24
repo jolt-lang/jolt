@@ -1277,5 +1277,336 @@
             (keys (swap! sm dissoc :a)) (meta @sm) (keys (apply dissoc @sm [:c]))]))"
     "[[:a] 1 true true {:m 1} {:b 2} {:m 1} {:m 1} (:b :c) {:m 1} (:b)]")
 
+;; --- fused adjacent dissoc/assoc pair helpers (jolt-46) ----------------------
+;; Exhaustive small matrix for jolt-dissoc1-assoc1 and jolt-assoc1-dissoc1
+;; against nested single-step calls across bases 0..9 and 63..65 (kw plain,
+;; kw with-meta, fixnum/mixed plain & with-meta) + nil, drawing dk/ak from a
+;; pool covering start/mid/end, dk = ak, absent kw/fx/char, and non-stable keys,
+;; with both matching (no-op) and fresh values.
+(let ()
+  (define kw-keys (list->vector (map (lambda (i) (keyword #f (string-append "pk" (number->string i)))) (iota 68))))
+  (define abs-kw (kw "pabs"))
+  (define (mk-base sz mode with-meta?)
+    (let ((m (let lp ((i 0) (acc empty-pmap))
+               (if (fx=? i sz)
+                   acc
+                   (let ((k (case mode
+                              ((kw) (vector-ref kw-keys i))
+                              ((fx) i)
+                              ;; 1 fixnum key 0 plus keywords: stays array-mode at size 8 and 9!
+                              ((mixed) (if (fx=? i 0) 0 (vector-ref kw-keys i))))))
+                     (lp (fx+ i 1) (jolt-assoc3 acc k i)))))))
+      (if with-meta?
+          (jolt-with-meta m (make-pmap (vector (kw "pm") sz) 1))
+          m)))
+  (define (pool-for sz mode)
+    (let ((bk (lambda (i)
+                (case mode
+                  ((kw) (vector-ref kw-keys i))
+                  ((fx) i)
+                  ((mixed) (if (fx=? i 0) 0 (vector-ref kw-keys i)))))))
+      (vector (if (fx>=? sz 1) (bk 0) (vector-ref kw-keys 66))
+              (if (fx>=? sz 2) (bk (fxquotient sz 2)) (vector-ref kw-keys 67))
+              (if (fx>=? sz 3) (bk (fx- sz 1)) #\z)
+              abs-kw 999 #\a "skey")))
+  (define cases 0)
+  (define da-ok #t)
+  (define ad-ok #t)
+  (define (check-da label m dk ak av)
+    (set! cases (fx+ cases 1))
+    (let ((got (jolt-dissoc1-assoc1 m dk ak av))
+          (want (jolt-assoc3 (jolt-dissoc2 m dk) ak av)))
+      (unless (and (amap-same-result? got want)
+                   ;; every-step no-op: dk absent and ak already holds av -> identical?
+                   (or (not (pmap? m))
+                       (not (eq? (jolt-dissoc2 m dk) m))
+                       (not (eq? (jolt-assoc3 m ak av) m))
+                       (eq? got m)))
+        (when da-ok
+          (printf "  dissoc1-assoc1 matrix mismatch (~a, dk=~a, ak=~a, av=~a): got=~a (arr=~a) want=~a (arr=~a)\n"
+                  label (jolt-pr-str dk) (jolt-pr-str ak) av
+                  (jolt-pr-str got) (pmap-array? got) (jolt-pr-str want) (pmap-array? want))
+          (set! da-ok #f)))))
+  (define (check-ad label m ak av dk)
+    (set! cases (fx+ cases 1))
+    (let ((got (jolt-assoc1-dissoc1 m ak av dk))
+          (want (jolt-dissoc2 (jolt-assoc3 m ak av) dk)))
+      (unless (and (amap-same-result? got want)
+                   ;; every-step no-op -> identical?
+                   (or (not (pmap? m))
+                       (not (eq? (jolt-assoc3 m ak av) m))
+                       (not (eq? (jolt-dissoc2 m dk) m))
+                       (eq? got m))
+                   ;; emptying a non-empty array map yields a fresh empty pmap
+                   (or (not (pmap? m)) (not (pmap-array? m)) (fx=? (pmap-cnt m) 0)
+                       (not (fx=? (pmap-cnt got) 0)) (not (eq? got empty-pmap))))
+        (when ad-ok
+          (printf "  assoc1-dissoc1 matrix mismatch (~a, ak=~a, av=~a, dk=~a): got=~a (arr=~a) want=~a (arr=~a)\n"
+                  label (jolt-pr-str ak) av (jolt-pr-str dk)
+                  (jolt-pr-str got) (pmap-array? got) (jolt-pr-str want) (pmap-array? want))
+          (set! ad-ok #f)))))
+  (define (run-base label m pool)
+    (let ((plen (vector-length pool)))
+      (do ((i 0 (fx+ i 1))) ((or (fx=? i plen) (and (not da-ok) (not ad-ok))))
+        (let ((dk (vector-ref pool i)))
+          (do ((j 0 (fx+ j 1))) ((or (fx=? j plen) (and (not da-ok) (not ad-ok))))
+            (let* ((ak (vector-ref pool j))
+                   (existing (if (pmap? m) (pmap-get m ak pmap-absent) pmap-absent)))
+              (check-da label m dk ak 777)
+              (check-ad label m ak 777 dk)
+              (unless (eq? existing pmap-absent)
+                (check-da label m dk ak existing)
+                (check-ad label m ak existing dk))))))))
+  (run-base "nil" jolt-nil (pool-for 0 'kw))
+  (for-each
+    (lambda (sz)
+      (let ((p (pool-for sz 'kw)))
+        (run-base (format "kw-~a" sz) (mk-base sz 'kw #f) p)
+        (run-base (format "kw-~a-meta" sz) (mk-base sz 'kw #t) p)))
+    '(0 1 2 3 4 5 6 7 8 9 63 64 65))
+  (for-each
+    (lambda (sz)
+      (let ((p (pool-for sz 'fx)))
+        (run-base (format "fx-~a" sz) (mk-base sz 'fx #f) p)
+        (run-base (format "fx-~a-meta" sz) (mk-base sz 'fx #t) p)))
+    '(1 2 7 8 9))
+  (for-each
+    (lambda (sz)
+      (let ((p (pool-for sz 'mixed)))
+        (run-base (format "mix-~a" sz) (mk-base sz 'mixed #f) p)
+        (run-base (format "mix-~a-meta" sz) (mk-base sz 'mixed #t) p)))
+    '(7 8 9))
+  (printf "  exhaustive dissoc/assoc pair matrix: ~a cases checked\n" cases)
+  (ok "exhaustive small matrix for jolt-dissoc1-assoc1 (bases 0-9, 63-65, nil, mixed, dk=ak, no-op) matches nested calls"
+      da-ok)
+  (ok "exhaustive small matrix for jolt-assoc1-dissoc1 (bases 0-9, 63-65, nil, mixed, ak=dk, no-op, emptying) matches nested calls"
+      ad-ok))
+
+;; Randomized differential test for jolt-dissoc1-assoc1 and jolt-assoc1-dissoc1
+;; (1500 trials each) across sizes 0..65, kw/mixed/hash bases, stable & non-stable
+;; keys, dk = ak, absent keys, matching values, and metadata.
+(let ()
+  (define rng 246813579)
+  (define (next-u32)
+    (let* ((x (bitwise-and #xffffffff (bitwise-xor rng (bitwise-arithmetic-shift-left rng 13))))
+           (x (bitwise-and #xffffffff (bitwise-xor x (bitwise-arithmetic-shift-right x 17))))
+           (x (bitwise-and #xffffffff (bitwise-xor x (bitwise-arithmetic-shift-left x 5)))))
+      (set! rng x)
+      x))
+  (define (r-int n) (modulo (next-u32) n))
+  (define kw-pool (list->vector (map (lambda (i) (keyword #f (string-append "prk" (number->string i)))) (iota 72))))
+  (define fx-pool (list->vector (iota 24)))
+  (define ch-pool (vector #\a #\b #\c #\d #\e #\f #\g #\h))
+  (define nonstable-pool (vector "s0" "s1" (jolt-symbol #f "sym0") (jolt-vector 1 2) jolt-nil))
+  (define (pick-key mode)
+    (case mode
+      ((kw) (vector-ref kw-pool (r-int 72)))
+      ((stable) (case (r-int 6)
+                  ((0 1 2 3) (vector-ref kw-pool (r-int 72)))
+                  ((4) (vector-ref fx-pool (r-int 24)))
+                  (else (vector-ref ch-pool (r-int 8)))))
+      (else (case (r-int 8)
+              ((0 1 2 3) (vector-ref kw-pool (r-int 72)))
+              ((4) (vector-ref fx-pool (r-int 24)))
+              ((5) (vector-ref ch-pool (r-int 8)))
+              (else (vector-ref nonstable-pool (r-int (vector-length nonstable-pool))))))))
+  (define (make-base sz kw-only?)
+    (let lp ((i 0) (m empty-pmap))
+      (if (fx=? i sz)
+          (if (fx=? (r-int 2) 0)
+              (jolt-with-meta m (make-pmap (vector (kw "rdm") sz) 1))
+              m)
+          (let ((k (if kw-only?
+                       (vector-ref kw-pool i)
+                       (if (fx<? i 2) (vector-ref fx-pool i) (vector-ref kw-pool i)))))
+            (lp (fx+ i 1) (jolt-assoc3 m k i))))))
+  (define (pick-from m mode)
+    (if (and (pmap-array? m) (fx>? (pmap-cnt m) 0) (fx<? (r-int 10) 6))
+        (vector-ref (pmap-root m) (fx* 2 (r-int (pmap-cnt m))))
+        (pick-key mode)))
+  (define sizes '(0 1 2 3 4 5 6 7 8 9 12 24 63 64 65))
+  (define da-diff-ok #t)
+  (define ad-diff-ok #t)
+  (let loop-trial ((t 0))
+    (when (and (< t 1500) da-diff-ok ad-diff-ok)
+      (let* ((sz (list-ref sizes (r-int (length sizes))))
+             (kw-only? (fx=? (r-int 2) 0))
+             (m (make-base sz kw-only?))
+             (key-mode (case (r-int 5) ((0 1) 'kw) ((2 3) 'stable) (else 'mixed)))
+             (dk (pick-from m key-mode))
+             (ak (if (fx=? (r-int 5) 0) dk (pick-from m key-mode)))
+             (av (if (and (fx=? (r-int 3) 0) (pmap? m))
+                     (let ((ex (pmap-get m ak pmap-absent)))
+                       (if (eq? ex pmap-absent) (r-int 100) ex))
+                     (r-int 100)))
+             (got-da (jolt-dissoc1-assoc1 m dk ak av))
+             (want-da (jolt-assoc3 (jolt-dissoc2 m dk) ak av))
+             (got-ad (jolt-assoc1-dissoc1 m ak av dk))
+             (want-ad (jolt-dissoc2 (jolt-assoc3 m ak av) dk)))
+        (unless (and (amap-same-result? got-da want-da)
+                     (or (not (eq? (jolt-dissoc2 m dk) m))
+                         (not (eq? (jolt-assoc3 m ak av) m))
+                         (eq? got-da m)))
+          (printf "  rand dissoc1-assoc1 mismatch trial ~a: sz=~a dk=~a ak=~a\n"
+                  t sz (jolt-pr-str dk) (jolt-pr-str ak))
+          (set! da-diff-ok #f))
+        (unless (and (amap-same-result? got-ad want-ad)
+                     (or (not (eq? (jolt-assoc3 m ak av) m))
+                         (not (eq? (jolt-dissoc2 m dk) m))
+                         (eq? got-ad m))
+                     (or (not (pmap-array? m)) (fx=? (pmap-cnt m) 0)
+                         (not (fx=? (pmap-cnt got-ad) 0)) (not (eq? got-ad empty-pmap))))
+          (printf "  rand assoc1-dissoc1 mismatch trial ~a: sz=~a ak=~a dk=~a\n"
+                  t sz (jolt-pr-str ak) (jolt-pr-str dk))
+          (set! ad-diff-ok #f)))
+      (loop-trial (+ t 1))))
+  (ok "randomized differential jolt-dissoc1-assoc1 (1500 trials, sizes 0..65, dk=ak, no-op, meta) matches nested calls"
+      da-diff-ok)
+  (ok "randomized differential jolt-assoc1-dissoc1 (1500 trials, sizes 0..65, ak=dk, no-op, meta) matches nested calls"
+      ad-diff-ok))
+
+;; Directed semantics & fallback tests: promotion boundaries, dk=ak key move,
+;; emptying, metadata on every fallback, nil, hash-mode, vector, defrecord,
+;; sorted-map, and custom IPersistentMap deftype.
+(ok "promotion boundaries differ between assoc->dissoc (promotes before delete) and dissoc->assoc (deletes before assoc)"
+    (let* ((m8 (evv "(with-meta {:k0 0 :k1 1 :k2 2 :k3 3 :k4 4 :k5 5 :k6 6 :k7 7} {:b 8})"))
+           (m9-mix (evv "(with-meta (assoc {:k1 1 :k2 2 :k3 3 :k4 4 :k5 5 :k6 6 0 :zero} :k7 7 :k8 8) {:b 9})"))
+           (m64 (evv "(with-meta (reduce (fn [m i] (assoc m (keyword (str \"k\" i)) i)) {} (range 64)) {:b 64})"))
+           ;; 8-entry: assoc1-dissoc1 with non-kw new key promotes BEFORE delete (even when ak=dk)
+           (ad8 (jolt-assoc1-dissoc1 m8 99 9 (kw "k0")))
+           (ad8-same (jolt-assoc1-dissoc1 m8 99 9 99))
+           ;; 8-entry: dissoc1-assoc1 deletes first (cnt 8->7), so non-kw new key stays array-mode
+           (da8 (jolt-dissoc1-assoc1 m8 (kw "k0") 99 9))
+           ;; 9-entry mixed (8 kw + fixnum 0): dissoc 0 -> cnt 8, then assoc 0 promotes to hash-mode!
+           (da9-same (jolt-dissoc1-assoc1 m9-mix 0 0 42))
+           ;; 64-entry kw: assoc1-dissoc1 promotes; dissoc1-assoc1 stays array-mode
+           (ad64 (jolt-assoc1-dissoc1 m64 (kw "k99") 99 (kw "k0")))
+           (da64 (jolt-dissoc1-assoc1 m64 (kw "k0") (kw "k99") 99)))
+      (and (pmap-array? m8) (pmap-array? m9-mix) (pmap-array? m64)
+           (not (pmap-array? ad8)) (jolt=2 (jolt-meta ad8) (jolt-meta m8))
+           (not (pmap-array? ad8-same)) (jolt=2 (jolt-meta ad8-same) (jolt-meta m8))
+           (pmap-array? da8) (jolt=2 (jolt-meta da8) (jolt-meta m8))
+           (not (pmap-array? da9-same)) (jolt=2 (jolt-meta da9-same) (jolt-meta m9-mix))
+           (not (pmap-array? ad64)) (jolt=2 (jolt-meta ad64) (jolt-meta m64))
+           (pmap-array? da64) (jolt=2 (jolt-meta da64) (jolt-meta m64)))))
+
+(ok "jolt-dissoc1-assoc1 with dk=ak moves key to end; jolt-assoc1-dissoc1 emptying 1-entry carries meta on fresh empty"
+    (let* ((m (evv "(with-meta {:a 1 :b 2 :c 3} {:tag :move})"))
+           (moved (jolt-dissoc1-assoc1 m (kw "a") (kw "a") 1))
+           (m1 (evv "(with-meta {:a 1} {:tag :empty})"))
+           (emptied (jolt-assoc1-dissoc1 m1 (kw "a") 2 (kw "a"))))
+      (and (pmap-array? moved)
+           (jolt=2 (jolt-vec (jolt-keys moved)) (evv "[:b :c :a]"))
+           (jolt=2 (jolt-meta moved) (jolt-meta m))
+           (pmap-array? emptied) (fx=? 0 (pmap-cnt emptied))
+           (not (eq? emptied empty-pmap))
+           (jolt=2 (jolt-meta emptied) (jolt-meta m1)))))
+
+(ok "pair helpers fallback on nil, hash-mode map, non-stable keys, vector, defrecord, sorted-map, custom deftype (with meta)"
+    (let* ((hm (evv "(with-meta (hash-map :a 1 :b 2 :c 3) {:tag :hm})"))
+           (am (evv "(with-meta {:a 1 \"s\" 2 :b 3} {:tag :am})"))
+           (s-key (string-copy "s"))
+           ;; nil
+           (da-nil (jolt-dissoc1-assoc1 jolt-nil (kw "a") (kw "b") 2))
+           (ad-nil-diff (jolt-assoc1-dissoc1 jolt-nil (kw "b") 2 (kw "a")))
+           (ad-nil-same (jolt-assoc1-dissoc1 jolt-nil (kw "a") 2 (kw "a")))
+           ;; hash-mode
+           (da-hm (jolt-dissoc1-assoc1 hm (kw "a") (kw "d") 4))
+           (ad-hm (jolt-assoc1-dissoc1 hm (kw "d") 4 (kw "a")))
+           ;; non-stable keys on array map
+           (da-ns1 (jolt-dissoc1-assoc1 am s-key (kw "c") 4))
+           (da-ns2 (jolt-dissoc1-assoc1 am (kw "a") (string-copy "t") 5))
+           (ad-ns1 (jolt-assoc1-dissoc1 am (string-copy "t") 5 (kw "a")))
+           (ad-ns2 (jolt-assoc1-dissoc1 am (kw "c") 4 s-key))
+           ;; vector throws
+           (da-vec-cce (guard (e (#t (string=? (jolt-class-name (jolt-unwrap-throw e)) "java.lang.ClassCastException")))
+                         (jolt-dissoc1-assoc1 (evv "[1 2]") 0 0 9) #f))
+           (ad-vec-cce (guard (e (#t (string=? (jolt-class-name (jolt-unwrap-throw e)) "java.lang.ClassCastException")))
+                         (jolt-assoc1-dissoc1 (evv "[1 2]") 0 9 0) #f))
+           (ad-vec-oob (guard (e (#t (string=? (jolt-class-name (jolt-unwrap-throw e)) "java.lang.IndexOutOfBoundsException")))
+                         (jolt-assoc1-dissoc1 (evv "[1 2]") 5 9 0) #f))
+           ;; defrecord
+           (_ (evv "(defrecord PairRec [a b])"))
+           (rec (evv "(with-meta (assoc (->PairRec 1 2) :x 10) {:tag :rec})"))
+           (da-rec-ext (jolt-dissoc1-assoc1 rec (kw "x") (kw "y") 20))
+           (da-rec-fld (jolt-dissoc1-assoc1 rec (kw "a") (kw "y") 20))
+           (ad-rec-ext (jolt-assoc1-dissoc1 rec (kw "y") 20 (kw "x")))
+           (ad-rec-fld (jolt-assoc1-dissoc1 rec (kw "y") 20 (kw "a")))
+           ;; sorted-map
+           (sm (evv "(with-meta (sorted-map :c 3 :a 1 :b 2) {:tag :sm})"))
+           (da-sm (jolt-dissoc1-assoc1 sm (kw "b") (kw "d") 4))
+           (ad-sm (jolt-assoc1-dissoc1 sm (kw "d") 4 (kw "b")))
+           ;; custom IPersistentMap deftype
+           (_ (evv "(deftype PairCustom [m log]
+                      clojure.lang.IPersistentMap
+                      (without [_ k] (swap! log conj [:without k]) (PairCustom. (dissoc m k) log))
+                      (assoc [_ k v] (swap! log conj [:assoc k v]) (PairCustom. (assoc m k v) log))
+                      (assocEx [_ k v] (PairCustom. (assoc m k v) log))
+                      clojure.lang.ILookup
+                      (valAt [_ k] (get m k))
+                      (valAt [_ k d] (get m k d))
+                      clojure.lang.Counted
+                      (count [_] (count m))
+                      clojure.lang.Seqable
+                      (seq [_] (seq m)))"))
+           (log-da (evv "(atom [])"))
+           (log-ad (evv "(atom [])"))
+           (c-da (jolt-dissoc1-assoc1 ((var-deref "user" "->PairCustom") (evv "{:a 1 :b 2}") log-da) (kw "a") (kw "c") 3))
+           (c-ad (jolt-assoc1-dissoc1 ((var-deref "user" "->PairCustom") (evv "{:a 1 :b 2}") log-ad) (kw "c") 3 (kw "a"))))
+      (and (jolt=2 da-nil (evv "{:b 2}"))
+           (jolt=2 ad-nil-diff (evv "{:b 2}"))
+           (jolt=2 ad-nil-same (evv "{}"))
+           (not (pmap-array? da-hm)) (jolt=2 da-hm (evv "{:b 2 :c 3 :d 4}")) (jolt=2 (jolt-meta da-hm) (jolt-meta hm))
+           (not (pmap-array? ad-hm)) (jolt=2 ad-hm (evv "{:b 2 :c 3 :d 4}")) (jolt=2 (jolt-meta ad-hm) (jolt-meta hm))
+           (jolt=2 da-ns1 (evv "{:a 1 :b 3 :c 4}")) (jolt=2 (jolt-meta da-ns1) (jolt-meta am))
+           (jolt=2 da-ns2 (evv "{\"s\" 2 :b 3 \"t\" 5}")) (jolt=2 (jolt-meta da-ns2) (jolt-meta am))
+           (jolt=2 ad-ns1 (evv "{\"s\" 2 :b 3 \"t\" 5}")) (jolt=2 (jolt-meta ad-ns1) (jolt-meta am))
+           (jolt=2 ad-ns2 (evv "{:a 1 :b 3 :c 4}")) (jolt=2 (jolt-meta ad-ns2) (jolt-meta am))
+           da-vec-cce ad-vec-cce ad-vec-oob
+           (jolt=2 da-rec-ext (evv "(assoc (->PairRec 1 2) :y 20)")) (jolt=2 (jolt-meta da-rec-ext) (jolt-meta rec))
+           (not (jrec? da-rec-fld)) (jolt=2 da-rec-fld (evv "{:b 2 :x 10 :y 20}")) (jolt=2 (jolt-meta da-rec-fld) (jolt-meta rec))
+           (jolt=2 ad-rec-ext (evv "(assoc (->PairRec 1 2) :y 20)")) (jolt=2 (jolt-meta ad-rec-ext) (jolt-meta rec))
+           (not (jrec? ad-rec-fld)) (jolt=2 ad-rec-fld (evv "{:b 2 :x 10 :y 20}")) (jolt=2 (jolt-meta ad-rec-fld) (jolt-meta rec))
+           (jolt=2 (jolt-vec (jolt-keys da-sm)) (evv "[:a :c :d]")) (jolt=2 (jolt-meta da-sm) (jolt-meta sm))
+           (jolt=2 (jolt-vec (jolt-keys ad-sm)) (evv "[:a :c :d]")) (jolt=2 (jolt-meta ad-sm) (jolt-meta sm))
+           (jolt=2 (jolt-get c-da (kw "c")) 3) (jolt-nil? (jolt-get c-da (kw "a")))
+           (jolt=2 (jolt-deref log-da) (evv "[[:without :a] [:assoc :c 3]]"))
+           (jolt=2 (jolt-get c-ad (kw "c")) 3) (jolt-nil? (jolt-get c-ad (kw "a")))
+           (jolt=2 (jolt-deref log-ad) (evv "[[:assoc :c 3] [:without :a]]")))))
+
+;; Reachability & allocation checks: compiled Clojure fns reach the fused pair
+;; helpers and allocate a single output slot vector (and 0 extra bytes on no-op).
+(let* ((m24 (evv "(reduce (fn [m i] (assoc m (keyword (str \"k\" i)) i)) {} (range 24))"))
+       (fda-add (evv "(fn [m] (-> m (dissoc :k5) (assoc :k99 1)))"))
+       (fda-upd (evv "(fn [m] (-> m (dissoc :k5) (assoc :k12 999)))"))
+       (fda-nop (evv "(fn [m] (-> m (dissoc :abs) (assoc :k12 12)))"))
+       (fad-add (evv "(fn [m] (-> m (assoc :k99 1) (dissoc :k5)))"))
+       (fad-upd (evv "(fn [m] (-> m (assoc :k12 999) (dissoc :k5)))"))
+       (fad-nop (evv "(fn [m] (-> m (assoc :k12 12) (dissoc :abs)))"))
+       (k5 (kw "k5")) (k12 (kw "k12")) (k99 (kw "k99"))
+       (bda-add  (bytes-of (lambda () (jolt-invoke1 fda-add m24))))
+       (bda-upd  (bytes-of (lambda () (jolt-invoke1 fda-upd m24))))
+       (bda-nop  (bytes-of (lambda () (jolt-invoke1 fda-nop m24))))
+       (bda-fold (bytes-of (lambda () (jolt-assoc3 (jolt-dissoc2 m24 k5) k99 1))))
+       (bda-ufld (bytes-of (lambda () (jolt-assoc3 (jolt-dissoc2 m24 k5) k12 999))))
+       (bad-add  (bytes-of (lambda () (jolt-invoke1 fad-add m24))))
+       (bad-upd  (bytes-of (lambda () (jolt-invoke1 fad-upd m24))))
+       (bad-nop  (bytes-of (lambda () (jolt-invoke1 fad-nop m24))))
+       (bad-fold (bytes-of (lambda () (jolt-dissoc2 (jolt-assoc3 m24 k99 1) k5))))
+       (bad-ufld (bytes-of (lambda () (jolt-dissoc2 (jolt-assoc3 m24 k12 999) k5))))
+       (b-base   (bytes-of (lambda () m24))))
+  (printf "  compiled dissoc/assoc pair bytes on 24-kw map: da-add ~a vs ~a, da-upd ~a vs ~a, ad-add ~a vs ~a, ad-upd ~a vs ~a; noop ~a/~a (base ~a)\n"
+          bda-add bda-fold bda-upd bda-ufld bad-add bad-fold bad-upd bad-ufld bda-nop bad-nop b-base)
+  (ok "compiled (-> m (dissoc :k5) (assoc :k99 1)) reaches single-allocation fast path"
+      (< bda-add (- bda-fold 256)))
+  (ok "compiled (-> m (dissoc :k5) (assoc :k12 999)) reaches single-allocation fast path"
+      (< bda-upd (- bda-ufld 256)))
+  (ok "compiled (-> m (assoc :k99 1) (dissoc :k5)) reaches single-allocation fast path"
+      (< bad-add (- bad-fold 256)))
+  (ok "compiled (-> m (assoc :k12 999) (dissoc :k5)) reaches single-allocation fast path"
+      (< bad-upd (- bad-ufld 256)))
+  (ok "compiled no-op dissoc/assoc and assoc/dissoc pairs allocate 0 extra bytes"
+      (and (= bda-nop b-base) (= bad-nop b-base))))
+
 (printf "arraymap-test: ~a/~a passed\n" (- total fails) total)
 (exit (if (= fails 0) 0 1))
