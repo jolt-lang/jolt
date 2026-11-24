@@ -1,4 +1,4 @@
-Unhandled exception (ClassCastException): class nil cannot be cast to class clojure.lang.IFn
+Unhandled exception (NullPointerException): Cannot invoke "clojure.lang.IFn.invoke(Object)"
   at ./test/errors/runtime/nil-not-a-function/input.clj:5:1
   trace:
     input/f (./test/errors/runtime/nil-not-a-function/input.clj:3)

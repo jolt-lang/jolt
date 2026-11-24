@@ -1860,6 +1860,25 @@
        (unless (fx=? n 1)
          (jolt-arity-error-name name n))))))
 
+;; (jolt-nil-invoke-error sig): the NullPointerException for calling nil
+;; through the IFn method SIG ("invoke(Object)", "applyTo(clojure.lang.ISeq)").
+;; The JVM's helpful-NPE text goes on to name the local the fn came in
+;; (because "g" is null); the runtime does not know it, so the message stops
+;; at the method, which is also how the JVM words it when there is no local.
+(define (jolt-nil-invoke-error sig)
+  (jolt-throw (jolt-host-throwable "java.lang.NullPointerException"
+                (string-append "Cannot invoke \"clojure.lang.IFn." sig "\""))))
+;; IFn's invoke overload for N arguments: N Objects, past twenty the variadic
+;; overload's twenty and an Object[] rest.
+(define (jolt-ifn-invoke-sig n)
+  (let loop ((i (fxmin n 20)) (acc '()))
+    (if (fx>? i 0)
+        (loop (fx- i 1) (cons "Object" acc))
+        (let ((ps (if (fx>? n 20) (append acc '("Object[]")) acc)))
+          (string-append "invoke("
+                         (if (null? ps) ""
+                             (fold-left (lambda (a b) (string-append a ", " b)) (car ps) (cdr ps)))
+                         ")")))))
 (define (jolt-invoke f . args)
   (cond
     ((procedure? f) (let ((n (length args)))
@@ -1907,6 +1926,10 @@
      (jolt-throw (jolt-host-throwable "java.lang.IllegalStateException"
                   (string-append "Attempting to call unbound fn: #'"
                                  (jolt-var-unbound-ns f) "/" (jolt-var-unbound-name f)))))
+    ;; calling nil: the JVM's call goes through a null IFn reference, so it is a
+    ;; NullPointerException, never a cast error, naming the invoke overload for
+    ;; the arity.
+    ((jolt-nil? f) (jolt-nil-invoke-error (jolt-ifn-invoke-sig (length args))))
     ;; calling a non-fn: a ClassCastException naming the operator's CLASS (like
     ;; the JVM's "class clojure.lang.LazySeq cannot be cast to ... IFn" — never
     ;; the value, whose printed form may be unbounded: ((range)) must throw, not
@@ -3042,6 +3065,8 @@
                      (append head
                              (list (make-lazy-rest
                                     (fold-right cseq-realized (cdr peeled) spill))))))))
+      ;; apply of nil reaches IFn.applyTo on a null reference
+      ((jolt-nil? f) (jolt-nil-invoke-error "applyTo(clojure.lang.ISeq)"))
       ;; a type's own applyTo takes ONE seq of every argument (nil when there are
       ;; none), so the tail is not realized here either.
       ((jolt-apply-to-method f)

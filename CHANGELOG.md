@@ -16,7 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when it is done with them, checked at compile time with an ownership pass
   ported from Carp, so using an array after giving it away, or returning one it
   only borrowed, is a compile error. Long arithmetic overflows with
-  `ArithmeticException` as on the JVM, and failures raise the JVM's exceptions.
+  `ArithmeticException` as on the JVM, and failures raise the JVM's exceptions:
+  a helper that recurses deeper than the thread's stack raises
+  `StackOverflowError`.
   Under `jolt run` and in the REPL the same checked program runs as Jolt, so
   both agree. By default other threads keep running and collecting while a
   region works, its borrowed arrays pinned in place for the call.
@@ -136,6 +138,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Cannot read the array length because "b" is null` instead of leaking a Chez
   error, or no message from a `FileInputStream` or `PushbackInputStream` (and a
   `DataInputStream` over one), as the JDK's do.
+- Calling nil as a fn, as in `(update {} :a nil)`, `(swap! a nil)` or
+  `(apply nil [])`, throws `NullPointerException` naming the IFn method as the
+  JVM does (`Cannot invoke "clojure.lang.IFn.invoke(Object)"`,
+  `applyTo(clojure.lang.ISeq)` for apply). jolt threw a `ClassCastException`.
+- `into` a sorted set or map, `apply sorted-set` and `bounded-count` no longer
+  call the `counted?` var, so rebinding it with `with-redefs` does not reach
+  them, as on the JVM, whose core is direct-linked.
 
 ## [0.8.29] - 2026-11-23
 

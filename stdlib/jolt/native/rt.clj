@@ -17,10 +17,13 @@
     4 (throw (NegativeArraySizeException. (str a)))
     5 (throw (IllegalArgumentException. (str "Value out of range for long: " d)))
     6 (throw (OutOfMemoryError. "native region: allocation failed"))
-    9 (throw (ArithmeticException. "Divide by zero"))
     7 (throw (IllegalArgumentException.
               (str "native region: " a " does not fit a borrowed long-array, which"
                    " holds fixnums (-2^60 to 2^60-1); widen the array outside the region")))
+    ;; a recursive helper ran out of the thread's C stack
+    8 (throw (StackOverflowError.))
+    ;; mod by zero: clojure.core/mod takes Objects, so Numbers' message
+    9 (throw (ArithmeticException. "Divide by zero"))
     (throw (IllegalStateException. (str "native region: unknown failure code " code)))))
 
 (defn- in-long [r]
