@@ -7,13 +7,14 @@
             [jolt.host :refer [seed-callable?]]
             [jolt.ir :as ir]
             [jolt.passes.facts :as facts]
+            [jolt.passes.inline :as inline]
             [jolt.passes.transducers :as transducers]
             [jolt.backend-scheme.session :as session
              :refer [cur direct-link? fresh-label
                      node-line register-callsite! seed-mint? static-callee target
                      with-site]]
             [jolt.backend-scheme.hoist :refer [*const-pool* hoist-seed-root]]
-            [jolt.backend-scheme.calls :refer [emit-call node-inline-chain plain-call]]
+            [jolt.backend-scheme.calls :refer [emit-call native-op node-inline-chain ordered-call plain-call]]
             [jolt.backend-scheme.lambda :refer [*step-variant*]]))
 
 (defn- emit-fused-site-call [node tail? proc args]
@@ -215,7 +216,58 @@
              " " (call "jolt-reduce-kv-build" (conj (subvec temps 1) collect)) " " ordinary "))")
         (str "(let* (" binds ") " ordinary ")")))))
 
+;; Emit-time peephole for straight-line nested or threaded assoc chains.
+;; Collapses 2..4 total pairs into a single multi-pair jolt-assoc call whose
+;; fixed case-lambda clauses allocate once on array-mode maps. Runs at emit
+;; time (after types, loop-maps and facts). First-step operands are
+;; unrestricted; later-step operands must be locals, constants, or pure-op
+;; calls without :clear-caps. Chains over 4 pairs or with ineligible later
+;; operands are left completely unfused (no tiling).
+(def ^:private ^:dynamic *unfused-assoc-nodes* nil)
+
+(defn- assoc-call? [node]
+  (and (= :invoke (:op node))
+       (not (:clear-caps node))
+       (let [op (native-op (:fn node) (count (:args node)))]
+         (or (= op "jolt-assoc3") (= op "jolt-assoc")))))
+
+(defn- pure-edit-operand? [node]
+  (and (not (:clear-caps node))
+       (or (#{:local :const} (:op node))
+           (and (inline/pure-call-head? node)
+                (every? pure-edit-operand? (:args node))))))
+
+(defn- assoc-chain [node]
+  (loop [cur node steps []]
+    (if (assoc-call? cur)
+      (recur (first (:args cur)) (conj steps cur))
+      [cur (vec (rseq steps))])))
+
+(defn- emit-assoc-native [emit node proc arg-nodes tail?]
+  (let [args (mapv emit arg-nodes)
+        tl (or (node-line node) 0)]
+    (when tl (register-callsite! tl (static-callee (:fn node)) tail?))
+    (ordered-call arg-nodes args
+      (fn [as] (emit-call tail? proc as tl (node-inline-chain node))))))
+
+(defn- emit-assoc-chain [emit node tail?]
+  (when (and (assoc-call? node)
+             (not (some #(identical? node %) *unfused-assoc-nodes*))
+             (assoc-call? (first (:args node))))
+    (let [[base steps] (assoc-chain node)
+          kv-nodes (into [] (mapcat #(subvec (:args %) 1)) steps)
+          total-pairs (quot (count kv-nodes) 2)
+          later-pure? (every? (fn [step]
+                                (every? pure-edit-operand? (subvec (:args step) 1)))
+                              (rest steps))]
+      (if (and (<= 2 total-pairs 4) later-pure?)
+        (emit-assoc-native emit node "jolt-assoc" (into [base] kv-nodes) tail?)
+        (binding [*unfused-assoc-nodes* (into (or *unfused-assoc-nodes* []) (pop steps))]
+          (let [arg-nodes (:args node)]
+            (emit-assoc-native emit node (native-op (:fn node) (count arg-nodes)) arg-nodes tail?)))))))
+
 (defn emit-fused-invoke [emit node tail?]
-  (or (emit-vector-filter-map emit node tail?)
+  (or (emit-assoc-chain emit node tail?)
+      (emit-vector-filter-map emit node tail?)
       (emit-assoc-in-chain emit node tail?)
       (emit-reduce-kv-builder emit node tail?)))

@@ -1840,6 +1840,282 @@
                      (builder-headers (array-map :a \"a\" :b \"b\" :c \"c\")))
                    (let [[[a b] [c d] [e f]] @args]
                      (and (identical? a c) (identical? c e) (identical? b d) (identical? d f))))")))
+;; --- emit-time assoc-chain fusion (jolt.backend-scheme.fused) ----------------
+(define (count-sub s sub)
+  (let ((ns (string-length s)) (nsub (string-length sub)))
+    (let loop ((i 0) (n 0))
+      (cond ((> (+ i nsub) ns) n)
+            ((string=? (substring s i (+ i nsub)) sub) (loop (+ i nsub) (+ n 1)))
+            (else (loop (+ i 1) n))))))
+
+;; Eligible chains (2..4 total pairs, locals/consts/pure-op calls on later steps)
+;; collapse to one multi-pair (jolt-assoc ...) with zero nested jolt-assoc3 calls.
+(for-each
+  (lambda (pair)
+    (let* ((label (car pair))
+           (form (cadr pair))
+           (e (code-part (emitf "u" form))))
+      (ok (string-append "assoc-chain fuses: " label)
+          (and (= 1 (count-sub e "(jolt-assoc "))
+               (= 0 (count-sub e "(jolt-assoc3 "))))))
+  '(("2-step threaded"
+     "(fn [m x y] (-> m (assoc :a x) (assoc :b y)))")
+    ("2-step nested"
+     "(fn [m x y] (assoc (assoc m :a x) :b y))")
+    ("3-step threaded"
+     "(fn [m x y] (-> m (assoc :a 1) (assoc :b x) (assoc :c y)))")
+    ("4-step threaded"
+     "(fn [m] (-> m (assoc :a 1) (assoc :b 2) (assoc :c 3) (assoc :d 4)))")
+    ("multi-pair 2+1 = 3 pairs"
+     "(fn [m x] (-> m (assoc :a 1 :b 2) (assoc :c x)))")
+    ("multi-pair 1+2 = 3 pairs"
+     "(fn [m x y] (-> m (assoc :a 1) (assoc :b x :c y)))")
+    ("multi-pair 2+2 = 4 pairs"
+     "(fn [m x y] (-> m (assoc :a 1 :b 2) (assoc :c x :d y)))")
+    ("pure arithmetic later operand (- end start)"
+     "(fn [m x end start] (-> m (assoc :a x) (assoc :b (- end start))))")
+    ("pure keyword-lookup later operand"
+     "(fn [m o] (-> m (assoc :a (:x o)) (assoc :b (:y o))))")
+    ("nested pure later operands (+ get some?)"
+     "(fn [m o z] (-> m (assoc :a 1) (assoc :b (+ (get o :k 0) 1)) (assoc :c (some? z))))")
+    ("impure first step + pure later step"
+     "(fn [f g end start] (-> (f) (assoc :a (g)) (assoc :b (- end start))))")))
+
+;; Native op in every mode: no direct-link or optimize gate required.
+(set-optimize! #f)
+(set-direct-link-flag! #f)
+(let ((e (code-part (emitf "u" "(fn [m x y] (-> m (assoc :a x) (assoc :b y)))"))))
+  (ok "assoc-chain fuses without direct-link or optimize"
+      (and (= 1 (count-sub e "(jolt-assoc "))
+           (= 0 (count-sub e "(jolt-assoc3 ")))))
+(set-optimize! #t)
+(set-direct-link-flag! #t)
+
+;; Ineligible chains must stay completely unfused (no tiling, no partial fusion).
+(ev "(def assoc-chain-glob 1)")
+(for-each
+  (lambda (pair)
+    (let* ((label (car pair))
+           (form (cadr pair))
+           (e (code-part (emitf "u" form))))
+      (ok (string-append "assoc-chain does not fuse: " label)
+          (= 0 (count-sub e "(jolt-assoc ")))))
+  '(("shadowed assoc local"
+     "(fn [assoc m x y] (-> m (assoc :a x) (assoc :b y)))")
+    ("effectful later operand"
+     "(fn [m f] (-> m (assoc :a 1) (assoc :b (f))))")
+    ("non-pure count later operand (kondo:1118 shape)"
+     "(fn [ctx arg-vec children pre-post-map]
+        (-> ctx
+            (assoc :fn-args (:children arg-vec))
+            (assoc :body-children-count (count children))
+            (assoc :pre-post-map (some? pre-post-map))))")
+    ("non-pure division later operand"
+     "(fn [m a b] (-> m (assoc :a 1) (assoc :b (/ a b))))")
+    ("host-call later operand"
+     "(fn [m x] (-> m (assoc :a 1) (assoc :b (.toString x))))")
+    ("global var later operand"
+     "(fn [m] (-> m (assoc :a 1) (assoc :b assoc-chain-glob)))")
+    ("later local with :clear-caps (^:once)"
+     "(fn [m x y] (^:once fn* [] (-> m (assoc :a x) (assoc :b y))))")
+    ("later pure-call arg with :clear-caps (^:once)"
+     "(fn [m x y] (^:once fn* [] (-> m (assoc :a x) (assoc :b (+ y 1)))))")
+    ("5-step chain (> 4 pairs, no tiling)"
+     "(fn [m] (-> m (assoc :a 1) (assoc :b 2) (assoc :c 3) (assoc :d 4) (assoc :e 5)))")))
+
+(let ((e (code-part (emitf "u" "(fn [m] (-> m (assoc :a 1 :b 2 :c 3) (assoc :d 4 :e 5)))"))))
+  (ok "3+2 multi-pair chain (> 4 pairs) stays two unfused jolt-assoc calls"
+      (= 2 (count-sub e "(jolt-assoc "))))
+
+(let ((e (code-part (emitf "u" "(fn [m x] (-> m (assoc :a 1) (assoc :b (-> x (assoc :p 1) (assoc :q 2)))))"))))
+  (ok "independent eligible chain inside an unfused outer value still fuses"
+      (and (= 1 (count-sub e "(jolt-assoc "))
+           (= 2 (count-sub e "(jolt-assoc3 ")))))
+
+;; Evaluation-order tests:
+;; 1) Effectful later operand does NOT run when an earlier assoc throws.
+(ok "assoc-chain preserves throw-before-effectful-later-operand order"
+    (eq? #t (ev "(let [ran (atom false)
+                       f (fn [] (reset! ran true) 42)
+                       threw (try
+                               (assoc (assoc [1 2] 5 99) 0 (f))
+                               false
+                               (catch IndexOutOfBoundsException _ true))]
+                   (and threw (not @ran)))")))
+;; 2) First-step side effects still run left-to-right before pure later operands.
+(ok "assoc-chain preserves left-to-right order of first-step side effects"
+    (clj= (ev "(let [log (atom [])
+                     out (-> (do (swap! log conj :base) {:init 0})
+                             (assoc (do (swap! log conj :k1) :a)
+                                    (do (swap! log conj :v1) 1))
+                             (assoc :b (- 10 3)))]
+                 [out @log])")
+          (ev "[{:init 0 :a 1 :b 7} [:base :k1 :v1]]")))
+;; 3) ^:once capture in a later step survives retry if an earlier step throws.
+(ok "assoc-chain does not clear ^:once capture in later step before earlier throw"
+    (eq? #t (ev "(let [make-f (fn [m y]
+                                (^:once fn* [fail?]
+                                  (-> (if fail? [1] m)
+                                      (assoc 5 99)
+                                      (assoc :b (+ y 1)))))
+                       f (make-f {} 41)
+                       first-threw (try (f true) false (catch IndexOutOfBoundsException _ true))
+                       second-res (f false)]
+                   (and first-threw (= {5 99 :b 42} second-res)))")))
+
+;; Regression 1: loop-maps still scalar-replaces a chained-assoc loop.
+(let* ((loop-src "(fn [n] (loop [i 0 m {:a 0 :b 0}]
+                            (if (< i n)
+                              (recur (inc i) (-> m (assoc :a (inc (:a m))) (assoc :b (+ (:b m) 2))))
+                              m)))")
+       (e (code-part (emitf "u" loop-src))))
+  (ok "loop-maps still scalar-replaces chained-assoc loop"
+      (and (has? e "(amap-slots->pmap ")
+           (= 0 (count-sub e "(jolt-assoc "))
+           (= 0 (count-sub e "(jolt-assoc3 "))
+           (clj= (ev (string-append "(" loop-src " 5)")) (ev "{:a 5 :b 10}")))))
+
+;; Regression 2: record field demotion in types.clj still fires on chained assoc.
+(ev "(defrecord ChainDemoteRec [a b])")
+(ev "(defrecord ChainKeptRec [c d])")
+(let* ((u ((var-deref "jolt.passes.types" "new-unit")))
+       (ctx (make-analyze-ctx "u"))
+       (parse1 (lambda (s)
+                 (let-values (((f _) (rdr-read-form s 0 (string-length s))))
+                   (jolt-ce-analyze ctx f))))
+       (tweak-src "(defn cdr-tweak [m] (-> m (assoc :a \"str\") (assoc :b 3.0)))")
+       (nodes (jolt-vector
+                (parse1 "(defn cdr-mk [] (->ChainDemoteRec 1.0 2.0))")
+                (parse1 tweak-src)
+                (parse1 "(defn ckr-mk [] (->ChainKeptRec 1.0 2.0))")))
+       (ft-box (jolt-get u (keyword #f "field-types"))))
+  ((var-deref "jolt.passes.types" "set-record-shapes!") u (chez-record-shapes-map))
+  ((var-deref "jolt.passes.types" "set-protocol-methods!") u (chez-protocol-methods-map))
+  ((var-deref "jolt.passes.types" "wp-infer!") u nodes)
+  (let* ((ftypes ((var-deref "clojure.core" "deref") ft-box))
+         (demoted (jolt-get ftypes "u/->ChainDemoteRec"))
+         (kept (jolt-get ftypes "u/->ChainKeptRec"))
+         (tweak-emitted (code-part (emitf "u" tweak-src))))
+    (ok "types.clj record field demotion still fires on chained assoc while tweak itself fuses"
+        (and (jolt-nil? demoted)
+             (eq? (keyword #f "double") (jolt-get kept (keyword #f "c")))
+             (= 1 (count-sub tweak-emitted "(jolt-assoc "))
+             (= 0 (count-sub tweak-emitted "(jolt-assoc3 "))))))
+
+;; Result equivalence across all receiver types (fused compiled fns vs left fold).
+(ev "(defrecord ChainRec [a b])")
+(ev "(deftype ChainCustom [m log]
+       clojure.lang.Associative
+       (containsKey [_ k] (contains? m k))
+       (entryAt [_ k] (find m k))
+       (assoc [_ k v] (swap! log conj [k v]) (ChainCustom. (assoc m k v) log))
+       clojure.lang.ILookup
+       (valAt [_ k] (get m k))
+       (valAt [_ k d] (get m k d)))")
+(ev "(defn chain-f2 [m k1 v1 k2 v2] (-> m (assoc k1 v1) (assoc k2 v2)))")
+(ev "(defn chain-f3 [m k1 v1 k2 v2 k3 v3] (-> m (assoc k1 v1) (assoc k2 v2) (assoc k3 v3)))")
+(ev "(defn chain-f4 [m k1 v1 k2 v2 k3 v3 k4 v4] (-> m (assoc k1 v1) (assoc k2 v2) (assoc k3 v3) (assoc k4 v4)))")
+(ev "(defn chain-f2-pure [m a end start] (-> m (assoc :a a) (assoc :dt (- end start))))")
+(ok "assoc-chain results match unfused across nil, array-map, hash-map, vector, record, sorted-map, custom"
+    (eq? #t (ev "(let [fold (fn [m & kvs] (reduce (fn [acc [k v]] (assoc acc k v)) m (partition 2 kvs)))
+                       am (with-meta {:a 1 :b 2} {:m :am})
+                       hm (with-meta (hash-map :a 1 :b 2 :c 3) {:m :hm})
+                       v  (with-meta [10 20 30] {:m :v})
+                       r  (with-meta (->ChainRec 1 2) {:m :r})
+                       sm (with-meta (sorted-map :b 2 :a 1) {:m :sm})
+                       l1 (atom []) l2 (atom [])
+                       c1 (ChainCustom. {:a 0} l1)
+                       c2 (ChainCustom. {:a 0} l2)
+                       cr1 (chain-f3 c1 :a 1 :b 2 :c 3)
+                       cr2 (fold c2 :a 1 :b 2 :c 3)]
+                   (and
+                     (= (chain-f2 nil :a 1 :b 2) (fold nil :a 1 :b 2))
+                     (= (chain-f3 nil :a 1 :b 2 :c 3) (fold nil :a 1 :b 2 :c 3))
+                     (= (chain-f4 nil :a 1 :b 2 :c 3 :d 4) (fold nil :a 1 :b 2 :c 3 :d 4))
+                     ;; array-map: value, key order, meta, no-op identical?, duplicate key
+                     (= (chain-f2 am :c 3 :d 4) (fold am :c 3 :d 4))
+                     (= (vec (keys (chain-f2 am :c 3 :d 4))) (vec (keys (fold am :c 3 :d 4))))
+                     (= (meta (chain-f2 am :c 3 :d 4)) {:m :am})
+                     (identical? am (chain-f2 am :a 1 :b 2))
+                     (= (chain-f3 am :c 3 :c 30 :d 4) (fold am :c 3 :c 30 :d 4))
+                     (= (chain-f2-pure am 9 100 42) {:a 9 :b 2 :dt 58})
+                     ;; hash-map
+                     (= (chain-f3 hm :a 10 :d 4 :e 5) (fold hm :a 10 :d 4 :e 5))
+                     (= (class (chain-f3 hm :a 10 :d 4 :e 5)) (class hm))
+                     (= (meta (chain-f3 hm :a 10 :d 4 :e 5)) {:m :hm})
+                     ;; vector
+                     (= (chain-f2 v 0 1 3 40) (fold v 0 1 3 40))
+                     (= (meta (chain-f2 v 0 1 3 40)) {:m :v})
+                     ;; defrecord (declared fields + ext keys)
+                     (= (chain-f3 r :a 10 :b 20 :c 30) (fold r :a 10 :b 20 :c 30))
+                     (instance? ChainRec (chain-f3 r :a 10 :b 20 :c 30))
+                     (= (meta (chain-f3 r :a 10 :b 20 :c 30)) {:m :r})
+                     ;; sorted-map
+                     (= (chain-f3 sm :d 4 :c 3 :a 10) (fold sm :d 4 :c 3 :a 10))
+                     (= (keys (chain-f3 sm :d 4 :c 3 :a 10)) '(:a :b :c :d))
+                     (= (meta (chain-f3 sm :d 4 :c 3 :a 10)) {:m :sm})
+                     ;; custom Associative
+                     (= [(:a cr1) (:b cr1) (:c cr1)] [(:a cr2) (:b cr2) (:c cr2)])
+                     (= @l1 @l2)))")))
+
+;; Randomized differential test over compiled fused 2/3/4-step chains:
+;; covers counts around 8 and 64, mixed key types, duplicates, metadata, and no-op identity.
+(let ((f2 (var-deref "u" "chain-f2"))
+      (f3 (var-deref "u" "chain-f3"))
+      (f4 (var-deref "u" "chain-f4"))
+      (kpool (list->vector
+               (append (map (lambda (i) (keyword #f (string-append "k" (number->string i))))
+                            '(0 1 2 3 4 5 6 7 8 9 62 63 64 65))
+                       (list 0 1 7 #\a "str" (jolt-vector 1 2)))))
+      (state 410041))
+  (define (rng n)
+    (set! state (bitwise-and (+ (* state 1103515245) 12345) #x7fffffff))
+    (modulo (quotient state 65536) n))
+  (define (build-amap n kw-only?)
+    (let loop ((i 0) (m empty-pmap))
+      (if (= i n)
+          (jolt-with-meta m (ev "{:tag :rand}"))
+          (let ((k (if (or kw-only? (> i 0))
+                       (keyword #f (string-append "k" (number->string i)))
+                       "s0")))
+            (loop (+ i 1) (jolt-assoc3 m k i))))))
+  (define (ref-fold m kvs)
+    (let loop ((acc m) (xs kvs))
+      (if (null? xs) acc (loop (jolt-assoc3 acc (car xs) (cadr xs)) (cddr xs)))))
+  (let ((sizes '(0 3 6 7 8 9 62 63 64 65))
+        (all-ok #t))
+    (let trial ((t 0))
+      (when (and (< t 400) all-ok)
+        (let* ((sz (list-ref sizes (rng (length sizes))))
+               (kw-only? (zero? (rng 2)))
+               (m (if (and (= sz 0) (zero? (rng 3))) jolt-nil (build-amap sz kw-only?)))
+               (arity (+ 2 (rng 3)))
+               (noop? (and (pmap? m) (> sz 0) (zero? (rng 8))))
+               (kvs (let mk ((j 0) (acc '()))
+                      (if (= j arity)
+                          acc
+                          (let* ((idx (if noop? (rng sz) 0))
+                                 (k (if noop?
+                                        (if (and (not kw-only?) (= idx 0))
+                                            "s0"
+                                            (keyword #f (string-append "k" (number->string idx))))
+                                        (vector-ref kpool (rng (vector-length kpool)))))
+                                 (v (if noop? (jolt-get m k) (rng 50))))
+                            (mk (+ j 1) (cons k (cons v acc)))))))
+               (got (case arity
+                      ((2) (apply f2 (cons m kvs)))
+                      ((3) (apply f3 (cons m kvs)))
+                      ((4) (apply f4 (cons m kvs)))))
+               (want (ref-fold m kvs)))
+          (unless (and (clj= got want)
+                       (eq? (pmap-array? got) (pmap-array? want))
+                       (clj= (jolt-vec (jolt-keys got)) (jolt-vec (jolt-keys want)))
+                       (clj= (jolt-meta got) (jolt-meta want))
+                       (or (not noop?) (eq? got m)))
+            (set! all-ok #f))
+          (trial (+ t 1)))))
+    (ok "randomized differential assoc-chain (400 trials around 8/64, mixed keys, no-op)" all-ok)))
+
 (set-optimize! #f)
 (set-direct-link-flag! #f)
 
