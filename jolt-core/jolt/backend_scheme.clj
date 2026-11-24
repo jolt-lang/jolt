@@ -945,8 +945,8 @@
     (or
      (emit-site-cache-invoke c)
      (cond
-       (:loop-map-runtime node)
-       (order-args (fn [as] (plain-call (:loop-map-runtime node) as)))
+       (:runtime-call node)
+       (order-args (fn [as] (plain-call (:runtime-call node) as)))
 
        ;; devirtualized protocol call: the inference proved the receiver (arg 0) is
        ;; one record type, so resolve the impl by that static tag instead of routing
@@ -1660,9 +1660,6 @@
              *trace-frame* nil]
      (emit (:expr node)))))
 
-(defn- emit-const-node [node]
-  (or (:literal-binding node) (emit-const (:val node))))
-
 (defn- emit-binding-form [node]
   (case (:op node)
     :let (emit-let node)
@@ -1672,7 +1669,7 @@
 
 (defn emit* [node]
   (case (:op node)
-    :const (emit-const-node node)
+    :const (emit-const (:val node))
     :local (munge-name (:name node))
     ;; late-bound var: read the cell's current root at use time. A value-position
     ;; ref to a clojure.core fn the RT provides lowers to the RT procedure.

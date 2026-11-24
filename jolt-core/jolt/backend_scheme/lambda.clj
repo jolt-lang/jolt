@@ -590,6 +590,24 @@
     {:qname qname :src-ns src-ns :fnsrc-nm fnsrc-nm :site site
      :frame (or site fnsrc-nm) :id-nm id-nm :self-wrap self-wrap}))
 
+;; A fn with a variadic arity records that arity's FIXED param count, so
+;; jolt-apply can hand it a lazy rest instead of realizing the tail. The count is
+;; recorded rather than read back from procedure-arity-mask, which cannot recover
+;; it: (fn ([a] …) ([a b & r] …)) accepts {1,2,3,…}, so the mask says 1 where the
+;; variadic arity's fixed count is 2.
+;;
+;; The registration must NOT wrap the lambda expression: Chez names a procedure
+;; after the variable it is bound to, and only when the lambda sits directly in
+;; the binding position. Moving it into argument position leaves the procedure
+;; unnamed, which silently unmaps its native backtrace frame from the source
+;; registry (build-smoke's app.core/-main frame). So register AFTER the binding,
+;; in the letrec body, where the name survives:
+;;   (letrec ((m (lambda …))) (jolt-register-variadic! N m))   name = m
+;;   (letrec ((m (jolt-register-variadic! N (lambda …)))) m)   name = #f
+;; An ANONYMOUS fn has no binding of its own — it is emitted bare so the
+;; enclosing (define jv$ns/name …) names it — so its def registers the sibling
+;; call instead (emit-def-cached), and *variadic-reg-suppressed?* tells this fn
+;; to leave it alone.
 (defn- bind-fn-lambda [node lambda qname fnsrc-nm src-ns arities]
   (let [variadic-fixed (fn-variadic-fixed arities)
         reg-here? (and variadic-fixed (not *variadic-reg-suppressed?*))]
@@ -625,8 +643,20 @@
         ;;
         ;; Chez shares ONE closure object across every evaluation of a lambda
         ;; with no free variables, where Clojure allocates a fresh fn each time.
-        ;; Only a literal that is EVALUATED REPEATEDLY needs the capture: a def's
-        ;; direct init runs once. Absent :free-names is treated conservatively.
+        ;; Observable, and real code depends on the Clojure answer: malli keys a
+        ;; cache on validator closures (two :? branches collided, backtracking
+        ;; died, m/validate returned false), and jolt's own fn meta is keyed on
+        ;; the procedure, so with-meta leaked between unrelated fns.
+        ;;
+        ;; So such a lambda is given something to capture (id-nm). Only a literal
+        ;; that is EVALUATED REPEATEDLY needs it: a def's direct init runs once,
+        ;; so its single shared instance is already the only one there will ever
+        ;; be, and two distinct fn forms never share with each other.
+        ;;
+        ;; :free-names absent means the analyzer did not compute it (a node a pass
+        ;; built), not that there are none — so absent is treated as "might be
+        ;; shared" and gets the capture. Wrong only in costing a fn that already
+        ;; allocated.
         {:keys [qname src-ns fnsrc-nm site frame id-nm self-wrap] :as info}
         (fn-frame-info node def-init? self)
         ;; claimed before the bodies emit, so no nested literal takes it
@@ -636,6 +666,4 @@
         clauses (fill-self-wrap clauses self-wrap)
         _ (maybe-emit-step-variant variant once emit arities self info)
         lambda (fn-lambda clauses arities id-nm once)]
-    ;; A fn with a variadic arity records that arity's FIXED param count after
-    ;; binding the lambda so Chez keeps the procedure's name (bind-fn-lambda).
     (bind-fn-lambda node lambda qname fnsrc-nm src-ns arities)))

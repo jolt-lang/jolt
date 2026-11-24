@@ -99,6 +99,11 @@
         helpers #{"jolt-nil" "jolt-invoke" "jolt-invoke0" "jolt-invoke1"
                   "jolt-loop-map-update?" "jolt-loop-map-memo" "jolt-loop-map-value" "jolt-loop-map-save!"
                   "jolt-loop-map-standard-seq?"
+                  ;; the fused assoc-in and reduce-kv lowerings (fused.clj);
+                  ;; into/filter/map's heads are listed with the pvec helpers
+                  "jolt-assoc-in-original" "jolt-assoc-in-map-edit" "jolt-assoc-in-leaf-edit"
+                  "jolt-assoc-in-apply"
+                  "jolt-reduce-kv-builder-source?" "jolt-reduce-kv-build" "jolt-reduce-kv-collect"
                   "jolt-invoke2" "jolt-invoke3" "jolt-invoke4"
                   "jolt-invoke-t0" "jolt-invoke-t1" "jolt-invoke-t2" "jolt-invoke-t3" "jolt-invoke-t4"
                   "jolt-var-fn" "jolt-site-kept" "jolt-guard-body" "jolt-caught?" "jolt-caught-val" "call/1cc" "jolt-wind-inline"

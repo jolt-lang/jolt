@@ -20,7 +20,7 @@
   (ir/invoke (ir/var-ref "clojure.core" nm) args))
 
 (defn- loop-map-runtime [name args]
-  (assoc (ir/invoke (ir/host-ref name) args) :loop-map-runtime (str "jolt-" name)))
+  (assoc (ir/invoke (ir/host-ref name) args) :runtime-call (str "jolt-" name)))
 
 (defn- core-head? [f nm]
   (and (= :var (:op f)) (= "clojure.core" (:ns f)) (= nm (:name f))))
@@ -49,7 +49,7 @@
          :boxed-map-read true))
 
 (defn- loop-exit-values [args]
-  (assoc (ir/invoke (ir/host-ref "values") args) :loop-map-runtime "values"))
+  (assoc (ir/invoke (ir/host-ref "values") args) :runtime-call "values"))
 
 (defn- destructure-loop-exit [state value]
   (let [keys (:keys (:projection state))

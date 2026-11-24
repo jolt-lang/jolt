@@ -17,15 +17,20 @@
 (define jolt-assoc-in-original
   (capture-optional-guard-procedure "clojure.core" "assoc-in"))
 
-;; Guard the linked root read at each scalar update site.
-(define jolt-loop-map-update?
-  (let ((standard (capture-optional-guard-procedure "clojure.core" "update")))
-    (lambda (f)
-      (eq? f standard))))
+;; Guard the linked root read at each scalar update site. The update guard
+;; and the memo run on every loop write, so they are spliced (as
+;; jolt-identical? is) rather than called.
+(define jolt-loop-map-standard-update
+  (capture-optional-guard-procedure "clojure.core" "update"))
+(define-syntax jolt-loop-map-update?
+  (syntax-rules ()
+    ((_ f) (eq? f jolt-loop-map-standard-update))))
 
 ;; A version is the original map or a memo shared by continuations of the
 ;; same write. Competing or resumed escapes publish one persistent map.
-(define (jolt-loop-map-memo) (box #f))
+(define-syntax jolt-loop-map-memo
+  (syntax-rules ()
+    ((_) (box #f))))
 (define (jolt-loop-map-value version)
   (if (box? version) (unbox version) version))
 (define (jolt-loop-map-save! memo m)
