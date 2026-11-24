@@ -1503,31 +1503,101 @@
 
 (define (jrec-dissoc1 coll k)
   (if (not (jrec? coll))
-      (%r-jolt-dissoc coll k)
+      (%r-jolt-dissoc2 coll k)
       (let ((i (and (keyword? k) (jrec-field-index coll k))))
         (if i
             (jrec->map-without coll k)
             (let ((ext (jrec-ext coll)))
               (if (jolt-nil? ext)
                   coll
-                  (let ((ne (%r-jolt-dissoc ext k)))
+                  (let ((ne (%r-jolt-dissoc2 ext k)))
                     (make-jrec-from-existing
                       coll
                       #f
                       #f
                       (if (= 0 (jolt-count ne)) jolt-nil ne)))))))))
 
+(define (jrec-dissoc-many coll ks)
+  (cond
+    ((jrec-plain? coll)
+     (meta-carry coll (fold-left jrec-dissoc1 coll ks)))
+    ((jrec-cl coll "without") =>
+     (lambda (m)
+       (fold-left (lambda (c k) (jolt-invoke m c k)) coll ks)))
+    (else (meta-carry coll (fold-left jrec-dissoc1 coll ks)))))
+
 (set! jolt-dissoc
-  (lambda (coll . ks)
-    (cond
-      ((jrec-plain? coll)
-       (meta-carry coll (fold-left jrec-dissoc1 coll ks)))
-      ((jrec-cl coll "without") =>
-       (lambda (m)
-         (fold-left (lambda (c k) (jolt-invoke m c k)) coll ks)))
-      ((jrec? coll)
-       (meta-carry coll (fold-left jrec-dissoc1 coll ks)))
-      (else (apply %r-jolt-dissoc coll ks)))))
+  (case-lambda
+    ((coll k1 k2)
+     (if (not (jrec? coll))
+         (%r-jolt-dissoc coll k1 k2)
+         (cond
+           ((jrec-plain? coll)
+            (meta-carry coll (jrec-dissoc1 (jrec-dissoc1 coll k1) k2)))
+           ((jrec-cl coll "without") =>
+            (lambda (m) (jolt-invoke m (jolt-invoke m coll k1) k2)))
+           (else
+            (meta-carry
+              coll
+              (jrec-dissoc1 (jrec-dissoc1 coll k1) k2))))))
+    ((coll k1 k2 k3)
+     (if (not (jrec? coll))
+         (%r-jolt-dissoc coll k1 k2 k3)
+         (cond
+           ((jrec-plain? coll)
+            (meta-carry
+              coll
+              (jrec-dissoc1 (jrec-dissoc1 (jrec-dissoc1 coll k1) k2) k3)))
+           ((jrec-cl coll "without") =>
+            (lambda (m)
+              (jolt-invoke
+                m
+                (jolt-invoke m (jolt-invoke m coll k1) k2)
+                k3)))
+           (else
+            (meta-carry
+              coll
+              (jrec-dissoc1
+                (jrec-dissoc1 (jrec-dissoc1 coll k1) k2)
+                k3))))))
+    ((coll k1 k2 k3 k4)
+     (if (not (jrec? coll))
+         (%r-jolt-dissoc coll k1 k2 k3 k4)
+         (cond
+           ((jrec-plain? coll)
+            (meta-carry
+              coll
+              (jrec-dissoc1
+                (jrec-dissoc1 (jrec-dissoc1 (jrec-dissoc1 coll k1) k2) k3)
+                k4)))
+           ((jrec-cl coll "without") =>
+            (lambda (m)
+              (jolt-invoke
+                m
+                (jolt-invoke
+                  m
+                  (jolt-invoke m (jolt-invoke m coll k1) k2)
+                  k3)
+                k4)))
+           (else
+            (meta-carry
+              coll
+              (jrec-dissoc1
+                (jrec-dissoc1 (jrec-dissoc1 (jrec-dissoc1 coll k1) k2) k3)
+                k4))))))
+    ((coll k)
+     (if (not (jrec? coll))
+         (%r-jolt-dissoc coll k)
+         (cond
+           ((jrec-plain? coll) (meta-carry coll (jrec-dissoc1 coll k)))
+           ((jrec-cl coll "without") =>
+            (lambda (m) (jolt-invoke m coll k)))
+           (else (meta-carry coll (jrec-dissoc1 coll k))))))
+    ((coll) (if (not (jrec? coll)) (%r-jolt-dissoc coll) coll))
+    ((coll . ks)
+     (if (not (jrec? coll))
+         (apply %r-jolt-dissoc coll ks)
+         (jrec-dissoc-many coll ks)))))
 
 (set! jolt-dissoc2
   (lambda (coll k)

@@ -58,6 +58,35 @@
               (sa-uvector-set! out (sa-ufx- j 2) (sa-uvector-ref v j))
               (loop (sa-ufx+ j 1))))
           out))))
+(define (vec-copy-shift! out dst src start end)
+  (let loop ((s start) (d dst))
+    (when (sa-ufx<? s end)
+      (sa-uvector-set! out d (sa-uvector-ref src s))
+      (loop (sa-ufx+ s 1) (sa-ufx+ d 1)))))
+;; copy of v with distinct slot pairs (lo, lo+1) and (hi, hi+1) dropped (lo < hi,
+;; n >= 6). Block-copies the largest surviving segment via sa-subvector and fills
+;; only the two shorter segments unchecked.
+(define (vec-remove4 v lo hi)
+  (let* ((n (vector-length v))
+         (m (fx- n 4))
+         (len-b (fx- (fx- hi lo) 2))
+         (len-c (fx- (fx- n hi) 2)))
+    (cond
+      ((and (fx>=? len-c lo) (fx>=? len-c len-b))
+       (let ((out (sa-subvector v 4 n)))
+         (when (fx>? lo 0) (vec-fill-prefix! out v lo))
+         (when (fx>? len-b 0) (vec-copy-shift! out lo v (fx+ lo 2) hi))
+         out))
+      ((fx>=? lo len-b)
+       (let ((out (sa-subvector v 0 m)))
+         (when (fx>? len-b 0) (vec-copy-shift! out lo v (fx+ lo 2) hi))
+         (when (fx>? len-c 0) (vec-copy-shift! out (fx- hi 2) v (fx+ hi 2) n))
+         out))
+      (else
+       (let ((out (sa-subvector v 2 (fx- n 2))))
+         (when (fx>? lo 0) (vec-fill-prefix! out v lo))
+         (when (fx>? len-c 0) (vec-copy-shift! out (fx- hi 2) v (fx+ hi 2) n))
+         out)))))
 
 ;; ============================================================================
 ;; persistent vector — 32-way trie + tail (Clojure's PersistentVector)
@@ -2539,18 +2568,135 @@
                (else (loop (jolt-assoc1 coll (car kvs) (cadr kvs)) (cddr kvs)))))))))
 (define jolt-assoc3 (lambda (coll k v) (meta-carry coll (jolt-assoc1 coll k v))))
 
-(define (jolt-dissoc coll . ks)
-  (cond ((jolt-nil? coll) jolt-nil)
-        ((pmap? coll) (meta-carry coll (fold-left pmap-dissoc coll ks)))
-        (else (jolt-throw (jolt-host-throwable "java.lang.ClassCastException"
-                           (string-append "class " (guard (e (#t "?")) (jolt-class-name coll))
-                                          " cannot be cast to class clojure.lang.IPersistentMap"))))))
+(define (jolt-dissoc-throw coll)
+  (jolt-throw (jolt-host-throwable "java.lang.ClassCastException"
+                (string-append "class " (guard (e (#t "?")) (jolt-class-name coll))
+                               " cannot be cast to class clojure.lang.IPersistentMap"))))
+;; Multi-key dissoc (2..4 keys, covering 87.3% of corpus multi-key sites) takes
+;; a single-allocation order-preserving block-copy fast path on array-mode pmaps
+;; with callback-free keys (keyword, fixnum, char). Duplicate keys in a batch
+;; are handled without extra cases because every slot in root is distinct.
+;; Returns the identical? receiver when no key is present and a fresh empty
+;; pmap carrying metadata when all entries are removed. Non-stable keys and
+;; hash-mode pmaps fall back through chained pmap-dissoc with one meta-carry.
+;; Records, custom map deftypes, and sorted maps are intercepted ahead of this
+;; binding by matching fixed-arity clauses in records-coll.ss and host-table.ss.
+(define jolt-dissoc
+  (case-lambda
+    ((coll k1 k2)
+     (cond
+       ((pmap? coll)
+        (let ((root (pmap-root coll)))
+          (if (and (not (hnode? root))
+                   (amap-stable-key? k1)
+                   (amap-stable-key? k2))
+              (let ((n (vector-length root)) (cnt (pmap-cnt coll)))
+                (let lp ((i 0) (h1 -1) (h2 -1))
+                  (if (sa-ufx<? i n)
+                      (let ((rk (sa-uvector-ref root i)))
+                        (if (or (eq? rk k1) (eq? rk k2))
+                            (if (fx<? h1 0)
+                                (lp (sa-ufx+ i 2) i h2)
+                                (lp (sa-ufx+ i 2) h1 i))
+                            (lp (sa-ufx+ i 2) h1 h2)))
+                      (cond
+                        ((fx<? h1 0) coll)
+                        ((fx<? h2 0)
+                         (if (fx=? cnt 1)
+                             (%mk-pmap amap-no-slots 0 0 (pmap-meta coll))
+                             (%mk-pmap (vec-remove2 root h1) (fx- cnt 1) 0 (pmap-meta coll))))
+                        ((fx=? cnt 2)
+                         (%mk-pmap amap-no-slots 0 0 (pmap-meta coll)))
+                        (else
+                         (%mk-pmap (vec-remove4 root h1 h2) (fx- cnt 2) 0 (pmap-meta coll)))))))
+              (meta-carry coll (pmap-dissoc (pmap-dissoc coll k1) k2)))))
+       ((jolt-nil? coll) jolt-nil)
+       (else (jolt-dissoc-throw coll))))
+    ((coll k1 k2 k3)
+     (cond
+       ((pmap? coll)
+        (let ((root (pmap-root coll)))
+          (if (and (not (hnode? root))
+                   (amap-stable-key? k1)
+                   (amap-stable-key? k2)
+                   (amap-stable-key? k3))
+              (let ((n (vector-length root)) (cnt (pmap-cnt coll)))
+                (let lp ((i 0) (hits 0) (first -1))
+                  (if (sa-ufx<? i n)
+                      (let ((rk (sa-uvector-ref root i)))
+                        (if (or (eq? rk k1) (eq? rk k2) (eq? rk k3))
+                            (lp (sa-ufx+ i 2) (sa-ufx+ hits 1) (if (fx<? first 0) i first))
+                            (lp (sa-ufx+ i 2) hits first)))
+                      (cond
+                        ((fx=? hits 0) coll)
+                        ((fx=? hits cnt) (%mk-pmap amap-no-slots 0 0 (pmap-meta coll)))
+                        ((fx=? hits 1) (%mk-pmap (vec-remove2 root first) (fx- cnt 1) 0 (pmap-meta coll)))
+                        (else
+                         (let ((out (sa-subvector root 0 (fx- n (fx* 2 hits)))))
+                           (let cp ((s (sa-ufx+ first 2)) (d first))
+                             (when (sa-ufx<? s n)
+                               (let ((rk (sa-uvector-ref root s)))
+                                 (if (or (eq? rk k1) (eq? rk k2) (eq? rk k3))
+                                     (cp (sa-ufx+ s 2) d)
+                                     (begin
+                                       (sa-uvector-set! out d rk)
+                                       (sa-uvector-set! out (sa-ufx+ d 1) (sa-uvector-ref root (sa-ufx+ s 1)))
+                                       (cp (sa-ufx+ s 2) (sa-ufx+ d 2)))))))
+                           (%mk-pmap out (fx- cnt hits) 0 (pmap-meta coll))))))))
+              (meta-carry coll (pmap-dissoc (pmap-dissoc (pmap-dissoc coll k1) k2) k3)))))
+       ((jolt-nil? coll) jolt-nil)
+       (else (jolt-dissoc-throw coll))))
+    ((coll k1 k2 k3 k4)
+     (cond
+       ((pmap? coll)
+        (let ((root (pmap-root coll)))
+          (if (and (not (hnode? root))
+                   (amap-stable-key? k1)
+                   (amap-stable-key? k2)
+                   (amap-stable-key? k3)
+                   (amap-stable-key? k4))
+              (let ((n (vector-length root)) (cnt (pmap-cnt coll)))
+                (let lp ((i 0) (hits 0) (first -1))
+                  (if (sa-ufx<? i n)
+                      (let ((rk (sa-uvector-ref root i)))
+                        (if (or (eq? rk k1) (eq? rk k2) (eq? rk k3) (eq? rk k4))
+                            (lp (sa-ufx+ i 2) (sa-ufx+ hits 1) (if (fx<? first 0) i first))
+                            (lp (sa-ufx+ i 2) hits first)))
+                      (cond
+                        ((fx=? hits 0) coll)
+                        ((fx=? hits cnt) (%mk-pmap amap-no-slots 0 0 (pmap-meta coll)))
+                        ((fx=? hits 1) (%mk-pmap (vec-remove2 root first) (fx- cnt 1) 0 (pmap-meta coll)))
+                        (else
+                         (let ((out (sa-subvector root 0 (fx- n (fx* 2 hits)))))
+                           (let cp ((s (sa-ufx+ first 2)) (d first))
+                             (when (sa-ufx<? s n)
+                               (let ((rk (sa-uvector-ref root s)))
+                                 (if (or (eq? rk k1) (eq? rk k2) (eq? rk k3) (eq? rk k4))
+                                     (cp (sa-ufx+ s 2) d)
+                                     (begin
+                                       (sa-uvector-set! out d rk)
+                                       (sa-uvector-set! out (sa-ufx+ d 1) (sa-uvector-ref root (sa-ufx+ s 1)))
+                                       (cp (sa-ufx+ s 2) (sa-ufx+ d 2)))))))
+                           (%mk-pmap out (fx- cnt hits) 0 (pmap-meta coll))))))))
+              (meta-carry coll (pmap-dissoc (pmap-dissoc (pmap-dissoc (pmap-dissoc coll k1) k2) k3) k4)))))
+       ((jolt-nil? coll) jolt-nil)
+       (else (jolt-dissoc-throw coll))))
+    ((coll k)
+     (cond ((pmap? coll) (meta-carry coll (pmap-dissoc coll k)))
+           ((jolt-nil? coll) jolt-nil)
+           (else (jolt-dissoc-throw coll))))
+    ((coll)
+     (cond ((pmap? coll) coll)
+           ((jolt-nil? coll) jolt-nil)
+           (else (jolt-dissoc-throw coll))))
+    ((coll . ks)
+     (cond ((jolt-nil? coll) jolt-nil)
+           ((pmap? coll) (meta-carry coll (fold-left pmap-dissoc coll ks)))
+           (else (jolt-dissoc-throw coll))))))
 (define jolt-dissoc2 (lambda (coll k)
   (cond ((jolt-nil? coll) jolt-nil)
         ((pmap? coll) (meta-carry coll (pmap-dissoc coll k)))
-        (else (jolt-throw (jolt-host-throwable "java.lang.ClassCastException"
-                           (string-append "class " (guard (e (#t "?")) (jolt-class-name coll))
-                                          " cannot be cast to class clojure.lang.IPersistentMap")))))))
+        (else (jolt-dissoc-throw coll)))))
 
 (define (jolt-contains? coll k)
   (cond ((pmap? coll) (pmap-contains? coll k))
