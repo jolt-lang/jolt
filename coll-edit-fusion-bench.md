@@ -131,7 +131,7 @@ Cumulative 2..4 pairs covers **92.3%** (3,296 / 3,572) of multi-pair direct+thre
 
 ### Mechanism choice (plan section 8): `case-lambda` on `jolt-assoc` vs `:fixed` registry helpers
 
-Measured at 2 pairs with identical fast-path body under `JOLT_GC_TRIP_BYTES=16m` (1,000,000 iters, 7 runs, median ns/op):
+Measured at 2 pairs with identical fast-path body under `JOLT_GC_TRIP_BYTES=16m` (1,000,000 iters, 7 runs, median ns/op). Note: the `:fixed` `jolt-assoc5` only and hybrid columns came from a prototype that is no longer on disk and cannot be re-measured.
 
 | Row | `case-lambda` on `jolt-assoc` (run 1 / run 2) | `:fixed` `jolt-assoc5` only | Hybrid (`:fixed` + `case-lambda`) |
 |---|---:|---:|---:|
@@ -204,10 +204,12 @@ Every receiver in `bench39` asserts its runtime class at startup via `(.getName 
 | `assoc2-24-array-new` | 93.10 | **48.13** | 96.40 | **1.97x** | 2 pairs, both new on 24-keyword array map |
 | `assoc2-24-array-exist` | 75.87 | **46.15** | 81.14 | **1.70x** | 2 pairs, both existing on 24-keyword array map |
 | `assoc2-nil` | 48.97 | **7.99** | 49.65 | **6.17x** | 2 pairs on `nil` (direct array map build) |
-| `assoc3-3-new` | 70.39 | **31.91** | 72.55 | **2.24x** | 3 pairs, all new on 3-key array map |
-| `assoc3-3-exist` | 59.59 | **17.59** | 61.33 | **3.44x** | 3 pairs, all existing on 3-key array map |
-| `assoc4-3-new` | 94.29 | **40.63** | 96.30 | **2.35x** | 4 pairs, all new on 3-key array map |
-| `assoc4-3-exist` | 106.65 | **38.78** | 109.07 | **2.78x** | 4 pairs, all existing on 12-keyword array map |
+| `assoc3-3-new` | 69.12 | **31.71** | 69.25 | **2.18x** | 3 pairs, all new on 3-key array map (re-measured after 3/4-pair simplification; avg of 31.07 / 32.34 vs prev 31.62 / 31.57) |
+| `assoc3-3-exist` | 59.14 | **16.37** | 58.17 | **3.58x** | 3 pairs, all existing on 3-key array map (re-measured; avg of 16.35 / 16.39 vs prev 16.33 / 16.32) |
+| `assoc3-3-mix` | 64.47 | **29.99** | 64.70 | **2.15x** | 3 pairs, 1 existing + 2 new on 3-key array map (re-measured; avg of 30.13 / 29.85 vs prev 29.41 / 29.35) |
+| `assoc4-3-new` | 93.17 | **38.55** | 92.34 | **2.41x** | 4 pairs, all new on 3-key array map (re-measured; avg of 38.22 / 38.87 vs prev 41.01 / 42.24) |
+| `assoc4-12-exist` | 105.10 | **37.36** | 105.17 | **2.81x** | 4 pairs, all existing on 12-keyword array map (re-measured; avg of 37.67 / 37.05 vs prev 37.21 / 37.72) |
+| `assoc4-3-mix` | 83.66 | **31.84** | 84.11 | **2.63x** | 4 pairs, 2 existing + 2 new on 3-key array map (re-measured; avg of 32.02 / 31.66 vs prev 39.74 / 39.55) |
 | `swap2-3-exist` | 75.06 | **49.28** | 77.49 | **1.55x** | `(swap! a assoc :k0 i :k2 (+ i 1))` value-pos |
 | `swap1-3-exist` | 33.91 | **31.60** | 34.84 | **1.09x** | `(swap! a assoc :k0 i)` 1-pair value-pos |
 | `update2-3-exist` | 168.41 | **140.27** | 171.44 | **1.21x** | `(update outer :sub assoc :k0 i :k2 (+ i 1))` |
@@ -228,6 +230,12 @@ Every receiver in `bench39` asserts its runtime class at startup via `(.getName 
 | `v-assoc` | 8.98 | 8.92 | 10.64 | 1.10x |
 | `coll-ops` total mean | 230.6 | 237.3 | 251.5 | 1.02x |
 
-### Design note on zero-`set!` 3- and 4-pair clauses
+### Design note on simplified zero-`set!` 3- and 4-pair clauses
 
-An initial 3/4-pair implementation using local `(let ((c cnt) ...) (set! ...))` boxed every assigned local under Chez's source-loaded test runner (144 bytes/call for 3-pair, 176 bytes/call for 4-pair on no-op batches). Rewriting those steps as pure `let*` bindings with an all-existing fast branch dropped no-op allocation to 0 extra bytes on all three arities (24-keyword array map bytes/op: 2p 544 vs 1,024; 3p 576 vs 1,552; 4p 608 vs 2,096; no-op 0/0/0).
+An initial 3/4-pair implementation using local `(let ((c cnt) ...) (set! ...))` boxed every assigned local under Chez's source-loaded test runner (144 bytes/call for 3-pair, 176 bytes/call for 4-pair on no-op batches). Rewriting those steps as pure `let*` per-step count/duplicate checks (falling back to `jolt-assoc-fb3`/`fb4` on promotion or repeated new keys) plus one `sa-vector-append` and a small `amap-put!` macro keeps no-op allocation at 0 extra bytes on all three arities (24-keyword array map bytes/op: 2p 544 vs 1,024; 3p 576 vs 1,552; 4p 608 vs 2,096; no-op 0/0/0), cuts ~100 lines from `host/chez/collections.ss`, holds 3-pair at parity, and speeds up 4-pair new/mix (`41.6 -> 38.5` ns/op and `39.6 -> 31.8` ns/op).
+
+### Gate status
+
+- `make -j8 test` aborts on this host at environmental failures: `certify` (requires JDK 21; host has JDK 25.0.2), `filelock` (lock-starvation failure under parallel load; also passed when rerun), and `lazyretain` (requires GNU `timeout`, not installed on macOS).
+- Rerun of the full `SHARD-POOL` (208 targets) excluding `certify`, `filelock`, and `lazyretain` (`200` parallel `-j8` + `devbootsmoke`/`gatebootsmoke` + `fastpathratio`/`stdlibratio`/`pmoverhead` at `-j1`): all 205 targets in the filtered rerun exited 0, including `selfhost`, `arraymap` (92/92 with the 111,720-case exhaustive small matrix and compiled `(fn [m] (assoc m :ka 1 :kb 2 ...))` allocation checks), `portcheck`, `deadhost`, `recordshadow`, `footprint`, `vfaslceiling`, `attributioncheck`, `gambitseedcheck`, `gambitgencheck`, and `gambittwins`.
+- Gambit did not run: `gambitcheck`, `gambitkernel`, `gambiteval`, `gambitboot`, `gambitunbound`, `gambitvars`, `gambitstatics`, and `gambitprofile` skipped because Gambit is not installed on this machine.
