@@ -2405,10 +2405,15 @@
                (adopt-interrupt-box! (vector-ref st 4))
                ;; publish the name under this thread's id, so .getName agrees
                ;; whether it is asked of the Thread object or of the handle
-               ;; Thread/currentThread (and getAllStackTraces) hands out
-               (vector-set! st 7 (get-thread-id))
-               (jolt-thread-name-set! (get-thread-id) (unbox (vector-ref st 6)))
-               (jolt-thread-priority-set! (get-thread-id) (vector-ref st 9))
+               ;; Thread/currentThread (and getAllStackTraces) hands out.
+               ;; Under st's mutex, as setName/setPriority write: once slot 7
+               ;; is set the parent's setPriority writes the table, and a copy
+               ;; read before it and written after put the old value back
+               ;; (CI: (.setPriority t 7) right after .start read back 5).
+               (jolt-with-mutex (vector-ref st 2)
+                 (vector-set! st 7 (get-thread-id))
+                 (jolt-thread-name-set! (get-thread-id) (unbox (vector-ref st 6)))
+                 (jolt-thread-priority-set! (get-thread-id) (vector-ref st 9)))
                (register-thread-object! (get-thread-id) self)
                (thread-handle-cell (cons (get-thread-id) self))
                ;; Thread.start conveys NOTHING: the new thread begins with no
@@ -2439,14 +2444,16 @@
                   ;; Nothing is registered for a thread that has already
                   ;; finished: its exit hook has run, and an entry made now
                   ;; would outlive it (ids are never reused).
-                  (jolt-with-mutex thread-handles-mutex
-                    (when (jolt-started-thread? id)
-                      (unless (hashtable-contains? thread-names-by-id id)
-                        (hashtable-set! thread-names-by-id id (unbox (vector-ref st 6)))
-                        (unless (eqv? 5 (vector-ref st 9))
-                          (hashtable-set! thread-priorities-by-id id (vector-ref st 9))))
-                      (hashtable-set! thread-handles-by-id id self)))
+                  ;; st's mutex first, then the tables', the order every
+                  ;; holder of both takes them (jthread-finish!, setName).
                   (jolt-with-mutex (vector-ref st 2)
+                    (jolt-with-mutex thread-handles-mutex
+                      (when (jolt-started-thread? id)
+                        (unless (hashtable-contains? thread-names-by-id id)
+                          (hashtable-set! thread-names-by-id id (unbox (vector-ref st 6)))
+                          (unless (eqv? 5 (vector-ref st 9))
+                            (hashtable-set! thread-priorities-by-id id (vector-ref st 9))))
+                        (hashtable-set! thread-handles-by-id id self)))
                     (unless (vector-ref st 7) (vector-set! st 7 id)))))))
             jolt-nil)))
         (cons "run" (lambda (self) (let ((th (vector-ref (jhost-state self) 0))) (when th (jolt-invoke th))) jolt-nil))
@@ -2493,8 +2500,10 @@
         ;; spellings of the same thread's name disagree.
         (cons "setName" (lambda (self nm)
           (let* ((st (jhost-state self)) (s (jolt-final-str nm)))
-            (set-box! (vector-ref st 6) s)
-            (when (jthread-running-id st) (jolt-thread-name-set! (jthread-id st) s)))
+            ;; under st's mutex, so it can't interleave with the start's publish
+            (jolt-with-mutex (vector-ref st 2)
+              (set-box! (vector-ref st 6) s)
+              (when (jthread-running-id st) (jolt-thread-name-set! (jthread-id st) s))))
           jolt-nil))
         ;; refused while the thread is ALIVE, as Thread.setDaemon checks isAlive():
         ;; before start and after it has finished the flag can still be set.
@@ -2524,8 +2533,9 @@
         (cons "setPriority" (lambda (self p)
           (let ((st (jhost-state self)) (p (jolt-thread-priority-arg p)))
             (unless (jthread-fiber st)
-              (vector-set! st 9 p)
-              (when (jthread-running-id st) (jolt-thread-priority-set! (jthread-id st) p))))
+              (jolt-with-mutex (vector-ref st 2)
+                (vector-set! st 9 p)
+                (when (jthread-running-id st) (jolt-thread-priority-set! (jthread-id st) p)))))
           jolt-nil))
         (cons "isVirtual" (lambda (self) (and (jthread-fiber (jhost-state self)) #t)))
         ;; its group while it lives; nil once it has terminated, as on the JVM
