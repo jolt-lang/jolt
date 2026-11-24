@@ -1502,57 +1502,59 @@
            (not (eq? emptied empty-pmap))
            (jolt=2 (jolt-meta emptied) (jolt-meta m1)))))
 
-(ok "pair helpers fallback on nil, hash-mode map, non-stable keys, vector, defrecord, sorted-map, custom deftype (with meta)"
-    (let* ((hm (evv "(with-meta (hash-map :a 1 :b 2 :c 3) {:tag :hm})"))
-           (am (evv "(with-meta {:a 1 \"s\" 2 :b 3} {:tag :am})"))
-           (s-key (string-copy "s"))
-           ;; nil
-           (da-nil (jolt-dissoc1-assoc1 jolt-nil (kw "a") (kw "b") 2))
-           (ad-nil-diff (jolt-assoc1-dissoc1 jolt-nil (kw "b") 2 (kw "a")))
-           (ad-nil-same (jolt-assoc1-dissoc1 jolt-nil (kw "a") 2 (kw "a")))
-           ;; hash-mode
-           (da-hm (jolt-dissoc1-assoc1 hm (kw "a") (kw "d") 4))
-           (ad-hm (jolt-assoc1-dissoc1 hm (kw "d") 4 (kw "a")))
-           ;; non-stable keys on array map
-           (da-ns1 (jolt-dissoc1-assoc1 am s-key (kw "c") 4))
-           (da-ns2 (jolt-dissoc1-assoc1 am (kw "a") (string-copy "t") 5))
-           (ad-ns1 (jolt-assoc1-dissoc1 am (string-copy "t") 5 (kw "a")))
-           (ad-ns2 (jolt-assoc1-dissoc1 am (kw "c") 4 s-key))
-           ;; vector throws
-           (da-vec-cce (guard (e (#t (string=? (jolt-class-name (jolt-unwrap-throw e)) "java.lang.ClassCastException")))
-                         (jolt-dissoc1-assoc1 (evv "[1 2]") 0 0 9) #f))
-           (ad-vec-cce (guard (e (#t (string=? (jolt-class-name (jolt-unwrap-throw e)) "java.lang.ClassCastException")))
-                         (jolt-assoc1-dissoc1 (evv "[1 2]") 0 9 0) #f))
-           (ad-vec-oob (guard (e (#t (string=? (jolt-class-name (jolt-unwrap-throw e)) "java.lang.IndexOutOfBoundsException")))
-                         (jolt-assoc1-dissoc1 (evv "[1 2]") 5 9 0) #f))
-           ;; defrecord
-           (_ (evv "(defrecord PairRec [a b])"))
-           (rec (evv "(with-meta (assoc (->PairRec 1 2) :x 10) {:tag :rec})"))
-           (da-rec-ext (jolt-dissoc1-assoc1 rec (kw "x") (kw "y") 20))
-           (da-rec-fld (jolt-dissoc1-assoc1 rec (kw "a") (kw "y") 20))
-           (ad-rec-ext (jolt-assoc1-dissoc1 rec (kw "y") 20 (kw "x")))
-           (ad-rec-fld (jolt-assoc1-dissoc1 rec (kw "y") 20 (kw "a")))
-           ;; sorted-map
-           (sm (evv "(with-meta (sorted-map :c 3 :a 1 :b 2) {:tag :sm})"))
-           (da-sm (jolt-dissoc1-assoc1 sm (kw "b") (kw "d") 4))
-           (ad-sm (jolt-assoc1-dissoc1 sm (kw "d") 4 (kw "b")))
-           ;; custom IPersistentMap deftype
-           (_ (evv "(deftype PairCustom [m log]
-                      clojure.lang.IPersistentMap
-                      (without [_ k] (swap! log conj [:without k]) (PairCustom. (dissoc m k) log))
-                      (assoc [_ k v] (swap! log conj [:assoc k v]) (PairCustom. (assoc m k v) log))
-                      (assocEx [_ k v] (PairCustom. (assoc m k v) log))
-                      clojure.lang.ILookup
-                      (valAt [_ k] (get m k))
-                      (valAt [_ k d] (get m k d))
-                      clojure.lang.Counted
-                      (count [_] (count m))
-                      clojure.lang.Seqable
-                      (seq [_] (seq m)))"))
-           (log-da (evv "(atom [])"))
-           (log-ad (evv "(atom [])"))
-           (c-da (jolt-dissoc1-assoc1 ((var-deref "user" "->PairCustom") (evv "{:a 1 :b 2}") log-da) (kw "a") (kw "c") 3))
-           (c-ad (jolt-assoc1-dissoc1 ((var-deref "user" "->PairCustom") (evv "{:a 1 :b 2}") log-ad) (kw "c") 3 (kw "a"))))
+(let* ((hm (evv "(with-meta (hash-map :a 1 :b 2 :c 3) {:tag :hm})"))
+       (am (evv "(with-meta {:a 1 \"s\" 2 :b 3} {:tag :am})"))
+       (s-key (string-copy "s"))
+       ;; nil
+       (da-nil (jolt-dissoc1-assoc1 jolt-nil (kw "a") (kw "b") 2))
+       (ad-nil-diff (jolt-assoc1-dissoc1 jolt-nil (kw "b") 2 (kw "a")))
+       (ad-nil-same (jolt-assoc1-dissoc1 jolt-nil (kw "a") 2 (kw "a")))
+       ;; hash-mode
+       (da-hm (jolt-dissoc1-assoc1 hm (kw "a") (kw "d") 4))
+       (ad-hm (jolt-assoc1-dissoc1 hm (kw "d") 4 (kw "a")))
+       ;; non-stable keys on array map
+       (da-ns1 (jolt-dissoc1-assoc1 am s-key (kw "c") 4))
+       (da-ns2 (jolt-dissoc1-assoc1 am (kw "a") (string-copy "t") 5))
+       (da-ns3 (jolt-dissoc1-assoc1 am (kw "a") (string-copy "s") 9))
+       (ad-ns1 (jolt-assoc1-dissoc1 am (string-copy "t") 5 (kw "a")))
+       (ad-ns2 (jolt-assoc1-dissoc1 am (kw "c") 4 s-key))
+       (ad-ns3 (jolt-assoc1-dissoc1 am (string-copy "s") 9 (kw "a")))
+       ;; vector throws
+       (da-vec-cce (guard (e (#t (string=? (jolt-class-name (jolt-unwrap-throw e)) "java.lang.ClassCastException")))
+                     (jolt-dissoc1-assoc1 (evv "[1 2]") 0 0 9) #f))
+       (ad-vec-cce (guard (e (#t (string=? (jolt-class-name (jolt-unwrap-throw e)) "java.lang.ClassCastException")))
+                     (jolt-assoc1-dissoc1 (evv "[1 2]") 0 9 0) #f))
+       (ad-vec-oob (guard (e (#t (string=? (jolt-class-name (jolt-unwrap-throw e)) "java.lang.IndexOutOfBoundsException")))
+                     (jolt-assoc1-dissoc1 (evv "[1 2]") 5 9 0) #f))
+       ;; defrecord
+       (_ (evv "(defrecord PairRec [a b])"))
+       (rec (evv "(with-meta (assoc (->PairRec 1 2) :x 10) {:tag :rec})"))
+       (da-rec-ext (jolt-dissoc1-assoc1 rec (kw "x") (kw "y") 20))
+       (da-rec-fld (jolt-dissoc1-assoc1 rec (kw "a") (kw "y") 20))
+       (ad-rec-ext (jolt-assoc1-dissoc1 rec (kw "y") 20 (kw "x")))
+       (ad-rec-fld (jolt-assoc1-dissoc1 rec (kw "y") 20 (kw "a")))
+       ;; sorted-map
+       (sm (evv "(with-meta (sorted-map :c 3 :a 1 :b 2) {:tag :sm})"))
+       (da-sm (jolt-dissoc1-assoc1 sm (kw "b") (kw "d") 4))
+       (ad-sm (jolt-assoc1-dissoc1 sm (kw "d") 4 (kw "b")))
+       ;; custom IPersistentMap deftype
+       (_ (evv "(deftype PairCustom [m log]
+                  clojure.lang.IPersistentMap
+                  (without [_ k] (swap! log conj [:without k]) (PairCustom. (dissoc m k) log))
+                  (assoc [_ k v] (swap! log conj [:assoc k v]) (PairCustom. (assoc m k v) log))
+                  (assocEx [_ k v] (PairCustom. (assoc m k v) log))
+                  clojure.lang.ILookup
+                  (valAt [_ k] (get m k))
+                  (valAt [_ k d] (get m k d))
+                  clojure.lang.Counted
+                  (count [_] (count m))
+                  clojure.lang.Seqable
+                  (seq [_] (seq m)))"))
+       (log-da (evv "(atom [])"))
+       (log-ad (evv "(atom [])"))
+       (c-da (jolt-dissoc1-assoc1 ((var-deref "user" "->PairCustom") (evv "{:a 1 :b 2}") log-da) (kw "a") (kw "c") 3))
+       (c-ad (jolt-assoc1-dissoc1 ((var-deref "user" "->PairCustom") (evv "{:a 1 :b 2}") log-ad) (kw "c") 3 (kw "a"))))
+  (ok "pair helpers fallback on nil, hash-mode map, non-stable keys, vector, defrecord, sorted-map, custom deftype (with meta)"
       (and (jolt=2 da-nil (evv "{:b 2}"))
            (jolt=2 ad-nil-diff (evv "{:b 2}"))
            (jolt=2 ad-nil-same (evv "{}"))
@@ -1572,7 +1574,17 @@
            (jolt=2 (jolt-get c-da (kw "c")) 3) (jolt-nil? (jolt-get c-da (kw "a")))
            (jolt=2 (jolt-deref log-da) (evv "[[:without :a] [:assoc :c 3]]"))
            (jolt=2 (jolt-get c-ad (kw "c")) 3) (jolt-nil? (jolt-get c-ad (kw "a")))
-           (jolt=2 (jolt-deref log-ad) (evv "[[:assoc :c 3] [:without :a]]")))))
+           (jolt=2 (jolt-deref log-ad) (evv "[[:assoc :c 3] [:without :a]]"))))
+  (ok "jolt-dissoc1-assoc1 fallback on present non-stable written key updates in place"
+      (and (jolt=2 da-ns3 (evv "{\"s\" 9 :b 3}"))
+           (fx=? (pmap-cnt da-ns3) 2)
+           (jolt=2 (jolt-vec (jolt-keys da-ns3)) (evv "[\"s\" :b]"))
+           (jolt=2 (jolt-meta da-ns3) (jolt-meta am))))
+  (ok "jolt-assoc1-dissoc1 fallback on present non-stable written key updates in place"
+      (and (jolt=2 ad-ns3 (evv "{\"s\" 9 :b 3}"))
+           (fx=? (pmap-cnt ad-ns3) 2)
+           (jolt=2 (jolt-vec (jolt-keys ad-ns3)) (evv "[\"s\" :b]"))
+           (jolt=2 (jolt-meta ad-ns3) (jolt-meta am)))))
 
 ;; Reachability & allocation checks: compiled Clojure fns reach the fused pair
 ;; helpers and allocate a single output slot vector (and 0 extra bytes on no-op).

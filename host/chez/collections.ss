@@ -2683,93 +2683,53 @@
         ((pmap? coll) (meta-carry coll (pmap-dissoc coll k)))
         (else (jolt-dissoc-throw coll)))))
 
-;; Fused (assoc (dissoc m dk) ak av): single-allocation order-preserving fast
-;; path on array-mode pmaps with callback-free keys where no step can promote.
-;; When dk = ak and dk is present, removes then appends (key moves to the end).
-;; Returns the identical? receiver when nothing changes (dk absent and ak
-;; already holds av). Fallback runs the original live calls in order.
+;; Fused adjacent single-key dissoc / single-pair assoc, in either order:
+;; (assoc (dissoc m dk) ak av) and (dissoc (assoc m ak av) dk). One scan and one
+;; output slot vector on an array-mode pmap whose two keys are callback-free
+;; and where no step can promote; FALLBACK (the original nested live calls)
+;; otherwise. DA? is a literal: #t for dissoc-then-assoc, #f for assoc-then-
+;; dissoc. The orders differ in two places only. Promotion is tested against
+;; the count the assoc sees: after the delete for dissoc-then-assoc, before it
+;; for assoc-then-dissoc. And one key used for both steps is remove-then-append
+;; (it moves to the end) in the first order, a plain removal in the second.
+;; A no-op returns the identical? receiver; emptying returns a fresh empty pmap.
+(define-syntax amap-edit-pair
+  (syntax-rules ()
+    ((_ m dk ak av da? fallback)
+     (if (pmap? m)
+         (let ((root (pmap-root m)))
+           (if (and (not (hnode? root)) (amap-stable-key? dk) (amap-stable-key? ak))
+               (let ((n (vector-length root)) (cnt (pmap-cnt m)))
+                 (let lp ((i 0) (di -1) (ai -1))
+                   (if (sa-ufx<? i n)
+                       (let ((rk (sa-uvector-ref root i)))
+                         (lp (sa-ufx+ i 2) (if (eq? rk dk) i di) (if (eq? rk ak) i ai)))
+                       (cond
+                         ;; ak is another resident key: its value is replaced in place
+                         ((and (fx>=? ai 0) (not (fx=? ai di)))
+                          (cond ((fx>=? di 0)
+                                 (let ((out (vec-remove2 root di)))
+                                   (sa-uvector-set! out (if (fx<? ai di) (sa-ufx+ ai 1) (sa-ufx- ai 1)) av)
+                                   (%mk-pmap out (fx- cnt 1) 0 (pmap-meta m))))
+                                ((eq? (sa-uvector-ref root (sa-ufx+ ai 1)) av) m)
+                                (else (let ((out (sa-vector-copy root)))
+                                        (sa-uvector-set! out (sa-ufx+ ai 1) av)
+                                        (%mk-pmap out cnt 0 (pmap-meta m))))))
+                         ;; assoc then dissoc of one key: the key ends up absent
+                         ((and (not da?) (eq? ak dk))
+                          (cond ((fx<? di 0) (if (amap-keep? cnt ak) m fallback))
+                                ((fx=? cnt 1) (%mk-pmap amap-no-slots 0 0 (pmap-meta m)))
+                                (else (%mk-pmap (vec-remove2 root di) (fx- cnt 1) 0 (pmap-meta m)))))
+                         ;; ak is appended
+                         ((not (amap-keep? (if (and da? (fx>=? di 0)) (fx- cnt 1) cnt) ak)) fallback)
+                         ((fx<? di 0) (%mk-pmap (vec-append2 root ak av) (fx+ cnt 1) 0 (pmap-meta m)))
+                         (else (%mk-pmap (vec-remove2-append2 root di ak av) cnt 0 (pmap-meta m)))))))
+               fallback))
+         fallback))))
 (define (jolt-dissoc1-assoc1 m dk ak av)
-  (if (pmap? m)
-      (let ((root (pmap-root m)))
-        (if (and (not (hnode? root))
-                 (amap-stable-key? dk)
-                 (amap-stable-key? ak))
-            (let ((n (vector-length root)) (cnt (pmap-cnt m)))
-              (let lp ((i 0) (di -1) (ai -1))
-                (if (sa-ufx<? i n)
-                    (let ((rk (sa-uvector-ref root i)))
-                      (lp (sa-ufx+ i 2)
-                          (if (eq? rk dk) i di)
-                          (if (eq? rk ak) i ai)))
-                    (cond
-                      ((fx<? di 0)
-                       (cond
-                         ((fx>=? ai 0)
-                          (if (eq? (sa-uvector-ref root (sa-ufx+ ai 1)) av)
-                              m
-                              (let ((out (sa-vector-copy root)))
-                                (sa-uvector-set! out (sa-ufx+ ai 1) av)
-                                (%mk-pmap out cnt 0 (pmap-meta m)))))
-                         ((amap-keep? cnt ak)
-                          (%mk-pmap (vec-append2 root ak av) (fx+ cnt 1) 0 (pmap-meta m)))
-                         (else (jolt-assoc3 (jolt-dissoc2 m dk) ak av))))
-                      ((and (fx>=? ai 0) (not (fx=? ai di)))
-                       (let ((out (vec-remove2 root di)))
-                         (sa-uvector-set! out (if (fx<? ai di) (sa-ufx+ ai 1) (sa-ufx- ai 1)) av)
-                         (%mk-pmap out (fx- cnt 1) 0 (pmap-meta m))))
-                      ((amap-keep? (fx- cnt 1) ak)
-                       (%mk-pmap (vec-remove2-append2 root di ak av) cnt 0 (pmap-meta m)))
-                      (else (jolt-assoc3 (jolt-dissoc2 m dk) ak av))))))
-            (jolt-assoc3 (jolt-dissoc2 m dk) ak av)))
-      (jolt-assoc3 (jolt-dissoc2 m dk) ak av)))
-
-;; Fused (dissoc (assoc m ak av) dk): single-allocation order-preserving fast
-;; path on array-mode pmaps with callback-free keys where no step can promote.
-;; Promotion is tested against cnt before the delete: adding a promoting key
-;; transitions to hash-mode on assoc and stays hash-mode after dissoc.
-;; Returns the identical? receiver on no-op (including non-promoting add-then-
-;; remove of an absent key) and a fresh empty pmap carrying metadata when
-;; removing the sole entry. Fallback runs the original live calls in order.
+  (amap-edit-pair m dk ak av #t (jolt-assoc3 (jolt-dissoc2 m dk) ak av)))
 (define (jolt-assoc1-dissoc1 m ak av dk)
-  (if (pmap? m)
-      (let ((root (pmap-root m)))
-        (if (and (not (hnode? root))
-                 (amap-stable-key? ak)
-                 (amap-stable-key? dk))
-            (let ((n (vector-length root)) (cnt (pmap-cnt m)))
-              (let lp ((i 0) (ai -1) (di -1))
-                (if (sa-ufx<? i n)
-                    (let ((rk (sa-uvector-ref root i)))
-                      (lp (sa-ufx+ i 2)
-                          (if (eq? rk ak) i ai)
-                          (if (eq? rk dk) i di)))
-                    (cond
-                      ((eq? ak dk)
-                       (cond
-                         ((fx>=? di 0)
-                          (if (fx=? cnt 1)
-                              (%mk-pmap amap-no-slots 0 0 (pmap-meta m))
-                              (%mk-pmap (vec-remove2 root di) (fx- cnt 1) 0 (pmap-meta m))))
-                         ((amap-keep? cnt ak) m)
-                         (else (jolt-dissoc2 (jolt-assoc3 m ak av) dk))))
-                      ((fx>=? ai 0)
-                       (if (fx<? di 0)
-                           (if (eq? (sa-uvector-ref root (sa-ufx+ ai 1)) av)
-                               m
-                               (let ((out (sa-vector-copy root)))
-                                 (sa-uvector-set! out (sa-ufx+ ai 1) av)
-                                 (%mk-pmap out cnt 0 (pmap-meta m))))
-                           (let ((out (vec-remove2 root di)))
-                             (sa-uvector-set! out (if (fx<? ai di) (sa-ufx+ ai 1) (sa-ufx- ai 1)) av)
-                             (%mk-pmap out (fx- cnt 1) 0 (pmap-meta m)))))
-                      ((not (amap-keep? cnt ak))
-                       (jolt-dissoc2 (jolt-assoc3 m ak av) dk))
-                      ((fx<? di 0)
-                       (%mk-pmap (vec-append2 root ak av) (fx+ cnt 1) 0 (pmap-meta m)))
-                      (else
-                       (%mk-pmap (vec-remove2-append2 root di ak av) cnt 0 (pmap-meta m)))))))
-            (jolt-dissoc2 (jolt-assoc3 m ak av) dk)))
-      (jolt-dissoc2 (jolt-assoc3 m ak av) dk)))
+  (amap-edit-pair m dk ak av #f (jolt-dissoc2 (jolt-assoc3 m ak av) dk)))
 
 (define (jolt-contains? coll k)
   (cond ((pmap? coll) (pmap-contains? coll k))
