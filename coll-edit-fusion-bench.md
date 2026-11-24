@@ -513,3 +513,237 @@ Every receiver in `bench41` asserts its runtime class at startup via `(.getName 
 - **Mutant-checked tests (`test/chez/inline-test.ss`):** M1 (disable `emit-assoc-chain` -> 14 emitted-head tests fail, `362/376`), M2 (drop `:clear-caps` check -> both `:clear-caps` emission tests fail + `^:once` capture-retry runtime test throws NPE), M3 (drop `*unfused-assoc-nodes*` suppression -> 5-step no-tiling test fails, `375/376`), M4 (drop `later-pure?` check -> all 7 impure negative tests + throw-before-effectful-operand test fail + `^:once` retry throws).
 - **Committed tree (seeds restored per the seed rule):** `selfhost`, `gambitseedcheck`, and `inline` (14 emitted-head assertions, `362/376`) fail strictly for seed staleness until `make remint` (or `jolt-45`); `emittedheads` and `attributioncheck` pass on the committed tree.
 - **Gambit did not run:** `gambitboot`, `gambitcheck`, `gambiteval`, `gambitkernel`, `gambitprofile`, `gambitstatics`, `gambitunbound`, and `gambitvars` skipped because Gambit is not installed on this machine.
+
+## jolt-46
+
+Emit-time peephole in `jolt-core/jolt/backend_scheme/fused.clj` and portable runtime helpers `jolt-dissoc1-assoc1` and `jolt-assoc1-dissoc1` (with `vec-remove2-append2`) in `host/chez/collections.ss`, fusing adjacent single-key `dissoc` / single-pair `assoc` pairs in both orders under the shared `pure-edit-operand?` / `pure-call-head?` operand rule from `jolt-41`. Both orders were built based on `jolt-41`'s 50-repo corpus recount (`84`/`93` eligible single `dissoc`->`assoc` sites including `aleph/http.clj:483`, and `117`/`118` eligible single `assoc`->`dissoc` sites). Where both rules could match (e.g. `(-> m (dissoc :a) (assoc :b 1) (assoc :c 2))` or `(-> m (assoc :a 1) (assoc :b 2) (dissoc :c))`), `emit-assoc-chain` keeps precedence.
+
+- **Parent commit measured against:** `e0f6096ce` (`perf/coll-edit-fusion`)
+- **Date:** 2026-11-24
+- **Machine:** Apple M3 Ultra (Virtual), macOS 15.7.3
+- **Chez:** 10.4.1 (`JOLT_CHEZ=/Users/admin/src/jolt/.cache/local/chezscheme-10.4.1/bin/scheme`)
+- **Build flags:** `bin/jolt build -m bench46 -o <out> --direct-link --opt`
+- **Nursery pin:** `JOLT_GC_TRIP_BYTES=16m` (isolates adaptive nursery doubling investigated in `jolt-44`)
+- **Semantics decisions relied on (`coll-edit-fusion-decisions.md`):** Decision 1 (pure-op calls in outer operands may evaluate before the inner edit; observable only when both throw) and Decision 3 (no identity guarantee under raw Scheme `call/cc` re-entry). Smaller relaxations: net-unchanged non-promoting `assoc`->`dissoc` of an absent same key returns the `identical?` receiver; a throw from a fused call may report the outermost call's line; fallback runs the live single-step bindings `(jolt-assoc3 (jolt-dissoc2 m dk) ak av)` / `(jolt-dissoc2 (jolt-assoc3 m ak av) dk)` in order; fast paths take `stable-hamt-key?` keys only.
+- **Seed mint impact:** `make remint` converged in 3 passes (0 forms skipped). **0** sites fused in `host/chez/seed/prelude.ss`; **1** site fused in `host/chez/seed/image.ss` (and `host/gambit/seed/image.ss`): `jolt.analyzer/stamp-def` (`jolt-core/jolt/analyzer.clj:1445`, collapsing `(assoc (dissoc env :top?) :cx :eval)` into `(jolt-dissoc1-assoc1 env _kc$40753 _kc$40754 _kc$40755)`). Per the seed rule, seed files were restored before committing (`git checkout -- host/chez/seed host/gambit/seed`).
+- **Gambit:** not installed on this machine; `portcheck`, `gambitseedcheck`, `gambitgencheck`, and `gambittwins` passed on the reminted tree, and every identifier added to `collections.ss` was audited against `host/gambit/scheme-adapter-runtime.ss`; Gambit-runtime gates (`gambitboot`, `gambitcheck`, `gambiteval`, `gambitkernel`, `gambitprofile`, `gambitstatics`, `gambitunbound`, `gambitvars`) did not run.
+
+### Emitted Scheme (before and after) and compile time
+
+Real corpus site (`aleph/src/aleph/http.clj:483-485`, `cleanup-conn`):
+
+```clojure
+(defn cleanup-conn [rsp end start]
+  (-> rsp
+      (dissoc :aleph/destroy-conn?)
+      (assoc :connection-time (- end start))))
+```
+
+```scheme
+;; BEFORE (109 bytes at call expr, 867 bytes full def):
+(let* ((_a$4 (jolt-dissoc2 rsp _kc$2))
+       (_a$5 _kc$3)
+       (_a$6 (jolt-n- end start)))
+  (jolt-assoc3 _a$4 _a$5 _a$6))
+
+;; AFTER (53 bytes at call expr, -56 bytes / -51%; 809 bytes full def):
+(jolt-dissoc1-assoc1 rsp _kc$2 _kc$3 (jolt-n- end start))
+```
+
+- **Compile time (`bench46`, `bin/jolt build --direct-link --opt`):** parent **22.83 s** vs candidate **22.42 s** (`JOLT_BUILD_PROFILE=1`: `emit app namespaces` 118 ms vs 126 ms, `emit: emit-top` 14 ms vs 13 ms, cumulative pre-Chez 320 ms vs 341 ms — no measurable compile-time regression).
+
+### Commands
+
+```sh
+# Built before (detached worktree at e0f6096ce, reminted) and after (reminted worktree):
+(cd /tmp/jolt-46-bench && JOLT_PWD="$PWD" /tmp/jolt-46-parent/bin/jolt build -m bench46 -o /tmp/jolt-46-bench/bench46-base --direct-link --opt)
+(cd /tmp/jolt-46-bench && JOLT_PWD="$PWD" "$REPO/bin/jolt" build -m bench46 -o /tmp/jolt-46-bench/bench46-cand --direct-link --opt)
+# Timed interleaved A1 -> B -> A2 (7 runs of 2,000,000 ops after 3 warmup runs, System/gc before each run):
+JOLT_GC_TRIP_BYTES=16m /tmp/jolt-46-bench/bench46-base 2000000
+JOLT_GC_TRIP_BYTES=16m /tmp/jolt-46-bench/bench46-cand 2000000
+JOLT_GC_TRIP_BYTES=16m /tmp/jolt-46-bench/bench46-base 2000000
+```
+
+### Benchmark receiver construction and asserted representations
+
+Every receiver in `bench46` asserts its runtime class at startup via `(.getName ^Class (class obj))`:
+
+- `m5`: `{:k0 0 :k1 1 :k2 2 :k3 3 :k4 4}` — `clojure.lang.PersistentArrayMap` (5 keyword keys, literal)
+- `m12`: `(reduce (fn [m i] (assoc m (keyword (str "k" i)) i)) {} (range 12))` — `clojure.lang.PersistentArrayMap` (12 keyword keys, array-mode)
+- `hm24`: `(apply hash-map (mapcat (fn [i] [(keyword (str "k" i)) i]) (range 24)))` — `clojure.lang.PersistentHashMap` (24 keyword keys, hash-mode miss control)
+- `rec`: `(assoc (->Rec 1 2 3) :x 10)` from `(defrecord Rec [a b c])` — `bench46.Rec` (record miss control, ext-map and declared-field rows)
+- `m5-str`: `{:k0 0 :k1 1 "s2" 2 :k3 3 :k4 4}` — `clojure.lang.PersistentArrayMap` (non-stable string-key miss control)
+- `rsp-http2`: `{:status 200 :headers {"content-type" "application/json"} :aleph/keep-alive? true :aleph/destroy-conn? false :body :stream}` — `clojure.lang.PersistentArrayMap` (matches `aleph/http/http2.clj:1166-1170`)
+- `rsp-http1`: `(NettyResponseStandIn. rsp-http2)` — `bench46.NettyResponseStandIn` (`deftype` implementing `IPersistentMap`, `ILookup`, `Counted`, `Seqable` standing in for Potemkin's `NettyResponse`, because Potemkin is not in the local Maven cache)
+- Tail-full vector control: omitted because `(dissoc v k)` throws `ClassCastException` on vectors (covered as an error test in `test/chez/arraymap-test.ss`).
+
+### Ad hoc AOT results (median ns/op of 7 runs x 2,000,000 ops, `JOLT_GC_TRIP_BYTES=16m`, A1 -> B -> A2)
+
+| Row | Parent A1 (ns/op) | Candidate B (ns/op) | Parent A2 (ns/op) | Speedup (avg A / B) | Notes |
+|---|---:|---:|---:|---:|---|
+| `da-m5-present` | 54.70 | **24.94** | 52.94 | **2.16x** | 5-key array map, `dk` present, `ak` new (audit prototype: 1.44x) |
+| `da-m5-absent` | 40.53 | **18.99** | 39.29 | **2.10x** | 5-key array map, `dk` absent, `ak` new (audit prototype: 0.97x) |
+| `da-m5-present-upd` | 53.92 | **27.44** | 51.89 | **1.93x** | 5-key array map, `dk` present, `ak` existing |
+| `da-m5-absent-noop` | 27.95 | **10.47** | 27.94 | **2.67x** | 5-key array map, `dk` absent & `ak` unchanged (`identical?`, 0 alloc) |
+| `da-m5-same-key` | 46.69 | **28.15** | 46.11 | **1.65x** | 5-key array map, `dk = ak` present (remove-then-append to end) |
+| `da-m12-present` | 73.26 | **42.85** | 73.81 | **1.72x** | 12-keyword array map, `dk` present, `ak` new |
+| `da-aleph-http2` | 52.10 | **25.36** | 51.89 | **2.05x** | `aleph/http.clj:483` shape on HTTP/2 map literal |
+| `da-aleph-http1` | 205.74 | 203.74 | 205.48 | 1.01x | `aleph/http.clj:483` shape on `NettyResponseStandIn` `deftype` (misses `pmap?`) |
+| `ad-m5-present` | 54.88 | **26.26** | 53.85 | **2.07x** | 5-key array map, `assoc`->`dissoc`, `dk` present, `ak` new |
+| `ad-m5-absent` | 39.97 | **22.06** | 40.74 | **1.83x** | 5-key array map, `assoc`->`dissoc`, `dk` absent, `ak` new |
+| `ad-m5-present-upd` | 52.94 | **27.70** | 52.53 | **1.90x** | 5-key array map, `assoc`->`dissoc`, `ak` existing, `dk` present |
+| `ad-m12-present` | 74.88 | **49.48** | 75.76 | **1.52x** | 12-keyword array map, `assoc`->`dissoc`, `dk` present, `ak` new |
+| `ctrl-da-hash24` | 120.67 | 123.83 | 121.92 | 0.98x | miss control: 24-key hash-mode map (`+2.53` ns guard) |
+| `ctrl-ad-hash24` | 121.21 | 124.58 | 121.77 | 0.98x | miss control: 24-key hash-mode map (`+3.09` ns guard) |
+| `ctrl-da-rec-ext` | 91.27 | 90.87 | 91.18 | 1.00x | miss control: record ext-map keys |
+| `ctrl-ad-rec-ext` | 101.98 | 101.81 | 102.33 | 1.00x | miss control: record ext-map keys |
+| `ctrl-da-rec-field` | 146.78 | 149.53 | 147.16 | 0.98x | miss control: record declared-field downgrade (`+2.56` ns guard) |
+| `ctrl-da-nonstable` | 56.98 | 59.49 | 57.47 | 0.96x | miss control: non-stable string key on 5-key array map (`+2.27` ns guard) |
+| `ctrl-da-nil` | 36.72 | 37.51 | 35.97 | 0.97x | miss control: `nil` receiver (`+1.16` ns guard) |
+
+### Notes on timings
+
+- **`da-m5-absent` (2.10x vs audit prototype 0.97x):** Unfused `(assoc (dissoc m5 :abs) :k99 i)` runs through both top-level `set!` wrappers on `jolt-dissoc2` (`host-table.ss` -> `records-coll.ss` -> `collections.ss`), scans `root` once for `:abs`, then calls `jolt-assoc3` -> `jolt-assoc1` -> `pmap-assoc` (scanning `root` a second time for `:k99`) plus `meta-carry`. `jolt-dissoc1-assoc1` checks `pmap?`/`hnode?`/`amap-stable-key?` once, scans `root` once for both keys, calls `vec-append2`, and copies `(pmap-meta m)` directly into `%mk-pmap`.
+- **`da-m12-present` vs `ad-m12-present` (42.85 vs 49.48 ns/op):** Investigated directly in standalone Chez (`optimize-level 2`, 5x2M ops): `jolt-dissoc1-assoc1` and `jolt-assoc1-dissoc1` measured at parity (`22.75` vs `22.45` ns on `m5` present, `17.20` vs `17.52` ns on `m5` absent, `40.89` vs `41.61` ns on `m12` present). Two standalone reruns of `bench46-cand` gave `45.03`/`44.26` vs `46.20`/`48.68` ns/op (~1–3 ns extra branch depth from `jolt-assoc1-dissoc1`'s leading `(eq? ak dk)` / 4-way branch before `vec-remove2-append2`, plus normal ~2–3 ns AOT run-to-run spread).
+- **Miss-path controls:** Every miss-path control stays within `0.96x–1.01x` (`+1.2` to `+3.1` ns for the upfront `pmap?`/`hnode?`/`amap-stable-key?` check before delegating to `(jolt-assoc3 (jolt-dissoc2 ...))`).
+
+### Allocation checks (compiled Clojure fns, `test/chez/arraymap-test.ss`)
+
+- 24-keyword array map:
+  - `(-> m (dissoc :k5) (assoc :k99 1))`: **464 vs 928 bytes**
+  - `(-> m (dissoc :k5) (assoc :k12 999))`: **448 vs 880 bytes**
+  - `(-> m (assoc :k99 1) (dissoc :k5))`: **464 vs 960 bytes**
+  - `(-> m (assoc :k12 999) (dissoc :k5))`: **448 vs 896 bytes**
+  - No-op pairs (`(-> m (dissoc :abs) (assoc :k12 12))` and `(-> m (assoc :k12 12) (dissoc :abs))`): **16 / 16 bytes (base 16, 0 extra bytes)**.
+
+### Benchmark source (`bench46.clj`, with `deps.edn` `{:paths ["."]}`)
+
+```clojure
+(ns bench46)
+
+(defrecord Rec [a b c])
+
+;; Stand-in for Potemkin NettyResponse (HTTP/1 receiver; Potemkin is not in
+;; the local Maven cache). Implements IPersistentMap/ILookup/Counted/Seqable
+;; so it misses pmap? and exercises the fallback path.
+(deftype NettyResponseStandIn [m]
+  clojure.lang.IPersistentMap
+  (without [_ k] (NettyResponseStandIn. (dissoc m k)))
+  (assoc [_ k v] (NettyResponseStandIn. (assoc m k v)))
+  (assocEx [_ k v] (NettyResponseStandIn. (assoc m k v)))
+  clojure.lang.ILookup
+  (valAt [_ k] (get m k))
+  (valAt [_ k d] (get m k d))
+  clojure.lang.Counted
+  (count [_] (count m))
+  clojure.lang.Seqable
+  (seq [_] (seq m)))
+
+(defn da-present [m i] (-> m (dissoc :k2) (assoc :k99 i)))
+(defn da-absent  [m i] (-> m (dissoc :abs) (assoc :k99 i)))
+(defn da-upd     [m i] (-> m (dissoc :k2) (assoc :k4 i)))
+(defn da-noop    [m _] (-> m (dissoc :abs) (assoc :k2 2)))
+(defn da-same    [m i] (-> m (dissoc :k0) (assoc :k0 i)))
+(defn da-m12     [m i] (-> m (dissoc :k5) (assoc :k99 i)))
+(defn da-aleph   [rsp end start]
+  (-> rsp
+      (dissoc :aleph/destroy-conn?)
+      (assoc :connection-time (- end start))))
+(defn ad-present [m i] (-> m (assoc :k99 i) (dissoc :k2)))
+(defn ad-absent  [m i] (-> m (assoc :k99 i) (dissoc :abs)))
+(defn ad-upd     [m i] (-> m (assoc :k4 i) (dissoc :k2)))
+(defn ad-m12     [m i] (-> m (assoc :k99 i) (dissoc :k5)))
+(defn da-rec-ext [r i] (-> r (dissoc :x) (assoc :y i)))
+(defn ad-rec-ext [r i] (-> r (assoc :y i) (dissoc :x)))
+(defn da-rec-fld [r i] (-> r (dissoc :a) (assoc :y i)))
+(defn da-nonst   [m i] (-> m (dissoc "s2") (assoc :k99 i)))
+(defn da-nil     [m i] (-> m (dissoc :a) (assoc :b i)))
+
+(defn- assert-class [label obj expected]
+  (let [actual (.getName ^Class (class obj))]
+    (when (not= actual expected)
+      (throw (ex-info (str "Unexpected class for " label ": " actual " != " expected) {})))))
+
+(defn- median [xs]
+  (let [s (vec (sort xs))]
+    (nth s (quot (count s) 2))))
+
+(defn- run-row [label n f]
+  (dotimes [_ 3] (f (quot n 10)))
+  (let [samples
+        (mapv (fn [_]
+                (System/gc)
+                (let [t0 (System/nanoTime)
+                      acc (f n)
+                      dt (- (System/nanoTime) t0)]
+                  [(/ (double dt) (double n)) acc]))
+              (range 7))
+        med (median (mapv first samples))]
+    (println (format "  %-20s %7.2f ns/op  (acc=%s)" label med (second (first samples))))))
+
+(defn -main [& args]
+  (let [n (if (seq args) (Integer/parseInt (first args)) 2000000)
+        m5 {:k0 0 :k1 1 :k2 2 :k3 3 :k4 4}
+        m12 (reduce (fn [m i] (assoc m (keyword (str "k" i)) i)) {} (range 12))
+        hm24 (apply hash-map (mapcat (fn [i] [(keyword (str "k" i)) i]) (range 24)))
+        rec (assoc (->Rec 1 2 3) :x 10)
+        m5-str {:k0 0 :k1 1 "s2" 2 :k3 3 :k4 4}
+        rsp-http2 {:status 200
+                   :headers {"content-type" "application/json"}
+                   :aleph/keep-alive? true
+                   :aleph/destroy-conn? false
+                   :body :stream}
+        rsp-http1 (NettyResponseStandIn. rsp-http2)]
+    (assert-class "m5" m5 "clojure.lang.PersistentArrayMap")
+    (assert-class "m12" m12 "clojure.lang.PersistentArrayMap")
+    (assert-class "hm24" hm24 "clojure.lang.PersistentHashMap")
+    (assert-class "rec" rec "bench46.Rec")
+    (assert-class "m5-str" m5-str "clojure.lang.PersistentArrayMap")
+    (assert-class "rsp-http2" rsp-http2 "clojure.lang.PersistentArrayMap")
+    (assert-class "rsp-http1" rsp-http1 "bench46.NettyResponseStandIn")
+    (run-row "da-m5-present" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (count (da-present m5 i)))) acc))))
+    (run-row "da-m5-absent" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (count (da-absent m5 i)))) acc))))
+    (run-row "da-m5-present-upd" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (count (da-upd m5 i)))) acc))))
+    (run-row "da-m5-absent-noop" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (count (da-noop m5 i)))) acc))))
+    (run-row "da-m5-same-key" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (count (da-same m5 i)))) acc))))
+    (run-row "da-m12-present" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (count (da-m12 m12 i)))) acc))))
+    (run-row "da-aleph-http2" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (count (da-aleph rsp-http2 (+ i 100) i)))) acc))))
+    (run-row "da-aleph-http1" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (count (da-aleph rsp-http1 (+ i 100) i)))) acc))))
+    (run-row "ad-m5-present" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (count (ad-present m5 i)))) acc))))
+    (run-row "ad-m5-absent" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (count (ad-absent m5 i)))) acc))))
+    (run-row "ad-m5-present-upd" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (count (ad-upd m5 i)))) acc))))
+    (run-row "ad-m12-present" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (count (ad-m12 m12 i)))) acc))))
+    (run-row "ctrl-da-hash24" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (count (da-m12 hm24 i)))) acc))))
+    (run-row "ctrl-ad-hash24" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (count (ad-m12 hm24 i)))) acc))))
+    (run-row "ctrl-da-rec-ext" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (count (da-rec-ext rec i)))) acc))))
+    (run-row "ctrl-ad-rec-ext" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (count (ad-rec-ext rec i)))) acc))))
+    (run-row "ctrl-da-rec-field" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (count (da-rec-fld rec i)))) acc))))
+    (run-row "ctrl-da-nonstable" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (count (da-nonst m5-str i)))) acc))))
+    (run-row "ctrl-da-nil" n
+      (fn [k] (loop [i 0 acc 0] (if (< i k) (recur (inc i) (+ acc (count (da-nil nil i)))) acc))))))
+```
+
+### Gate status
+
+- **Reminted worktree (filtered full `SHARD-POOL`, 205 of 208 targets):** excluded the three pre-existing host environmental failures (`certify` [requires JDK 21], `lazyretain` [requires GNU `timeout`], and `filelock` [pre-existing `starved after 10000 cycles` failure]). Ran `200` parallel targets (`-j8`) + `devbootsmoke`/`gatebootsmoke` (`-j1`) + `fastpathratio`/`stdlibratio`/`pmoverhead` (`-j1`) — all **205/205** targets exited 0, including `selfhost`, `gambitseedcheck`, `gambitgencheck`, `gambittwins`, `emittedheads` (293 heads, 0 shadowable), `inline` (423/423, including 2 new `assoc`-chain negative regression guards + 45 new `jolt-46` positive/negative/precedence/eval-order/`^:once`/shadowing/`types.clj`-demotion/equivalence tests), `irvalidate`, `arraymap` (128/128, including 5,726-case exhaustive small matrix, 1,500-trial randomized differential tests for both helpers, promotion boundaries, `dk=ak` move-to-end, emptying fresh empty, fallback coverage across `nil`/hash-map/vector/`defrecord`/`sorted-map`/custom `deftype` with metadata, and compiled-fn allocation assertions), `recfast` (518/518), `recfold` (13/13), `oparity` (304/304), `cts`, `unit`, `corpus`, `footprint`, `vfaslceiling`, `portcheck`, `deadhost`, `recordshadow`, and `attributioncheck`.
+- **Mutant-checked tests:** Parent commit `e0f6096ce` fails all 14 new emitted-head assertions in `test/chez/inline-test.ss` (`409/423`); M1 (drop `(not (fx=? ai di))` in `jolt-dissoc1-assoc1`) fails 5 tests in `test/chez/arraymap-test.ss` (`123/128`, caught by exhaustive matrix, randomized differential trial 2, promotion boundary, and `dk=ak` test); M2 (check promotion against `(fx- cnt 1)` instead of `cnt` in `jolt-assoc1-dissoc1`) fails 3 tests in `test/chez/arraymap-test.ss` (`125/128`, caught by exhaustive matrix, randomized differential trial 20, and promotion boundary test).
+- **Committed tree (seeds restored per the seed rule):** `selfhost`, `gambitseedcheck`, `inline` (30 emitted-head/precedence assertions, `393/423`, covering `jolt-41` and `jolt-46`), and `arraymap` (4 compiled-fn single-allocation assertions, `124/128`; all 124 runtime helper checks pass) fail strictly for seed staleness until `make remint` (or `jolt-45`); `deadhost`, `portcheck`, `recordshadow`, `emittedheads`, and `attributioncheck` pass on the committed tree.
+- **Gambit did not run:** `gambitboot`, `gambitcheck`, `gambiteval`, `gambitkernel`, `gambitprofile`, `gambitstatics`, `gambitunbound`, and `gambitvars` skipped because Gambit is not installed on this machine.
