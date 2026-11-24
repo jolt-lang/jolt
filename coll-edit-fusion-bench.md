@@ -239,3 +239,147 @@ An initial 3/4-pair implementation using local `(let ((c cnt) ...) (set! ...))` 
 - `make -j8 test` aborts on this host at environmental failures: `certify` (requires JDK 21; host has JDK 25.0.2), `filelock` (lock-starvation failure under parallel load; also passed when rerun), and `lazyretain` (requires GNU `timeout`, not installed on macOS).
 - Rerun of the full `SHARD-POOL` (208 targets) excluding `certify`, `filelock`, and `lazyretain` (`200` parallel `-j8` + `devbootsmoke`/`gatebootsmoke` + `fastpathratio`/`stdlibratio`/`pmoverhead` at `-j1`): all 205 targets in the filtered rerun exited 0, including `selfhost`, `arraymap` (92/92 with the 111,720-case exhaustive small matrix and compiled `(fn [m] (assoc m :ka 1 :kb 2 ...))` allocation checks), `portcheck`, `deadhost`, `recordshadow`, `footprint`, `vfaslceiling`, `attributioncheck`, `gambitseedcheck`, `gambitgencheck`, and `gambittwins`.
 - Gambit did not run: `gambitcheck`, `gambitkernel`, `gambiteval`, `gambitboot`, `gambitunbound`, `gambitvars`, `gambitstatics`, and `gambitprofile` skipped because Gambit is not installed on this machine.
+
+## jolt-38
+
+Single-copy multi-arg `conj` for 2..3 elements on persistent vectors with tail room (plus a 1-element value-position clause) and single-allocation multi-key `dissoc` for 2..4 keys on array-mode maps with callback-free keys (`keyword-t?`, `fixnum?`, `char?`), reusing `jolt-39`'s `case-lambda` mechanism on `jolt-conj` and `jolt-dissoc` (with matching fixed clauses on the `records-coll.ss` and `host-table.ss` `jolt-dissoc` wrappers, and regenerated `host/gambit/records-gambit.ss`).
+
+- **Parent commit measured against:** `7980e4388` (`perf/coll-edit-fusion`)
+- **Date:** 2026-11-24
+- **Machine:** Apple M3 Ultra (Virtual), macOS 15.7.3
+- **Chez:** 10.4.1 (`JOLT_CHEZ=/Users/admin/src/jolt/.cache/local/chezscheme-10.4.1/bin/scheme`)
+- **Build flags:** `bin/jolt build -m <ns> -o <out> --direct-link --opt`
+- **Nursery pin:** `JOLT_GC_TRIP_BYTES=16m` (isolates adaptive nursery doubling investigated in `jolt-44`)
+- **Gambit:** not installed on this machine; `portcheck`, `gambitseedcheck`, `gambitgencheck`, and `gambittwins` passed; Gambit-runtime gates (`gambitcheck`, `gambitkernel`, `gambiteval`, `gambitboot`, `gambitunbound`, `gambitvars`, `gambitstatics`, `gambitprofile`) did not run.
+
+### Corpus arity split (50 repos, `/tmp/jolt-opt-corpus-20261123`)
+
+Scanned 15,313 `.clj`/`.cljc`/`.cljs` files (0 parse errors) with a standalone out-of-tree Clojure reader separating direct calls, thread-first (`->` / `some->` / `cond->`), and value-position (`swap!` / `update` / `update-in`) sites:
+
+#### `conj` (elements added)
+
+| Elements | Direct `(conj c ...)` | Threaded `(-> ... (conj ...))` | Combined direct + threaded | Multi-arg share | Value-pos (`swap!`/`update`/`update-in`) |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 2,956 | 1,348 | 4,304 | — | 3,106 |
+| **2** | **206** | **83** | **289** | **75.3%** | **11** |
+| **3** | **42** | **14** | **56** | **14.6%** | **4** |
+| 4 | 11 | 7 | 18 | 4.7% | 1 |
+| 5 | 8 | 1 | 9 | 2.3% | 1 |
+| 6+ | 9 | 3 | 12 | 3.1% | 2 |
+| **Total ≥2** | **276** | **108** | **384** | **100.0%** | **19** |
+
+2..3 elements cover **89.8%** (345 / 384) of multi-arg `conj` sites plus 3,106 1-element value-position sites. 4 elements is only 18 sites (4.7%) with no downstream chain-fusion consumer and is omitted.
+
+#### `dissoc` (keys removed)
+
+| Keys | Direct `(dissoc m ...)` | Threaded `(-> ... (dissoc ...))` | Combined direct + threaded | Multi-key share | Value-pos (`swap!`/`update`/`update-in`) |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 1,605 | 903 | 2,508 | — | 511 |
+| **2** | **391** | **191** | **582** | **58.5%** | **29** |
+| **3** | **136** | **67** | **203** | **20.4%** | **3** |
+| **4** | **50** | **34** | **84** | **8.4%** | **3** |
+| 5 | 25 | 13 | 38 | 3.8% | 0 |
+| 6+ | 55 | 33 | 88 | 8.8% | 4 |
+| **Total ≥2** | **657** | **338** | **995** | **100.0%** | **39** |
+
+2..4 keys cover **87.3%** (869 / 995) of multi-key `dissoc` sites (**95.1%** all-keyword-literal: 946 / 995), plus 511 1-key and 35 2..4-key value-position sites. All three arities (2, 3, and 4 keys) are shipped, with matching fixed clauses on the `records-coll.ss` and `host-table.ss` wrappers.
+
+### Emitted Scheme (before and after)
+
+Real corpus call sites (`clj-kondo/corpus/.clj-kondo/hooks/better_cond.clj_kondo:15` and `clj-kondo/src/clj_kondo/impl/analyzer.clj:2740`):
+
+```clojure
+(fn [new-body lhs rhs] (conj new-body lhs rhs))
+(fn [ctx] (dissoc ctx :idx :len))
+```
+
+Because `jolt-conj` and `jolt-dissoc` (plus its two load-time wrappers) carry fixed `case-lambda` clauses directly without modifying `op_registry.clj`, the emitted call head is unchanged before and after and dispatches directly into the fixed clauses without `apply` or rest-list allocation:
+
+```scheme
+;; 2-element conj (before and after):
+(jolt-conj new-body lhs rhs)
+;; 2-key dissoc (before and after):
+(jolt-dissoc ctx _kc$5 _kc$6)
+```
+
+### Commands
+
+```sh
+# Built before (detached worktree at 7980e4388) and after edits:
+(cd /tmp/jolt-38-bench && "$REPO/bin/jolt" build -m bench38 -o /tmp/jolt-38-bench/bench38-{base,cand} --direct-link --opt)
+(cd "$REPO/bench" && JOLT_PWD="$PWD" "$REPO/bin/jolt" build -m coll-ops -o /tmp/jolt-38-bench/coll-ops-{base,cand} --direct-link --opt)
+# Timed interleaved A1 -> B -> A2 (7 runs of 2,000,000 ops after 3 warmup runs, System/gc before each run):
+JOLT_GC_TRIP_BYTES=16m /tmp/jolt-38-bench/bench38-{base,cand,base} 2000000
+# coll-ops (n=100000, 5 runs, min ms per op):
+JOLT_GC_TRIP_BYTES=16m /tmp/jolt-38-bench/coll-ops-{base,cand,base} 100000
+```
+
+### Benchmark receiver construction and asserted representations
+
+Every receiver in `bench38` asserts its runtime class at startup via `(.getName ^Class (class obj))`:
+
+- `v0`: `[]` — `clojure.lang.PersistentVector` (0 elements)
+- `v5`: `[0 1 2 3 4]` — `clojure.lang.PersistentVector` (5 elements)
+- `v20`: `(vec (range 20))` — `clojure.lang.PersistentVector` (20 elements)
+- `v32`: `(vec (range 32))` — `clojure.lang.PersistentVector` (32 elements, tail-full control)
+- `lst`: `'(1 2 3 4 5)` — `clojure.lang.PersistentList` (list control)
+- `m5`: `{:k0 0 :k1 1 :k2 2 :k3 3 :k4 4}` — `clojure.lang.PersistentArrayMap` (5 keyword keys, literal)
+- `m12`: `(reduce (fn [m i] (assoc m (keyword (str "k" i)) i)) {} (range 12))` — `clojure.lang.PersistentArrayMap` (12 keyword keys, array-mode)
+- `m24`: `(reduce (fn [m i] (assoc m (keyword (str "k" i)) i)) {} (range 24))` — `clojure.lang.PersistentArrayMap` (24 keyword keys, array-mode under 64-keyword limit)
+- `hm24`: `(apply hash-map (mapcat (fn [i] [(keyword (str "k" i)) i]) (range 24)))` — `clojure.lang.PersistentHashMap` (24 keyword keys, hash-mode control)
+- `rec`: `(assoc (->Rec 1 2 3) :x 10 :y 20)` from `(defrecord Rec [a b c])` — `bench38.Rec` (record control, declared-field and ext-map rows)
+- `m5-str`: `{:k0 0 "s1" 1 "s2" 2 :k3 3 :k4 4}` — `clojure.lang.PersistentArrayMap` (non-stable string-key fallback control)
+- `outer-v` / `outer-m`: `{:v v5 :other 1}` / `{:m m5 :other 1}` — `clojure.lang.PersistentArrayMap` (`update` value-position controls)
+
+### Ad hoc AOT results (median ns/op of 7 runs x 2,000,000 ops, `JOLT_GC_TRIP_BYTES=16m`, A1 -> B -> A2)
+
+| Row | Parent A1 (ns/op) | Candidate B (ns/op) | Parent A2 (ns/op) | Speedup (avg A / B) | Notes |
+|---|---:|---:|---:|---:|---|
+| `conj2-v0` | 36.73 | **6.42** | 36.51 | **5.70x** | 2-arg `conj` on `[]` (direct `(vector a b)`) |
+| `conj2-v5` | 46.55 | **11.14** | 46.48 | **4.18x** | 2-arg `conj` on 5-elem vector |
+| `conj2-v20` | 73.40 | **16.04** | 73.45 | **4.58x** | 2-arg `conj` on 20-elem vector |
+| `conj3-v5` | 68.56 | **12.54** | 66.83 | **5.40x** | 3-arg `conj` on 5-elem vector |
+| `conj3-v20` | 107.57 | **17.55** | 107.33 | **6.12x** | 3-arg `conj` on 20-elem vector |
+| `conj2-update-v5` | 70.72 | **35.05** | 71.46 | **2.03x** | `(update outer-v :v conj i 99)` |
+| `conj1-valpos-v5` | 26.84 | **22.71** | 26.80 | **1.18x** | indirect 1-arg `(f v5 i)` |
+| `conj2-valpos-v5` | 46.82 | **11.84** | 46.84 | **3.96x** | indirect 2-arg `(f v5 i 99)` |
+| `ctrl-conj2-v32-full` | 42.75 | **37.08** | 42.82 | **1.15x** | miss control: 32-elem tail-full vector (no rest list) |
+| `ctrl-conj3-v32-full` | 57.96 | **52.98** | 58.19 | **1.10x** | miss control: 32-elem tail-full vector, 3 items |
+| `ctrl-conj2-list` | 31.29 | **27.23** | 31.25 | **1.15x** | miss control: 5-elem list (no rest list) |
+| `dissoc2-m5-present` | 59.37 | **28.05** | 59.17 | **2.11x** | 2-key `dissoc` on 5-key array map, both present |
+| `dissoc2-m5-absent` | 35.62 | **9.96** | 35.68 | **3.58x** | 2-key `dissoc` on 5-key array map, both absent (`identical?`, 0 alloc) |
+| `dissoc3-m5-present` | 72.04 | **28.55** | 72.10 | **2.52x** | 3-key `dissoc` on 5-key array map, all present |
+| `dissoc3-m5-absent` | 43.07 | **10.49** | 42.86 | **4.10x** | 3-key `dissoc` on 5-key array map, all absent (`identical?`, 0 alloc) |
+| `dissoc4-m5-present` | 80.98 | **27.65** | 80.70 | **2.92x** | 4-key `dissoc` on 5-key array map, all present |
+| `dissoc4-m5-absent` | 54.89 | **12.09** | 56.53 | **4.61x** | 4-key `dissoc` on 5-key array map, all absent (`identical?`, 0 alloc) |
+| `dissoc2-m12-present` | 75.11 | **41.72** | 72.90 | **1.77x** | 2-key `dissoc` on 12-keyword array map |
+| `dissoc2-m24-present` | 99.77 | **62.58** | 99.46 | **1.59x** | 2-key `dissoc` on 24-keyword array map |
+| `dissoc3-m24-present` | 153.32 | **80.96** | 146.46 | **1.85x** | 3-key `dissoc` on 24-keyword array map |
+| `dissoc4-m24-present` | 199.33 | **79.94** | 199.41 | **2.49x** | 4-key `dissoc` on 24-keyword array map |
+| `dissoc2-update-m5` | 86.33 | **52.70** | 85.96 | **1.63x** | `(update outer-m :m dissoc :k1 :k3)` |
+| `dissoc2-valpos-m5` | 60.31 | **28.64** | 59.83 | **2.10x** | indirect 2-key `(f m5 :k1 :k3)` |
+| `ctrl-dissoc2-hash-24` | 116.03 | **95.28** | 113.09 | **1.20x** | miss control: 24-key hash-mode map (wrappers no longer `apply`) |
+| `ctrl-dissoc2-rec-ext` | 88.39 | **69.23** | 92.49 | **1.31x** | miss control: record ext-map keys |
+| `ctrl-dissoc2-rec-field` | 220.15 | **198.61** | 217.33 | **1.10x** | miss control: record declared field + ext key |
+| `ctrl-dissoc2-nonstable` | 61.65 | **43.59** | 60.57 | **1.40x** | miss control: string + keyword on 5-key array map |
+
+### Existing `bench/run.sh` row (`coll-ops 100000`, `JOLT_GC_TRIP_BYTES=16m`, A1 -> B -> A2)
+
+| Row | Parent A1 (ms) | Candidate B (ms) | Parent A2 (ms) | Ratio (avg A / B) |
+|---|---:|---:|---:|---:|
+| `l-conj` (`(reduce conj () ks)`) | 1.52 | **1.05** | 1.46 | **1.42x** |
+| `v-conj` (`(reduce conj [] ks)`) | 3.85 | **3.43** | 3.95 | **1.14x** |
+| `hm-dissoc` (`(reduce dissoc hm ks)`) | 21.58 | **20.18** | 22.42 | **1.09x** |
+| `hs-build` (`(reduce conj #{} ks)`) | 24.91 | **24.08** | 25.24 | **1.04x** |
+| `small-assoc` | 0.48 | 0.50 | 0.49 | 0.97x |
+| `coll-ops` total mean | 221.3 | **218.6** | 233.1 | **1.04x** |
+
+### Allocation checks (compiled Clojure fns, `test/chez/arraymap-test.ss`)
+
+- 20-element vector `conj`: 2-arg 304 vs 512 bytes; 3-arg 304 vs 768 bytes.
+- 24-keyword array map `dissoc`: 2-key 432 vs 864 bytes; 3-key 416 vs 1,264 bytes; 4-key 400 vs 1,648 bytes; all-absent 2/3/4-key 16/16/16 bytes (0 extra bytes over base 16, proving both outer `jolt-dissoc` wrappers bypass `apply` and rest-list consing).
+
+### Gate status
+
+- Filtered full `SHARD-POOL` (205 of 208 targets, excluding the three host environmental failures `certify` [requires JDK 21], `lazyretain` [requires GNU `timeout`], and `filelock` [re-tested solo at `-j1` and reproduced the pre-existing `starved after 10000 cycles` failure]): `200` parallel `-j8` + `devbootsmoke`/`gatebootsmoke` at `-j1` + `fastpathratio`/`stdlibratio`/`pmoverhead` at `-j1` — all **205/205** targets exited 0, including `selfhost`, `arraymap` (112/112 with the 466-case exhaustive `conj` matrix, 40,248-case exhaustive `dissoc` matrix, 1,500-trial randomized differential `dissoc` test, and compiled fn allocation assertions; both matrices were also proved with seeded mutants), `sortedcoll` (145/145), `recfast` (518/518), `rrbprop` (11,170/11,170), `portcheck`, `deadhost`, `recordshadow`, `footprint`, `vfaslceiling`, `attributioncheck`, `gambitseedcheck`, `gambitgencheck`, and `gambittwins`.
+- Gambit did not run: `gambitcheck`, `gambitkernel`, `gambiteval`, `gambitboot`, `gambitunbound`, `gambitvars`, `gambitstatics`, and `gambitprofile` skipped because Gambit is not installed on this machine. All new identifiers in `collections.ss`, `records-coll.ss`, and `host-table.ss` were audited against the Gambit boot files, and `host/gambit/records-gambit.ss` was regenerated via `make gambitgen` and verified by `gambitgencheck`.
