@@ -274,7 +274,11 @@ bionic-ci:
 # shard it read 0.65-1.87 for a ratio quiet runs put at 1.05-1.15. A scaling
 # gate (n vs 4n of the same work) is not listed: interference moves both of its
 # arms alike.
-QUIET-GATES := fastpathratio stdlibratio pmoverhead
+# gambitunbound is listed for memory, not timing: its gsc -target js compile of
+# the whole boot peaks at ~14GB on the 16GB runner (main and branches alike,
+# measured 2026-11-24), so a neighbour's binary build landing on that peak ran
+# the runner out of memory and GitHub reported it lost, with no log.
+QUIET-GATES := fastpathratio stdlibratio pmoverhead gambitunbound
 # Runs the QUIET-GATES of $(1) one at a time. -j1 takes the sub-make off the
 # jobserver, so nothing else this make started is running beside them.
 define run-quiet

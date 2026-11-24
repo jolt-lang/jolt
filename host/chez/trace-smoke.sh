@@ -586,12 +586,14 @@ EOF
 out_xf="$("$work/filtertracebin" 2>&1)"
 expect_match "built: rebound comp points to its own call in the pipeline" "$out_xf" 'app\.filtertrace/widths (app/filtertrace\.clj:4)'
 
-# A rebound clojure.string/replace takes the header builder's ordinary step.
-# That step runs the reducer's own body with the root the builder read, so
-# whatever the root does there, the throwable is the one a custom timer
-# handler's ordinary driver produces: the same :via, :trace and data. The
-# roots cover a throwing fn, a host fn's type error (subs), a type error from
-# a core fn, IFn and procedure arity errors and a value that is not an IFn.
+# A rebound clojure.string/replace runs inside the header builder's
+# collecting step, which is the reducer's own body emitted under the
+# literal's frame name. Whatever the root does there, the throwable is the
+# one the ordinary driver produces for a map the builder declines: the same
+# :via, :trace and data. The roots cover a throwing fn, a host fn's type
+# error (subs), a type error from a core fn, IFn and procedure arity errors
+# and a value that is not an IFn. Each throws on the first entry, so the two
+# maps differ only in whether the builder admits them.
 cat > "$work/src/app/kvtrace.clj" <<'EOF'
 (ns app.kvtrace
   (:require [clojure.string :as string]))
@@ -604,24 +606,22 @@ cat > "$work/src/app/kvtrace.clj" <<'EOF'
   [["explode" explode] ["subs" subs] ["assoc" assoc]
    ["keyword" :replacement] ["fn" (fn [_ _] "wrong arity")] ["long" 42]])
 (defn -main [& [mode]]
-  (let [tick (jolt.host/scheme-proc "timer-interrupt-handler")
-        standard (tick)
-        m (array-map :a "ax" :b "bx" :c "cx")]
-    (when (= "ordinary" mode) (tick (fn [] nil)))
+  (let [m (if (= "ordinary" mode)
+            (array-map :a "ax" :b "bx")
+            (array-map :a "ax" :b "bx" :c "cx"))]
     (println "KVGUARD" ((jolt.host/scheme-proc "jolt-reduce-kv-builder-source?") m))
     (doseq [[label root] roots]
       (try (with-redefs [string/replace root] (headers m))
            (catch Throwable e
-             (println "KVTRACE" label (pr-str (Throwable->map e))))))
-    (tick standard)))
+             (println "KVTRACE" label (pr-str (Throwable->map e))))))))
 EOF
 ( cd "$work" && "$joltabs" build -m app.kvtrace -o kvtracebin >/dev/null 2>&1 )
-calls="$(grep -hoF '(jolt-reduce-kv-build-string-replace ' "$work/kvtracebin.build"/app-[0-9]*.ss | wc -l | tr -d '[:space:]')"
+calls="$(grep -hoF '(jolt-reduce-kv-build ' "$work/kvtracebin.build"/app-[0-9]*.ss | wc -l | tr -d '[:space:]')"
 expect_match "built: the header reducer emits its builder" "$calls" '^1$'
 kv_default="$("$work/kvtracebin" 2>&1)"
 kv_ordinary="$("$work/kvtracebin" ordinary 2>&1)"
-expect_match "built: the default driver admits the header map" "$kv_default" '^KVGUARD true$'
-expect_match "built: a custom timer handler declines it" "$kv_ordinary" '^KVGUARD false$'
+expect_match "built: the builder admits the three-entry header map" "$kv_default" '^KVGUARD true$'
+expect_match "built: it declines a two-entry map" "$kv_ordinary" '^KVGUARD false$'
 printf '%s\n' "$kv_default" | grep '^KVTRACE' > "$work/kvtrace.default" || true
 printf '%s\n' "$kv_ordinary" | grep '^KVTRACE' > "$work/kvtrace.ordinary" || true
 kv_maps="$(cat "$work/kvtrace.default")"
@@ -629,7 +629,7 @@ expect_match "built: every rebound root threw" "$(wc -l < "$work/kvtrace.default
 if cmp -s "$work/kvtrace.default" "$work/kvtrace.ordinary"; then
   pass=$((pass + 1))
 else
-  echo "  FAIL: built: the builder's ordinary step throws what the ordinary driver throws"
+  echo "  FAIL: built: the builder's step throws what the ordinary driver throws"
   diff "$work/kvtrace.ordinary" "$work/kvtrace.default"
   fails=$((fails + 1))
 fi
