@@ -79,13 +79,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - A `reduce-kv` into `{}` whose callback only passes its accumulator to a final
-  `assoc` builds the result map in one pass, whatever the key and value
-  expressions are. It used to recognize only three exact callback shapes.
-  Keyword-keyed rebuilds are about 2x faster.
-- A chain of `assoc-in` edits sharing a path prefix is fused when the path is a
-  literal too, as inlining leaves it when the key is a constant argument.
+  `assoc` builds the result map in one pass in a transient, whatever the key
+  and value expressions are, and still answers a correct persistent map if a
+  var it reads is redefined part way through. Keyword-keyed rebuilds are about
+  2x faster.
+- A chain of `assoc-in` calls on sibling paths of the same map descends the
+  shared prefix once and rebuilds the common ancestors once, including when the
+  path is a literal left by inlining a constant key argument.
 - `(keyword ...)` no longer allocates an argument list on every call.
 - A loop accumulating a fixed-key map with `update` is about 12% faster.
+
+### Performance
+
+- `clojure.set/difference` of two hash sets that share structure skips the
+  subtries they have in common, when the keys are numbers, keywords or
+  characters and `disj` has not been redefined. Removing a few elements from a
+  large set and diffing it against the original no longer walks the whole set.
+- `(into [] (comp (filter p) (map f)) v)` over a vector walks the vector's
+  leaves directly and fills the result in place, with no transducer stack or
+  transient in between. It falls back to the ordinary path if `into`, `comp`,
+  `filter` or `map` has been redefined.
+- A `loop` whose accumulator is a map with a fixed set of keyword keys keeps
+  the fields in locals and builds the map only when it leaves the loop or
+  escapes, so each iteration no longer allocates a map.
+- The compiler replaces reads from a private, never-escaping map literal with
+  the values themselves, so the map is not built.
+- `into` a sorted set or map sizes a short batch from `counted?` instead of a
+  fixed list of types, and fills a batch of known size in place.
 
 ### Fixed
 
@@ -94,6 +114,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tables after it published its id, so a change made between the two was
   overwritten with the old value. The copy and the setters now run under the
   thread object's lock.
+- `clojure.lang.PersistentTreeSet/EMPTY` and `PersistentTreeMap/EMPTY` could
+  read as `nil` on arm64 when two threads touched them first at the same time:
+  the one-shot compare-and-swap that caches them can fail spuriously there, and
+  the loser returned the unset value. It now retries (#1802).
+- On 32-bit targets, `hash` of a string or keyword could come out wrong
+  (`(hash "wii")` gave 104228450 instead of -1182153146), from a 32x32-bit
+  product that overflowed into bignums. 64-bit builds were not affected (#1830).
+- A Maven repository answering 429 (rate limited) failed dependency resolution
+  after 800 ms of retries, which is how Central treats shared CI runners. The
+  fetch now waits as long as the server's `Retry-After` asks, up to 30 seconds,
+  and without one backs off 2 and then 5 seconds on a 429.
 - `double-array`, `long-array` and the other array constructors read a numeric
   size with `Number.intValue`, as the JVM does: `(double-array 4294967296)` is
   empty and `(double-array Long/MAX_VALUE)` raises `NegativeArraySizeException`

@@ -16,6 +16,8 @@
 (def ctl-free?        (var jolt.mvn-http/ctl-free?))
 (def classify-status  (var jolt.mvn-http/classify-status))
 (def with-retries     (var jolt.mvn-http/with-retries))
+(def retry-delay-ms   (var jolt.mvn-http/retry-delay-ms))
+(def parse-retry-after (var jolt.mvn-http/parse-retry-after))
 (def lib-candidates   (var jolt.mvn-http/lib-candidates))
 (def windows-libdirs  (var jolt.mvn-http/windows-openssl-libdirs-for))
 (def openssl-libdirs  (var jolt.mvn-http/openssl-libdirs-for))
@@ -217,6 +219,28 @@
     (ok= :retryable (:outcome (with-retries (attempt (repeat 9 {:outcome :retryable}))))
          "retry: gives up as retryable, never as not-found")
     (ok= max-attempts @calls "retry: stops at the attempt cap"))
+
+  ;; --- how long to wait before the next attempt -------------------------------
+  ;; A 429 is a rate limit: it does not clear in the 200 ms a reset does, and
+  ;; Central sends them to shared CI runners. The server's Retry-After wins
+  ;; (capped, so a hostile or confused header cannot stall a build for an hour);
+  ;; without one, a 429 backs off for seconds, not milliseconds.
+  (ok= 7 (parse-retry-after "7") "Retry-After: delta-seconds")
+  (ok= 7 (parse-retry-after " 7 ") "Retry-After: surrounding space")
+  (ok= nil (parse-retry-after "Wed, 21 Oct 2015 07:28:00 GMT") "Retry-After: an HTTP-date is not used")
+  (ok= nil (parse-retry-after "-3") "Retry-After: negative is ignored")
+  (ok= nil (parse-retry-after nil) "Retry-After: absent")
+  (ok= 200 (retry-delay-ms {:outcome :retryable :error "reset"} 1) "delay: a reset backs off briefly")
+  (ok= 600 (retry-delay-ms {:outcome :retryable :status 503} 2) "delay: a 503 with no header backs off briefly")
+  (ok= 2000 (retry-delay-ms {:outcome :retryable :status 429} 1) "delay: a 429 with no header waits seconds")
+  (ok= 5000 (retry-delay-ms {:outcome :retryable :status 429} 2) "delay: a second 429 waits longer")
+  (ok= 4000 (retry-delay-ms {:outcome :retryable :status 429 :retry-after 4} 1) "delay: Retry-After wins on a 429")
+  (ok= 4000 (retry-delay-ms {:outcome :retryable :status 503 :retry-after 4} 1) "delay: Retry-After wins on a 503")
+  (ok= 30000 (retry-delay-ms {:outcome :retryable :status 429 :retry-after 3600} 1) "delay: Retry-After is capped")
+  (ok= :retry-after-seen
+       (let [raw (.getBytes "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 9\r\nContent-Length: 0\r\n\r\n" "UTF-8")]
+         (when (= 9 (:retry-after (parse-response raw))) :retry-after-seen))
+       "parse-response carries Retry-After")
 
   ;; --- a transport that cannot load, end to end --------------------------------
   ;; Network-free: with no loadable libcrypto candidate, fetch* fails before any
