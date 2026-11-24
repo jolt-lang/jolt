@@ -1051,6 +1051,13 @@
         (make-hnode 0 (hamt-sll 1 bi) (vector (nest-bucket (fx+ shift 5) b h k v)))
         (make-hnode (hamt-sll 1 ni) (hamt-sll 1 bi) (vector k v b)))))
 
+(define (hcoll-assoc child entry k v added)
+  (cond ((not entry)
+         (set-box! added #t)
+         (make-hcoll (hcoll-hash child) (append (hcoll-alist child) (list (cons k v)))))
+        ((eq? (cdr entry) v) child)
+        (else (make-hcoll (hcoll-hash child) (alist-replace entry v (hcoll-alist child))))))
+
 ;; Answers the node ITSELF when the key is present with that very value — the
 ;; reference's `if(val == valOrNode) return this` — so pmap-assoc can hand the
 ;; caller's map back untouched (the eq? test at the root), the way both
@@ -1498,23 +1505,28 @@
 ;; the map may stay in array mode; otherwise the slots become a trie first and
 ;; the key goes in there. Replacing a key keeps its position. Assoc of the value
 ;; already held is the map itself, in both modes.
+(define (pmap-hash-write-result m root r added)
+  (cond ((unbox added) (make-pmap r (fx+ (pmap-cnt m) 1)))
+        ((eq? r root) m)
+        (else (make-pmap r (pmap-cnt m)))))
 (define (pmap-hash-assoc m root k v)
   (let* ((added (box #f)) (r (node-assoc root 0 (key-hash k) k v added)))
-    (cond ((unbox added) (make-pmap r (fx+ (pmap-cnt m) 1)))
-          ((eq? r root) m)
-          (else (make-pmap r (pmap-cnt m))))))
+    (pmap-hash-write-result m root r added)))
+
+(define (pmap-array-assoc-at m root i k v)
+  (cond ((fx>=? i 0)
+         (if (eq? (vector-ref root (fx+ i 1)) v)
+             m
+             (make-pmap (vec-set root (fx+ i 1) v) (pmap-cnt m))))
+        ((pmap-array-keep? (pmap-cnt m) k)
+         (make-pmap (vec-append2 root k v) (fx+ (pmap-cnt m) 1)))
+        (else (pmap-hash-assoc m (amap->hnode root) k v))))
+
 (define (pmap-assoc m k v)
   (let ((root (pmap-root m)))
     (if (hnode? root)
         (pmap-hash-assoc m root k v)
-        (let ((i (amap-index root (vector-length root) k)))
-          (cond ((fx>=? i 0)
-                 (if (eq? (vector-ref root (fx+ i 1)) v)
-                     m
-                     (make-pmap (vec-set root (fx+ i 1) v) (pmap-cnt m))))
-                ((pmap-array-keep? (pmap-cnt m) k)
-                 (make-pmap (vec-append2 root k v) (fx+ (pmap-cnt m) 1)))
-                (else (pmap-hash-assoc m (amap->hnode root) k v)))))))
+        (pmap-array-assoc-at m root (amap-index root (vector-length root) k) k v))))
 ;; force-hash insert for rebuilding a map whose final mode is already decided
 ;; (hash-map ctor, a set's backing map).
 (define (pmap-put-hash m k v)
