@@ -468,15 +468,20 @@
 ;;     its interrupt flag, as the JDK re-sets it) or gets BrokenBarrierException
 ;;     when the action threw.
 ;; The generation tripped? flag is set once the action has returned, so nobody is
-;; released before it has run. The one thing the JDK's reentrant lock allows and
-;; this does not: an action that calls await() on its own barrier deadlocks here
-;; where the JDK lets it in. That is pathological and not handled.
+;; released before it has run. The barrier also records WHO is running the action
+;; (cb-i-tripper, a monitor-self token): the JDK's lock is reentrant, so the action
+;; itself may call isBroken, getNumberWaiting and reset, and those go straight in.
+;; The wait is on the barrier, not the generation, because a reset inside the
+;; action replaces the generation and arrivals must still wait for the action.
+;; await() from inside the action hangs on the JDK too (it waits for a trip only
+;; it could make), so it is not let in.
 (define cb-i-mu 0)
 (define cb-i-cv 1)
 (define cb-i-parties 2)
 (define cb-i-action 3)
 (define cb-i-gen 4)
 (define cb-i-count 5)
+(define cb-i-tripper 6)
 (define (cb-ref st i) (vector-ref st i))
 (define (cb-gen-tripped? g) (vector-ref g 0))
 (define (cb-gen-broken? g) (vector-ref g 1))
@@ -501,17 +506,20 @@
 ;; generation is tripping.
 (define (cb-wait-idle! st)
   (jolt-cv-wait (cb-ref st cb-i-mu) (cb-ref st cb-i-cv) #f
-    (lambda (_) (if (cb-gen-tripping? (cb-ref st cb-i-gen)) jolt-cv-again #t))))
+    (lambda (_) (if (cb-ref st cb-i-tripper) jolt-cv-again #t))))
 ;; mu NOT held: wait, uninterruptibly, until G has tripped or broken.
 (define (cb-wait-outcome! st g)
   (jolt-cv-wait (cb-ref st cb-i-mu) (cb-ref st cb-i-cv) #f
     (lambda (_) (if (or (cb-gen-tripped? g) (cb-gen-broken? g)) #t jolt-cv-again))))
-;; Run (f) under mu once no generation is tripping, the JDK's lock(). F must not
-;; answer 'busy.
-(define (cb-with-lock st f)
+;; Run (f) under mu once no action is running, the JDK's lock(). The action's
+;; own thread is let in when REENTRANT?. F must not answer 'busy.
+(define (cb-with-lock st f . reentrant?)
   (let retry ()
     (let ((r (jolt-with-mutex (cb-ref st cb-i-mu)
-               (if (cb-gen-tripping? (cb-ref st cb-i-gen)) 'busy (f)))))
+               (let ((t (cb-ref st cb-i-tripper)))
+                 (if (and t (not (and (pair? reentrant?) (eq? t (monitor-self)))))
+                     'busy
+                     (f))))))
       (if (eq? r 'busy)
           (begin (cb-wait-idle! st) (retry))
           r))))
@@ -546,7 +554,10 @@
                     (else
                      (let ((index (- (cb-ref st cb-i-count) 1)))
                        (vector-set! st cb-i-count index)
-                       (cond ((= index 0) (vector-set! g 2 #t) (list 'trip g))
+                       (cond ((= index 0)
+                              (vector-set! g 2 #t)
+                              (vector-set! st cb-i-tripper (monitor-self))
+                              (list 'trip g))
                              ((and ms (<= ms 0)) (cb-break! st g) 'timeout)
                              (else (list 'wait g index)))))))))))
     (cond
@@ -557,12 +568,18 @@
        (let ((g (cadr r))
              (action (cb-ref st cb-i-action)))
          (when action
-           (guard (e (#t (jolt-with-mutex mu (vector-set! g 2 #f) (cb-break! st g))
+           (guard (e (#t (jolt-with-mutex mu
+                           (vector-set! g 2 #f)
+                           (vector-set! st cb-i-tripper #f)
+                           (cb-break! st g)
+                           (jolt-cv-wake! cv))
                          (raise e)))
              ((runnable->thunk action))))
          (jolt-with-mutex mu
            (vector-set! g 2 #f)
-           (vector-set! g 0 #t)
+           (vector-set! st cb-i-tripper #f)
+           ;; a reset inside the action already broke G; its waiters keep that
+           (unless (cb-gen-broken? g) (vector-set! g 0 #t))
            (cb-new-gen! st)
            (jolt-cv-wake! cv))
          0))
@@ -617,7 +634,7 @@
     (when (<= n 0) (throw-jvm 'IllegalArgumentException jolt-nil))
     (when action (cb-check-action! action))
     (make-jhost "cyclic-barrier"
-                (vector (make-mutex) (jolt-make-cv) n action (vector #f #f #f) n))))
+                (vector (make-mutex) (jolt-make-cv) n action (vector #f #f #f) n #f))))
 (for-each (lambda (nm) (register-class-ctor! nm cyclic-barrier-ctor))
           '("CyclicBarrier" "java.util.concurrent.CyclicBarrier"))
 (register-host-methods! "cyclic-barrier"
@@ -626,17 +643,18 @@
    (cons "getParties" (lambda (self) (cb-ref (jhost-state self) cb-i-parties)))
    (cons "getNumberWaiting" (lambda (self)
      (let ((st (jhost-state self)))
-       (cb-with-lock st (lambda () (- (cb-ref st cb-i-parties) (cb-ref st cb-i-count)))))))
+       (cb-with-lock st (lambda () (- (cb-ref st cb-i-parties) (cb-ref st cb-i-count))) #t))))
    (cons "isBroken" (lambda (self)
      (let ((st (jhost-state self)))
-       (cb-with-lock st (lambda () (cb-gen-broken? (cb-ref st cb-i-gen)))))))
+       (cb-with-lock st (lambda () (cb-gen-broken? (cb-ref st cb-i-gen))) #t))))
    ;; reset: break the current generation, then start a fresh one
    (cons "reset" (lambda (self)
      (let ((st (jhost-state self)))
        (cb-with-lock st (lambda ()
          (cb-break! st (cb-ref st cb-i-gen))
          (cb-new-gen! st)
-         #t)))
+         #t)
+         #t))
      jolt-nil))))
 
 ;; --- class rows ---------------------------------------------------------------

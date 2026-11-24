@@ -493,6 +493,14 @@
           (.toByteArray out)
           (do (.write out chunk) (recur next-i)))))))
 
+(defn- parse-retry-after
+  "Retry-After as whole seconds, or nil. Only the delta-seconds form is used; an
+  HTTP-date would mean trusting this machine's clock against the server's."
+  [v]
+  (when v
+    (when-let [n (parse-long (str/trim v))]
+      (when-not (neg? n) n))))
+
 (defn- parse-response
   "raw: the full response byte-array. Returns {:status :header-pairs :body}."
   [raw]
@@ -516,6 +524,7 @@
           body (if chunked? (dechunk body-ba) body-ba)
           clen (when-let [c (header-ci pairs "content-length")] (parse-long (str/trim c)))]
       {:status status :header-pairs pairs :body body
+       :retry-after (parse-retry-after (header-ci pairs "retry-after"))
        ;; a Content-Length only frames a non-chunked body; used to reject a
        ;; truncated download (a mid-body TLS drop reads as a short clean EOF).
        :content-length (when-not chunked? clen)})))
@@ -579,6 +588,20 @@
 ;; 503) clear in well under a second. A long backoff would trade a rare recovery
 ;; for a guaranteed stall on the genuinely-down case.
 (def ^:private retry-backoff-ms [200 600])
+;; A 429 is the exception: a rate limit lasts seconds, and Central hands them to
+;; shared CI runners, so 800 ms of retries failed whole release runs. The
+;; server's Retry-After wins when it sends one, capped so a bad header cannot
+;; stall a build for an hour.
+(def ^:private rate-limit-backoff-ms [2000 5000])
+(def ^:private max-retry-after-ms 30000)
+
+(defn- retry-delay-ms
+  "How long to wait after attempt N failed with R."
+  [r n]
+  (if-let [secs (:retry-after r)]
+    (min max-retry-after-ms (* 1000 secs))
+    (let [backoff (if (= 429 (:status r)) rate-limit-backoff-ms retry-backoff-ms)]
+      (nth backoff (dec n) (peek backoff)))))
 
 (defn- with-retries
   "Call ATTEMPT until it returns a non-:retryable outcome, at most max-attempts
@@ -589,7 +612,7 @@
     (let [r (attempt)]
       (if (or (not= :retryable (:outcome r)) (>= n max-attempts))
         r
-        (do (when-let [ms (nth retry-backoff-ms (dec n) nil)] (Thread/sleep ms))
+        (do (Thread/sleep (retry-delay-ms r n))
             (recur (inc n)))))))
 
 (defn- fetch-once [url out-path]
@@ -597,7 +620,7 @@
         st (tls-connect host port)]
     (try
       (tls-write st (.getBytes (build-request host port path) "UTF-8"))
-      (let [{:keys [status header-pairs body content-length]} (parse-response (recv-all st))
+      (let [{:keys [status header-pairs body content-length retry-after]} (parse-response (recv-all st))
             loc (header-ci header-pairs "location")]
         (cond
           (and (redirect-codes status) loc)
@@ -608,7 +631,8 @@
           (and (<= 200 status 299) content-length (not= content-length (alength body)))
           {:outcome :retryable :status status :error "truncated body"}
           (<= 200 status 299) (do (write-bytes-to-file out-path body) {:outcome :ok :status status})
-          :else {:outcome (classify-status status) :status status}))
+          :else (cond-> {:outcome (classify-status status) :status status}
+                  retry-after (assoc :retry-after retry-after))))
       (finally (tls-close st)))))
 
 (defn fetch*

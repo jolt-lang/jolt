@@ -192,6 +192,41 @@
   (let [l (f/spawn #(.await b))]
     (ok "CyclicBarrier: fiber waiter's timeout during the action" (= [1 0 false] [(f/join w) (f/join l) (.isBroken b)]))))
 
+;; The action runs with the JDK's lock held, so it may query or reset its own
+;; barrier. Each call answers under a deadline: a hang reads as :hung.
+(defn- within [ms f] (deref (future (f)) ms :hung))
+(let [bp (promise)
+      seen (atom nil)
+      b (CyclicBarrier. 1 #(reset! seen [(.isBroken @bp) (.getNumberWaiting @bp)]))]
+  (deliver bp b)
+  (ok "CyclicBarrier: action may call isBroken/getNumberWaiting"
+      (= [0 [false 1]] [(within 3000 #(.await b)) @seen])))
+(let [bp (promise)
+      b (CyclicBarrier. 2 #(.reset @bp))]
+  (deliver bp b)
+  (let [w (future (try (.await b) (catch Throwable e (.getSimpleName (class e)))))]
+    (loop [k 0] (when (and (< k 2000) (zero? (.getNumberWaiting b))) (Thread/sleep 1) (recur (inc k))))
+    (ok "CyclicBarrier: action may reset its barrier"
+        (= [0 "BrokenBarrierException" false]
+           [(within 3000 #(.await b)) (deref w 3000 :hung) (.isBroken b)]))))
+;; an arrival during an action that reset the barrier waits for the action, then
+;; counts in the generation that follows it
+(let [bp (promise)
+      first? (atom true)
+      b (CyclicBarrier. 2 #(when (compare-and-set! first? true false) (.reset @bp) (Thread/sleep 300)))]
+  (deliver bp b)
+  (let [w (future (try (.await b) (catch Throwable e :bbe)))]
+    (loop [k 0] (when (and (< k 2000) (zero? (.getNumberWaiting b))) (Thread/sleep 1) (recur (inc k))))
+    (let [tripper (future (.await b))
+          _ (Thread/sleep 100)
+          late (future (try (.await b 5 TimeUnit/SECONDS) (catch Throwable e (.getSimpleName (class e)))))]
+      (deref tripper 3000 :hung)
+      (Thread/sleep 100)
+      (ok "CyclicBarrier: arrival during a resetting action lands in the next generation"
+          (= [1 :bbe] [(.getNumberWaiting b) (deref w 3000 :hung)]))
+      (.await b)
+      (ok "CyclicBarrier: that arrival is released by the next trip" (= 1 (deref late 3000 :hung))))))
+
 (println (str "sync-classes-test: " (- @total @fails) "/" @total " passed"))
 (if (zero? @fails)
   (println "SYNC-CLASSES-TEST OK")
