@@ -10,6 +10,9 @@
   (let* ((cell (var-cell-lookup ns name))
          (root (and cell (var-cell-root cell))))
     (if (procedure? root) root (gensym "missing-guard-procedure"))))
+
+(define jolt-vector-filter-map-comp
+  (capture-optional-guard-procedure "clojure.core" "comp"))
 ;;
 ;; A few clojure.core predicates are implemented in the overlay by inspecting a
 ;; tagged value's :jolt/type key (e.g. (get x :jolt/type)). That key doesn't

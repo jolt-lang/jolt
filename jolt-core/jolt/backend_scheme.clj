@@ -49,7 +49,9 @@
                      *fnsrc-regs* fnsrc-flush]]
             [jolt.backend-scheme.ffi :as ffi :refer [emit-ffi-node]]
             [jolt.backend-scheme.interop :refer [host-call-emit]]
-            [jolt.backend-scheme.lambda :refer [emit-fn emit-nhint-coerce]]))
+            [jolt.backend-scheme.lambda
+             :refer [emit-fn emit-nhint-coerce]]
+            [jolt.backend-scheme.fused :refer [emit-fused-invoke]]))
 
 ;; op-registry and its derived accessor tables live in jolt.op-registry — the
 ;; single source of truth for per-op facts, shared with the passes. Bind them to
@@ -1054,10 +1056,11 @@
 (defn- emit-invoke [node]
   (let [tail? *tail?*]           ; capture: children below emit non-tail
    (binding [*tail?* false]
-    (let [fnode (:fn node)
-          arg-nodes (:args node)
-          args (mapv emit arg-nodes)
-          tl (or (node-line node) 0)]
+    (or (emit-fused-invoke emit node tail?)
+      (let [fnode (:fn node)
+            arg-nodes (:args node)
+            args (mapv emit arg-nodes)
+            tl (or (node-line node) 0)]
       ;; R2: record this site's static callee for the callsite table. Runs after
       ;; the args are emitted, so when a line carries both a call and its
       ;; operand's call the OUTER (later-emitted) callee wins — the tail call's.
@@ -1073,7 +1076,7 @@
         :ich (node-inline-chain node)
         :nop (native-op fnode (count args))
         :kind (ifn-kind fnode (count args))
-        :order-args (fn [build] (ordered-call arg-nodes args build))})))))
+        :order-args (fn [build] (ordered-call arg-nodes args build))}))))))
 
 ;; A try's body runs in a closure of guard's or dynamic-wind's. Under debug
 ;; locals it is a tail region of its own, so its leaves keep the scope live there.

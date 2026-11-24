@@ -215,6 +215,9 @@
                   "jrec-own-slot-miss" "jrec-own-slot-set-miss!" "jrec*-vals" "unbox" "pvec-in-range/i" "jrec-self-site-fill!" "jrec-field"
                   "jolt-atom-new" "jolt-atom-val" "jolt-atom-cas!"
                   "pvec?" "pvec-cnt" "pvec-nth-in-range" "fx<?"
+                  ;; The guarded into/filter/map lowering keeps these runtime
+                  ;; entries visible even when a user local has the same name.
+                  "pvec-ent" "jolt-vector-filter-map-comp" "jolt-vector-filter-map" "td-filter" "td-map"
                   "jrec1?" "jrec2?" "jrec3?" "jrec4?" "jrec5?" "jrec6?" "jrec7?" "jrec8?"
                   "keyword-t?" "mark-macro!" "set-var-meta!" "throw-jvm"
                   "def-var-linked!" "amap-slots->pmap"
