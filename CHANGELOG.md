@@ -16,7 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when it is done with them, checked at compile time with an ownership pass
   ported from Carp, so using an array after giving it away, or returning one it
   only borrowed, is a compile error. Long arithmetic overflows with
-  `ArithmeticException` as on the JVM, and failures raise the JVM's exceptions.
+  `ArithmeticException` as on the JVM, and failures raise the JVM's exceptions:
+  a helper that recurses deeper than the thread's stack raises
+  `StackOverflowError`.
   Under `jolt run` and in the REPL the same checked program runs as Jolt, so
   both agree. By default other threads keep running and collecting while a
   region works, its borrowed arrays pinned in place for the call.
