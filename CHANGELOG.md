@@ -89,6 +89,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `setName` or `setPriority` called on a `Thread` right after `.start` could
+  be lost: the new thread copied its name and priority into the runtime's
+  tables after it published its id, so a change made between the two was
+  overwritten with the old value. The copy and the setters now run under the
+  thread object's lock.
 - `double-array`, `long-array` and the other array constructors read a numeric
   size with `Number.intValue`, as the JVM does: `(double-array 4294967296)` is
   empty and `(double-array Long/MAX_VALUE)` raises `NegativeArraySizeException`
