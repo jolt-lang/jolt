@@ -234,6 +234,8 @@
 ;;                           call's own answer type is read off.
 ;;   :devirt-type :devirt-*  a monomorphic protocol call's resolved impl (backend).
 ;;   :num-ret                a ^double/^long declared return, on a :var node
+;;   :jvm-long-ret           every arglist tagged ^long, on a :var node: the JVM
+;;                           types a call primitive (jolt.passes.numeric)
 ;;                           (:float for a jolt.ffi :float result).
 ;;   :div-prim               per-step flags on a (/ ...) :invoke: a true step has a
 ;;                           primitive double/float operand (jolt-div2-prim).

@@ -36,7 +36,8 @@
             [jolt.native.stack :as stack]))
 
 (def err-codes
-  {:oob 1 :overflow 2 :div-zero 3 :neg-size 4 :long-range 5 :oom 6 :fixnum-store 7 :stack-overflow 8})
+  {:oob 1 :overflow 2 :div-zero 3 :neg-size 4 :long-range 5 :oom 6 :fixnum-store 7 :stack-overflow 8
+   :mod-zero 9})
 
 ;; A borrowed long-array is a Chez fxvector: each slot a fixnum, the value times
 ;; 8 (scheme.h Sfixnum/Sfixnum_value). jolt widens the backing once a value
@@ -182,7 +183,9 @@
       ;; behind the guard that makes it unreachable
       (let [[[a0 _] [b0 _]] args r (fresh! :long) a (fresh! :long) b (fresh! :long)]
         (line! a " = " a0 "; " b " = " b0 ";")
-        (line! "if (" b " == 0) " (raise! node :div-zero))
+        ;; quot and rem are Java's long / and % ("/ by zero"); mod is a Clojure
+        ;; fn over Objects, whose zero is Numbers' "Divide by zero"
+        (line! "if (" b " == 0) " (raise! node (if (= p :mod) :mod-zero :div-zero)))
         (case p
           ;; INT64_MIN / -1 is undefined in C; the JVM's long / wraps to INT64_MIN
           :quot (line! r " = (" b " == -1) ? (int64_t)(0ULL - (uint64_t)" a ") : " a " / " b ";")
@@ -335,7 +338,7 @@
                 r (fresh! :double)
                 f (case (:fn node) "sqrt" "sqrt" "sin" "sin" "cos" "cos" "tan" "tan"
                         "exp" "exp" "log" "log" "floor" "floor" "ceil" "ceil"
-                        "pow" "pow" "atan2" "atan2")]
+                        "pow" "jn_pow" "atan2" "atan2")]
             (line! r " = " f "(" (str/join ", " args) ");")
             r)
     ;; a temp like every other value: inlined, (aget a (alength a)) emitted
@@ -513,6 +516,12 @@ __attribute__((unused)) static inline uintptr_t jn_stack_limit(void) {
 /* Chez's 64-bit flvector layout (scheme.h Sflvector_length / Sflvector_ref) */
 #define JN_FLV_LEN(x) ((int64_t)((uintptr_t)(*((intptr_t *)((uintptr_t)(x) + 1))) >> 4))
 #define JN_FLV_DATA(x) ((double *)((uintptr_t)(x) + 9))
+/* Math.pow is Java's, not C's: a NaN exponent, or a base of magnitude 1 to an
+   infinite power, is NaN where C's pow answers 1 */
+static inline __attribute__((unused)) double jn_pow(double x, double y) {
+  if (isnan(y) || (isinf(y) && fabs(x) == 1.0)) return NAN;
+  return pow(x, y);
+}
 #endif
 /* allocation hooks: the test build defines these to track every live block */
 #ifndef JN_CALLOC

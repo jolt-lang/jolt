@@ -101,6 +101,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   empty and `(double-array Long/MAX_VALUE)` raises `NegativeArraySizeException`
   -1. jolt tried to allocate the whole value, which ran out of memory or leaked
   Chez's `make-flvector` error as a `ClassCastException`.
+- `Double/doubleToRawLongBits` and `Float/floatToRawIntBits` kept a NaN's
+  payload and sign, as on the JVM, instead of answering the canonical NaN:
+  `(Double/doubleToRawLongBits (Double/longBitsToDouble 0x7ff0000000000001))`
+  was 9221120237041090560 and is now 9218868437227405313.
+  `Float/intBitsToFloat` keeps a NaN payload for the raw form to read back
+  (a signaling one too, while `(double f)` widens it to the quiet NaN as the
+  JVM does), and `ByteBuffer.putDouble`/`putFloat` store the raw bits as the
+  JDK does.
+  `doubleToLongBits`, `floatToIntBits`, hashing and `DataOutputStream`'s
+  `writeDouble`/`writeFloat` still fold every NaN into the canonical one.
+- `Math/pow` and `clojure.math/pow` answered 1.0 for a NaN exponent over a
+  base of 1.0 and for a base of ±1.0 to an infinite power, which is C's pow.
+  Java's answers NaN for both, and so does jolt now, hinted or not.
+- Integer division by zero raised the JVM's message only some of the time:
+  `quot` and `rem` over `^long` operands said
+  "fxquotient: attempt to divide by zero" where the JVM says "/ by zero", and
+  `Math/floorDiv`, `Math/floorMod`, `clojure.math/floor-div` and
+  `unchecked-divide-int` said things like "/: undefined for 0". They now say
+  "/ by zero" wherever the JVM does: over literals, let-bound literals,
+  casts, `count`, interop calls answering an int, fns whose arglist is tagged
+  `^long`, and arithmetic over those, while `mod`, `/` and `quot`/`rem` over a
+  boxed value keep the JVM's "Divide by zero".
+- `Math/floorDiv`, `floorMod`, `addExact`, `subtractExact`, `multiplyExact`,
+  `incrementExact`, `decrementExact` and `negateExact` accepted any number and
+  truncated it: `(Math/floorDiv 5.5 2)` was 2. They have only int and long
+  overloads, so a double, Float, ratio, BigDecimal, char or nil argument is now
+  the JVM's `IllegalArgumentException` "No matching method floorDiv found
+  taking 2 args".
+- `DataOutputStream.writeUTF`, `writeChars` and `writeBytes` of nil, and a
+  `DataInputStream` or `DataOutputStream` built over nil, threw
+  `NullPointerException` with no message or a generic one. They now carry the
+  JDK's message, such as `Cannot invoke "String.length()" because "str" is
+  null` and `Cannot invoke "java.io.InputStream.read()" because "this.in" is
+  null`. Reading into a nil array from an `InputStream` says
+  `Cannot read the array length because "b" is null` instead of leaking a Chez
+  error, or no message from a `FileInputStream` or `PushbackInputStream` (and a
+  `DataInputStream` over one), as the JDK's do.
 - Calling nil as a fn, as in `(update {} :a nil)`, `(swap! a nil)` or
   `(apply nil [])`, throws `NullPointerException` naming the IFn method as the
   JVM does (`Cannot invoke "clojure.lang.IFn.invoke(Object)"`,

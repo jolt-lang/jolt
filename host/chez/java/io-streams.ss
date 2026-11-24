@@ -288,6 +288,24 @@
                     done
                     (loop (- left k) (+ done k)))))))))
 
+;; read(byte[]) and read(byte[],int,int)'s array, refused as the JDK refuses a
+;; nil one: InputStream.read(byte[]) and most read(byte[],int,int)s take its
+;; length first; FileInputStream's native read and PushbackInputStream's own
+;; null test throw with no message.
+(define (in-stream-native-null? self)
+  (or (in-stream-pushback self)
+      (equal? (stream-class self) "java.io.FileInputStream")
+      ;; a DataInputStream sharing such a stream's port hands the null on to it
+      (let ((st (jhost-state self)))
+        (and (fx>? (vector-length st) dis-native-null-slot)
+             (vector-ref st dis-native-null-slot)))))
+(define (in-stream-read-buf self rest)
+  (let ((buf (car rest)))
+    (when (jolt-nil? buf)
+      (if (and (pair? (cdr rest)) (in-stream-native-null? self))
+          (throw-jvm 'NullPointerException jolt-nil)
+          (raf-null-array!)))
+    buf))
 (register-host-methods! "in-stream"
   (list
    (cons "read"
@@ -313,7 +331,7 @@
                  ;; not "until the buffer is full": filling it first hung a read
                  ;; over a pipe or a terminal, where the rest of the buffer only
                  ;; arrives after whatever the program does with these bytes.
-                 (let* ((buf (car rest))
+                 (let* ((buf (in-stream-read-buf self rest))
                         (off (if (>= (length rest) 3) (jnum->exact (cadr rest)) 0))
                         (len (if (>= (length rest) 3) (jnum->exact (caddr rest)) (ja-len buf)))
                         (v (and (jolt-array? buf) (jolt-array-vec buf))))
@@ -1597,8 +1615,6 @@
 ;; A short read is the JDK's EOFException with no message. The bytes it did get
 ;; are consumed, as they are on the JVM, which reads them one at a time.
 (define (data-eof!) (throw-jvm 'EOFException jolt-nil))
-(define (data-null-check! x)
-  (when (jolt-nil? x) (throw-jvm 'NullPointerException jolt-nil)))
 ;; the JDK's Objects.checkFromIndexSize on a byte[]
 (define (data-array-check! arr off len)
   (when (jolt-nil? arr) (raf-null-array!))
@@ -1661,8 +1677,12 @@
                     (let ((v (fx- cp #x10000)))
                       (cons (fx+ #xD800 (fxsrl v 10))
                             (cons (fx+ #xDC00 (fxand v #x3FF)) acc)))))))))
-(define (data-need-string x)
-  (data-null-check! x)
+;; PARAM is the JDK method's parameter, which its helpful NPE names:
+;; writeUTF's is str, writeBytes' and writeChars' s.
+(define (data-need-string x param)
+  (when (jolt-nil? x)
+    (throw-jvm 'NullPointerException
+               (string-append "Cannot invoke \"String.length()\" because \"" param "\" is null")))
   (if (string? x) x (jolt-str-render-one x)))
 
 ;; writeUTF: modified UTF-8, a two-byte length and then the bytes. U+0000 is C0 80
@@ -1854,12 +1874,12 @@
          (for-each (lambda (u)
                      (let ((b (fxand u #xFF)))
                        (emit1! self (if (fx>? b 127) (fx- b 256) b))))
-                   (data-string-units (data-need-string x)))))
+                   (data-string-units (data-need-string x "s")))))
    (mk "writeChars"
        (lambda (self x)
          (for-each (lambda (u) (emit! self (uint-bytes u 2)))
-                   (data-string-units (data-need-string x)))))
-   (mk "writeUTF" (lambda (self x) (emit! self (data-encode-utf (data-need-string x)))))))
+                   (data-string-units (data-need-string x "s")))))
+   (mk "writeUTF" (lambda (self x) (emit! self (data-encode-utf (data-need-string x "str")))))))
 
 ;; DataInputStream. A jolt stream over a plain port is shared, which reads the
 ;; same bytes without a dispatch per byte. Any other stream (a proxy, a reify, a
@@ -1876,6 +1896,19 @@
 (define (data-in-stream? x)
   (and (in-stream? x)
        (let ((c (stream-class x))) (and c (string=? c "java.io.DataInputStream")))))
+;; The stream a dispatched DataInputStream reads, or the JDK's NPE for a null
+;; one, which names the InputStream method it was about to call on this.in.
+(define (dis-inner self sig)
+  (let ((inner (in-stream-data-inner self)))
+    (if (jolt-nil? inner)
+        (throw-jvm 'NullPointerException
+                   (string-append "Cannot invoke \"java.io.InputStream." sig
+                                  "\" because \"this.in\" is null"))
+        inner)))
+;; Past the class slot, on a DataInputStream that shares its stream's port: #t
+;; when that stream refuses read(nil, off, len) with no message (in-stream-read-buf),
+;; which the JDK's DataInputStream reaches by handing the call on.
+(define dis-native-null-slot 10)
 (define (dis-pending self) (vector-ref (jhost-state self) 8))
 (define (dis-pending-set! self b) (vector-set! (jhost-state self) 8 b))
 ;; read(): a byte 0..255, or -1
@@ -1883,12 +1916,12 @@
   (let ((p (dis-pending self)))
     (if p
         (begin (dis-pending-set! self #f) p)
-        (jnum->exact (record-method-dispatch (in-stream-data-inner self) "read" jolt-nil)))))
+        (jnum->exact (record-method-dispatch (dis-inner self "read()") "read" jolt-nil)))))
 ;; read(byte[],off,len): the count, or -1
 (define (dis-d-fill self arr off len)
-  (let ((inner (in-stream-data-inner self)) (p (dis-pending self)))
+  (let ((p (dis-pending self)))
     (define (call arr off len)
-      (jnum->exact (record-method-dispatch inner "read"
+      (jnum->exact (record-method-dispatch (dis-inner self "read(byte[], int, int)") "read"
                      (list->cseq (list arr (->num off) (->num len))))))
     (if (and p (fx>? len 0))
         (begin
@@ -1903,9 +1936,9 @@
         (call arr off len))))
 (define (dis-d-available self)
   (+ (if (dis-pending self) 1 0)
-     (jnum->exact (record-method-dispatch (in-stream-data-inner self) "available" jolt-nil))))
+     (jnum->exact (record-method-dispatch (dis-inner self "available()") "available" jolt-nil))))
 (define (dis-d-skip self n)
-  (let ((inner (in-stream-data-inner self)))
+  (let ((inner (dis-inner self "skip(long)")))
     (if (<= n 0)
         0
         (let* ((p (dis-pending self))
@@ -1936,10 +1969,12 @@
              (not (in-stream-replay inner))
              (not (piped-pipe inner))
              (not (in-stream-sequence-close inner)))
-        (make-jhost "in-stream"
-                    (vector (vector-ref (jhost-state inner) 0)
-                            (vector-ref (jhost-state inner) 1)
-                            (vector-ref (jhost-state inner) 2)))
+        (let ((v (make-vector (fx+ dis-native-null-slot 1) #f)))
+          (vector-set! v 0 (vector-ref (jhost-state inner) 0))
+          (vector-set! v 1 (vector-ref (jhost-state inner) 1))
+          (vector-set! v 2 (vector-ref (jhost-state inner) 2))
+          (vector-set! v dis-native-null-slot (and (in-stream-native-null? inner) #t))
+          (make-jhost "in-stream" v))
         (let* ((self #f)
                (port (make-custom-binary-input-port
                        "data-source"
@@ -1984,7 +2019,7 @@
       (if (in-stream-data-inner self)
           (cond ((null? rest) (->num (dis-d-read1 self)))
                 ((null? (cdr rest))
-                 (data-null-check! (car rest))
+                 (when (jolt-nil? (car rest)) (raf-null-array!))
                  (->num (dis-d-fill self (car rest) 0 (ja-len (car rest)))))
                 (else (->num (dis-d-fill self (car rest) (jnum->exact (cadr rest))
                                          (jnum->exact (caddr rest))))))
@@ -2004,9 +2039,21 @@
 (wrap-host-method! "in-stream" "close"
   (lambda (old)
     (lambda (self)
-      (cond ((in-stream-data-inner self)
-             => (lambda (inner) (record-method-dispatch inner "close" jolt-nil) jolt-nil))
-            (else (old self))))))
+      (if (in-stream-data-inner self)
+          (begin (record-method-dispatch (dis-inner self "close()") "close" jolt-nil) jolt-nil)
+          (old self)))))
+;; FilterInputStream hands mark, reset and markSupported to this.in too; over a
+;; null one each is the JDK's NPE
+(define (dis-null-in-check! self sig)
+  (when (and (data-in-stream? self) (jolt-nil? (in-stream-data-inner self)))
+    (dis-inner self sig)))
+(wrap-host-method! "in-stream" "mark"
+  (lambda (old)
+    (lambda (self . args) (dis-null-in-check! self "mark(int)") (apply old self args))))
+(wrap-host-method! "in-stream" "reset"
+  (lambda (old) (lambda (self) (dis-null-in-check! self "reset()") (old self))))
+(wrap-host-method! "in-stream" "markSupported"
+  (lambda (old) (lambda (self) (dis-null-in-check! self "markSupported()") (old self))))
 
 ;; DataOutputStream. Unbuffered, as the JDK's is: each write goes straight on to
 ;; the wrapped stream through its own write, with the call the JDK makes, and is
@@ -2023,7 +2070,15 @@
 (define (data-out-count! self n)
   (let ((c (out-stream-data-count self)))
     (set-box! c (min 2147483647 (+ (unbox c) n)))))
+(define (data-out-inner self sig)
+  (let ((inner (out-stream-filter-inner self)))
+    (if (jolt-nil? inner)
+        (throw-jvm 'NullPointerException
+                   (string-append "Cannot invoke \"java.io.OutputStream." sig
+                                  "\" because \"this.out\" is null"))
+        inner)))
 (define (data-out-call! self args)
+  (data-out-inner self (if (null? (cdr args)) "write(int)" "write(byte[], int, int)"))
   (let ((port (out-stream-port self)))
     (unless (port-closed? port) (flush-output-port port))
     (record-method-dispatch (out-stream-filter-inner self) "write" (list->cseq args))))
@@ -2063,8 +2118,8 @@
         (guard (e (#t (set! failed (list e))))
           (let ((port (out-stream-port self)))
             (unless (port-closed? port) (flush-output-port port)))
-          (record-method-dispatch inner "flush" jolt-nil))
-        (record-method-dispatch inner "close" jolt-nil)
+          (record-method-dispatch (data-out-inner self "flush()") "flush" jolt-nil))
+        (record-method-dispatch (data-out-inner self "close()") "close" jolt-nil)
         (when failed (raise (car failed)))))
     jolt-nil))
 (define (make-data-out-stream inner)
@@ -2090,6 +2145,11 @@
       (if (data-out-stream? self)
           (data-out-close! self)
           (old self)))))
+(wrap-host-method! "out-stream" "flush"
+  (lambda (old)
+    (lambda (self)
+      (when (data-out-stream? self) (data-out-inner self "flush()"))
+      (old self))))
 
 ;; --- java.io.RandomAccessFile -------------------------------------------------
 ;; state #(port writable?). One Chez file port serves both directions: "r" opens

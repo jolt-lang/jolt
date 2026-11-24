@@ -37,11 +37,13 @@
 ;; its "No matching method" miss: without the arity, (Math/floor 4.5 1) lowered
 ;; to (flfloor 4.5 1.0) and failed Chez's compile-time arity check instead. (Chez
 ;; flatan and fllog take a second argument; Math/atan and Math/log do not.)
+;; pow is jolt-fl-pow (host/chez/seq.ss), flexpt behind the two special cases
+;; where Java's pow and C's disagree.
 (def ^:private math-fl-ops
   {"sqrt" ["flsqrt" 1] "sin" ["flsin" 1] "cos" ["flcos" 1] "tan" ["fltan" 1]
    "asin" ["flasin" 1] "acos" ["flacos" 1] "atan" ["flatan" 1] "atan2" ["flatan" 2]
    "exp" ["flexp" 1] "log" ["fllog" 1] "floor" ["flfloor" 1] "ceil" ["flceiling" 1]
-   "pow" ["flexpt" 2] "abs" ["flabs" 1]})
+   "pow" ["jolt-fl-pow" 2] "abs" ["flabs" 1]})
 
 ;; java.lang.Math members that are integer-in/integer-out on the JVM, as
 ;; [op arity] over the jolt-l-* fixnum macros (host/chez/seq.ss). Without this a
@@ -52,8 +54,8 @@
 ;; The jolt-l-* helpers, not bare fx ops: a :long is promised to be within the
 ;; 64-bit range, which is WIDER than Chez's 61-bit fixnum, so a bare fxmin would
 ;; crash on a legitimate :long. Each one tests its operands and falls back to the
-;; generic op, exactly as the arithmetic path does. floorMod reuses jolt-l-mod —
-;; Math.floorMod is Scheme's modulo — and floorDiv gets jolt-floor-quotient, since
+;; generic op, exactly as the arithmetic path does. floorMod is jolt-l-floor-mod —
+;; Scheme's modulo, with Java's "/ by zero" — and floorDiv gets jolt-floor-quotient, since
 ;; the quot above truncates toward zero where floorDiv floors.
 ;;
 ;; Only members the Math shim (host/chez/java/host-static-methods.ss) actually
@@ -66,7 +68,7 @@
 (def ^:private math-lng-ops
   {"abs" ["jolt-l-abs" 1]
    "min" ["jolt-l-min" 2] "max" ["jolt-l-max" 2]
-   "floorDiv" ["jolt-floor-quotient" 2] "floorMod" ["jolt-l-mod" 2]})
+   "floorDiv" ["jolt-floor-quotient" 2] "floorMod" ["jolt-l-floor-mod" 2]})
 
 ;; Interop methods that answer a Chez FIXNUM when the receiver is proven (the
 ;; :target-type stamp jolt.passes.types/the analyzer puts on a :host-call). Both
@@ -182,7 +184,7 @@
 ;; A non-numeric result (a comparison) doesn't propagate a numeric kind.
 (defn- propagate [spec] (if (= spec :bool) nil spec))
 
-(declare an rebind-boxed boxed-operand?)
+(declare an rebind-boxed boxed-operand? jvm-long-expr? rebind-jvm-long)
 
 ;; A let's bindings analyzed in its scope order (jolt.ir/thread-bindings): each
 ;; name gets its init's kind and boxedness. A letfn sibling is bound with no
@@ -190,13 +192,16 @@
 (defn- let-scope [node tenv]
   (thread-bindings node tenv identity
                    (fn [te nm _ fact]
-                     (rebind-boxed (assoc te nm (when fact (nth fact 0))) nm
-                                   (if fact (nth fact 1) false)))
+                     (rebind-jvm-long
+                      (rebind-boxed (assoc te nm (when fact (nth fact 0))) nm
+                                    (if fact (nth fact 1) false))
+                      nm (if fact (nth fact 2) false)))
                    ;; a ^doubles/… let binding's init is a :coerce of the
                    ;; array kind, which answers that kind like any coerce
                    (fn [te init]
                      (let [ir (an init te)]
-                       [(nth ir 1) [(nth ir 0) (boxed-operand? init te)]]))))
+                       [(nth ir 1) [(nth ir 0) (boxed-operand? init te)
+                                    (jvm-long-expr? (nth ir 1) te)]]))))
 
 ;; The recur-arg kinds for the recurs targeting THIS loop level. recur only appears
 ;; in tail position (an if branch, a do's ret, a let body), so descend only those;
@@ -256,8 +261,90 @@
            (contains? (or (get tenv :boxed-locals) #{}) (get n :name)))))
 
 (defn- rebind-boxed [tenv nm boxed?]
-  (let [s (or (get tenv :boxed-locals) #{})]
-    (assoc tenv :boxed-locals (if boxed? (conj s nm) (disj s nm)))))
+  (let [s (or (get tenv :boxed-locals) #{})
+        j (get tenv :jvm-long-locals)]
+    ;; every binding site comes through here, so a new binding of the name
+    ;; forgets that an outer one was a JVM primitive long (let-scope then
+    ;; records it again when this one is)
+    (cond-> (assoc tenv :boxed-locals (if boxed? (conj s nm) (disj s nm)))
+      (and j (contains? j nm)) (assoc :jvm-long-locals (disj j nm)))))
+
+;; --- what the JVM compiler types as a primitive long ---------------------------
+;; quot and rem raise "/ by zero" when the JVM compiled them to its (long, long)
+;; overload, Java's own / and %, and "Divide by zero" through the Object one. The
+;; JVM picks by the static type of each operand, which is wider than what :long
+;; proves here: a let-bound literal, (count xs), a cast, an int-returning interop
+;; call and arithmetic over those are all primitive there. Tracking that as :long
+;; would change the arithmetic (a :long overflows where jolt's integers promote),
+;; so it is a fact of its own, :jvm-long-locals in tenv, and it only picks which
+;; message the division raises: such a quot/rem keeps the generic op behind a
+;; zero test (jolt-pquot/jolt-prem). A wrong answer here can only cost a message.
+(defn- rebind-jvm-long [tenv nm long?]
+  (let [j (or (get tenv :jvm-long-locals) #{})]
+    (assoc tenv :jvm-long-locals (if long? (conj j nm) (disj j nm)))))
+
+(def ^:private jvm-long-casts
+  #{"jolt-long-cast" "jolt-int-cast" "jolt-short-cast" "jolt-byte-cast"
+    "jolt-unchecked-long" "jolt-unchecked-int"})
+;; clojure.core fns the JVM inlines to a primitive long when every argument is one
+(def ^:private jvm-long-ops
+  #{"inc" "dec" "+" "-" "*" "min" "max" "quot" "rem" "bit-and" "bit-or" "bit-xor"
+    "bit-not" "bit-shift-left" "bit-shift-right" "unsigned-bit-shift-right"
+    "unchecked-inc" "unchecked-dec" "unchecked-negate" "unchecked-add"
+    "unchecked-subtract" "unchecked-multiply" "unchecked-inc-int" "unchecked-dec-int"
+    "unchecked-negate-int" "unchecked-add-int" "unchecked-subtract-int"
+    "unchecked-multiply-int" "unchecked-divide-int" "unchecked-remainder-int"})
+(def ^:private long-range-max 9223372036854775807)
+(def ^:private long-range-min -9223372036854775808)
+
+(declare jvm-long-expr?)
+
+;; Math members and parse methods that answer a primitive long or int
+(defn- jvm-long-static? [fnode args tenv]
+  (let [c (get fnode :class) m (get fnode :member)]
+    (or (and (contains? #{"Long" "java.lang.Long"} c) (= m "parseLong"))
+        (and (contains? #{"Integer" "java.lang.Integer"} c) (= m "parseInt"))
+        (and (contains? #{"Math" "java.lang.Math"} c)
+             (or (= m "round")
+                 (and (contains? #{"abs" "min" "max" "floorDiv" "floorMod"} m)
+                      (seq args) (every? (fn [a] (jvm-long-expr? a tenv)) args)))))))
+
+;; clojure.core calls the JVM compiles to a primitive long or int
+(defn- jvm-long-core? [nm args tenv]
+  (let [n (count args)]
+    (or (and (contains? #{"count" "alength"} nm) (= n 1))
+        (and (contains? jvm-long-ops nm) (pos? n)
+             (every? (fn [a] (jvm-long-expr? a tenv)) args)))))
+
+(defn- jvm-long-invoke? [node tenv]
+  (let [fnode (get node :fn) args (get node :args)]
+    (or (= :long (get node :num-kind))
+        (some? (get node :lng-op))
+        (some? (get node :v-alength))
+        (= :long (get fnode :num-ret))
+        (true? (get fnode :jvm-long-ret))
+        (and (= :var (get fnode :op)) (= "clojure.core" (get fnode :ns))
+             (jvm-long-core? (get fnode :name) args tenv))
+        (and (= :host-static (get fnode :op)) (jvm-long-static? fnode args tenv)))))
+
+(defn- jvm-long-const? [node]
+  (let [v (get node :val)]
+    (and (number? v) (integer? v) (<= long-range-min v long-range-max))))
+
+(defn- jvm-long-expr?
+  "Whether the JVM compiler would type the (annotated) node a primitive long or int."
+  [node tenv]
+  (case (get node :op)
+    :const (jvm-long-const? node)
+    :local (let [nm (get node :name)]
+             (or (= :long (get tenv nm))
+                 (contains? (or (get tenv :jvm-long-locals) #{}) nm)))
+    :coerce (contains? jvm-long-casts (get node :cast-fn))
+    :if (and (jvm-long-expr? (get node :then) tenv) (jvm-long-expr? (get node :else) tenv))
+    :do (jvm-long-expr? (get node :ret) tenv)
+    :host-call (= :long (interop-fx-kind (get node :target-type) (get node :method)))
+    :invoke (jvm-long-invoke? node tenv)
+    false))
 
 (defn- arity-env [tenv a]
   (let [nh (into {} (get a :nhints))
@@ -467,6 +554,12 @@
   (and (some (fn [c] (= c :long)) cls)
        (every? (fn [c] (or (= c :wild) (= c :long))) cls)))
 
+;; quot and rem over two fixnum literals: the JVM compiles them to its
+;; primitive (long, long) overload, which is Java's / and %, so the long op's
+;; zero divisor ("/ by zero") is the one to raise.
+(defn- literal-long-division? [nm cls]
+  (and (contains? #{"quot" "rem"} nm) (= 2 (count cls)) (every? (fn [c] (= c :wild)) cls)))
+
 ;; :bigdec tolerates any integer literal (:wild or :wild-big).
 (defn- bigdec-operands? [cls]
   (and (some (fn [c] (= c :bigdec)) cls)
@@ -487,7 +580,7 @@
 (defn- arith-invoke
   "Specialize a clojure.core arithmetic/comparison call to the one kind every
   operand shares (:double, :long or :bigdec)."
-  [nm n node1 ars argnodes]
+  [nm n node1 ars argnodes tenv]
   (let [cls (mapv operand-class ars)
         ds (dbl-spec nm n)
         ls (lng-spec nm n)
@@ -495,7 +588,7 @@
     (cond
       (and ds (pos? n) (dbl-operands? nm cls argnodes))
       (dbl-invoke ds node1 cls argnodes)
-      (and ls (pos? n) (long-operands? cls))
+      (and ls (pos? n) (or (long-operands? cls) (literal-long-division? nm cls)))
       [(propagate ls) (assoc node1 :num-kind :long)]
       ;; bigdec: every operand a bigdec (integer literals allowed, coerced at
       ;; runtime). A flonum operand blocks this (double contagion) and falls
@@ -504,6 +597,11 @@
       [(propagate bs) (assoc node1 :num-kind :bigdec)]
       (and (= nm "/") (>= n 2) (some flonum-class? cls))
       (div-prim-invoke node1 cls)
+      ;; quot/rem the JVM compiles to its (long, long) overload: the generic op,
+      ;; with Java's zero message (see jvm-long-expr?)
+      (and (contains? #{"quot" "rem"} nm) (= n 2)
+           (every? (fn [a] (jvm-long-expr? a tenv)) argnodes))
+      [nil (assoc node1 :lng-op (if (= nm "quot") "jolt-pquot" "jolt-prem"))]
       :else [nil node1])))
 
 (defn- an-invoke
@@ -542,7 +640,7 @@
       :else (or (array-invoke nm n node1 ars)
                 (indexed-invoke nm n node1 ars)
                 (core-kind-invoke nm n node1 ars)
-                (arith-invoke nm n node1 ars argnodes)))))
+                (arith-invoke nm n node1 ars argnodes tenv)))))
 
 ;; The casts whose :coerce node takes the inline window fast path when its
 ;; operand is a proven double (:fl-arg, read by the back end's :coerce arm; the
@@ -623,7 +721,7 @@
     [nil (assoc node :arities
                 (mapv (fn [a]
                         (let [e (arity-env tenv a)
-                              e (if self (assoc e self nil) e)]
+                              e (if self (rebind-jvm-long (assoc e self nil) self false) e)]
                           (assoc a :body (nth (an (get a :body) e) 1))))
                       (get node :arities)))]))
 

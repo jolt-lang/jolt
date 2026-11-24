@@ -623,6 +623,20 @@
                (+ (Math/sqrt b) (Math/pow b 2.0) (Math/floor b))
                (Math/atan2 b (double a))))
            [[2 2.5] [3 2.5] [2 -0.0] [2 ##NaN]] :raw true)
+;; Java's pow, not C's: a NaN exponent, or ±1 to an infinite power, is NaN
+(when-let [c (check-run "Math/pow takes Java's special cases" '[^double a ^double b]
+                        '((Math/pow a b))
+                        [[1.0 ##NaN] [-1.0 ##Inf] [1.0 ##-Inf] [2.0 10.0] [##NaN 0.0]] :raw true)]
+  (let [f (checked (:region c) (:call c))]
+    (check-eq "C Math/pow 1.0 ##NaN" (Double/isNaN (f 1.0 ##NaN)) true)
+    (check-eq "C Math/pow -1.0 ##Inf" (Double/isNaN (f -1.0 ##Inf)) true)))
+;; quot and rem over longs are Java's / and %, "/ by zero"; mod is a Clojure fn
+;; over Objects, "Divide by zero", as the same body outside a region says
+(check-run "quot by zero is / by zero" '[^long a ^long b] '((quot a b)) [[7 0] [7 2]] :raw true)
+(check-run "rem by zero is / by zero" '[^long a ^long b] '((rem a b)) [[7 0] [7 2]] :raw true)
+(check-run "mod by zero is Divide by zero" '[^long a ^long b]
+           '((mod a b))
+           [[7 0] [-7 2]] :raw true)
 
 ;; --- rejected programs --------------------------------------------------------
 
