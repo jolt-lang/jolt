@@ -99,6 +99,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   empty and `(double-array Long/MAX_VALUE)` raises `NegativeArraySizeException`
   -1. jolt tried to allocate the whole value, which ran out of memory or leaked
   Chez's `make-flvector` error as a `ClassCastException`.
+- Calling nil as a fn, as in `(update {} :a nil)`, `(swap! a nil)` or
+  `(apply nil [])`, throws `NullPointerException` with the JVM's message
+  (`Cannot invoke "clojure.lang.IFn.invoke(Object)" because "f" is null`,
+  `applyTo(clojure.lang.ISeq)` for apply). jolt threw a `ClassCastException`.
+- `into` a sorted set or map, `apply sorted-set` and `bounded-count` no longer
+  call the `counted?` var, so rebinding it with `with-redefs` does not reach
+  them, as on the JVM, whose core is direct-linked.
 
 ## [0.8.29] - 2026-11-23
 

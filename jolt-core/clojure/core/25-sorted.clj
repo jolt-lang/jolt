@@ -85,7 +85,7 @@
 ;; under this many entries a batch costs more to gather than it saves
 (def ^:private batch-min 8)
 
-(defn- small? [xs n] (and (counted? xs) (< (count xs) n)))
+(defn- small? [xs n] (and (jolt.host/counted? xs) (< (count xs) n)))
 
 (defn- sm-assoc-many [sm kvs]
   (let [n (count kvs)]

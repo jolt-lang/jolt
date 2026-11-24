@@ -352,7 +352,7 @@
      (map (fn [x] (get smap x x)) coll))))
 
 (defn bounded-count [n coll]
-  (if (counted? coll)
+  (if (jolt.host/counted? coll)
     (count coll)
     (loop [i 0 s (seq coll)]
       (if (and s (< i n)) (recur (inc i) (next s)) i))))
