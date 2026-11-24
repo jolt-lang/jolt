@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `jolt.native/native`: a block of numeric code that `jolt build` compiles to C
+  and links into the binary, for hot loops. The locals it reads are hinted
+  (`^long`, `^double`, `^boolean`, `^doubles`); a `^doubles` array is read and
+  written in place, with no copy. Arrays the block creates are owned and freed
+  when it is done with them, checked at compile time with an ownership pass
+  ported from Carp, so using an array after giving it away, or returning one it
+  only borrowed, is a compile error. Long arithmetic overflows with
+  `ArithmeticException` as on the JVM, and failures raise the JVM's exceptions.
+  Under `jolt run` and in the REPL the same checked program runs as Jolt, so
+  both agree. By default other threads keep running and collecting while a
+  region works, its borrowed arrays pinned in place for the call.
+  `(native ^:hold-gc [...] ...)` opts into a cheaper call that holds every
+  other thread's collection until it returns, for short regions. A build with regions
+  needs a C compiler.
+- A native region leaves out the overflow, int-cast and bounds checks that a
+  range analysis proves cannot fire (loop counters, `(< i (alength a))` scans,
+  indexes built from them). Those that depend on an array parameter's length
+  run behind one guard at the function's entry: a fast copy when it holds, the
+  fully checked body otherwise, so results and exceptions are unchanged. The
+  rules are proved with z3 in `test/native/proofs/range-*.smt2`.
+- A native region keeps a small constant-size array (up to 256 elements) on
+  the C stack when it never leaves the function or the loop iteration that
+  made it: no allocation, no free. An array that is returned, carried by
+  `recur`, taken by a helper, or shares a name with a heap array stays on the
+  heap. One indexed only by constants (a scratch `[x y z]`) becomes plain C
+  locals, with no memory at all.
+- `jolt.native/defextern` declares a C function native regions call directly:
+  `(defextern ^double fast-erf [^double x] {:header "erf.h"})`. Arguments and
+  results are scalars; the region's C calls it by name (declared from the hints,
+  or through its header), and the Jolt fallback and plain Jolt code call the
+  same function through `jolt.ffi`. A `jolt build` links it from a `:static`
+  native. An array parameter (`^doubles`, `^longs`) reaches C as a pointer to
+  its elements and their count; a region passes the array's own storage, and
+  the Jolt side copies it in and back out.
+- A native helper can give a body per platform, chosen by the C compiler:
+  `(defnative f [xs] (on "defined(__aarch64__)" ...) (on :default ...))`. A
+  platform no guard covers is a build error unless there is a `:default`,
+  which is also what the Jolt fallback runs. The bodies must agree on their
+  result type and on which arguments they take.
+
 - **`java.io.DataInputStream` and `java.io.DataOutputStream`, and the
   `DataInput`/`DataOutput` methods on `RandomAccessFile`.** A
   `DataOutputStream` writes `writeInt`, `writeLong`, `writeShort`,
@@ -27,6 +67,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leaves it in the stream where the JDK reads it, so a `read` on the wrapped
   stream afterwards sees that byte in jolt and not on the JVM. And `readUTF`
   turns a lone surrogate into U+FFFD, since a jolt string cannot hold one.
+
+### Fixed
+
+- `double-array`, `long-array` and the other array constructors read a numeric
+  size with `Number.intValue`, as the JVM does: `(double-array 4294967296)` is
+  empty and `(double-array Long/MAX_VALUE)` raises `NegativeArraySizeException`
+  -1. jolt tried to allocate the whole value, which ran out of memory or leaked
+  Chez's `make-flvector` error as a `ClassCastException`.
 
 ## [0.8.29] - 2026-11-23
 

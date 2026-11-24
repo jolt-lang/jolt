@@ -979,15 +979,17 @@ fi
 # pure?/total? treated it as discardable and elim-let-structs dropped the whole
 # map binding — the release binary printed 1 instead of throwing.
 inline_throw_app="$root/test/chez/inline-throw-app"
-inline_throw_out="$(dirname "$out")/inline-throw-bin"
-if ! JOLT_PWD="$inline_throw_app" "$jolt" build -m app.core -o "$inline_throw_out" --opt --direct-link >/dev/null 2>&1; then
-  echo "  FAIL: inline-throw --opt --direct-link build exited non-zero"; exit 1
-fi
-inline_throw_got="$(cd "$inline_throw_app" && "$inline_throw_out" 2>&1)"
 inline_throw_want="$(printf 'THROW OK\nTHROW2 OK')"
-if [ "$inline_throw_got" != "$inline_throw_want" ]; then
-  echo "  FAIL: pure-fn fold discarded a throwing op — got \`$inline_throw_got\`, want \`$inline_throw_want\`"; exit 1
-fi
+for mode in --opt --dev; do
+  inline_throw_out="$(dirname "$out")/inline-throw-bin${mode}"
+  if ! JOLT_PWD="$inline_throw_app" "$jolt" build -m app.core -o "$inline_throw_out" "$mode" >/dev/null 2>&1; then
+    echo "  FAIL: inline-throw $mode build exited non-zero"; exit 1
+  fi
+  inline_throw_got="$(cd "$inline_throw_app" && "$inline_throw_out" 2>&1)"
+  if [ "$inline_throw_got" != "$inline_throw_want" ]; then
+    echo "  FAIL: inline-throw $mode produced $inline_throw_got, expected $inline_throw_want"; exit 1
+  fi
+done
 
 # scalar-replace moves a dropped record binding's field args to each field
 # read. Moved into a fn literal they left the literal's captures naming the

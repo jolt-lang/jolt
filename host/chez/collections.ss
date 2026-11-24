@@ -1051,6 +1051,13 @@
         (make-hnode 0 (hamt-sll 1 bi) (vector (nest-bucket (fx+ shift 5) b h k v)))
         (make-hnode (hamt-sll 1 ni) (hamt-sll 1 bi) (vector k v b)))))
 
+(define (hcoll-assoc child entry k v added)
+  (cond ((not entry)
+         (set-box! added #t)
+         (make-hcoll (hcoll-hash child) (append (hcoll-alist child) (list (cons k v)))))
+        ((eq? (cdr entry) v) child)
+        (else (make-hcoll (hcoll-hash child) (alist-replace entry v (hcoll-alist child))))))
+
 ;; Answers the node ITSELF when the key is present with that very value — the
 ;; reference's `if(val == valOrNode) return this` — so pmap-assoc can hand the
 ;; caller's map back untouched (the eq? test at the root), the way both
@@ -1090,6 +1097,9 @@
       (else
        (set-box! added #t)
        (make-hnode (hamt-ior dm bit) nm (vec-insert2 arr (fx* 2 (hamt-arr-index dm bit)) k v))))))
+
+(define (stable-hamt-key? k)
+  (or (fixnum? k) (keyword-t? k) (char? k)))
 
 (define (node-get node shift h k default)
   (let* ((bit (hamt-bitpos h shift)) (dm (hnode-dmap node)))
@@ -1495,23 +1505,28 @@
 ;; the map may stay in array mode; otherwise the slots become a trie first and
 ;; the key goes in there. Replacing a key keeps its position. Assoc of the value
 ;; already held is the map itself, in both modes.
+(define (pmap-hash-write-result m root r added)
+  (cond ((unbox added) (make-pmap r (fx+ (pmap-cnt m) 1)))
+        ((eq? r root) m)
+        (else (make-pmap r (pmap-cnt m)))))
 (define (pmap-hash-assoc m root k v)
   (let* ((added (box #f)) (r (node-assoc root 0 (key-hash k) k v added)))
-    (cond ((unbox added) (make-pmap r (fx+ (pmap-cnt m) 1)))
-          ((eq? r root) m)
-          (else (make-pmap r (pmap-cnt m))))))
+    (pmap-hash-write-result m root r added)))
+
+(define (pmap-array-assoc-at m root i k v)
+  (cond ((fx>=? i 0)
+         (if (eq? (vector-ref root (fx+ i 1)) v)
+             m
+             (make-pmap (vec-set root (fx+ i 1) v) (pmap-cnt m))))
+        ((pmap-array-keep? (pmap-cnt m) k)
+         (make-pmap (vec-append2 root k v) (fx+ (pmap-cnt m) 1)))
+        (else (pmap-hash-assoc m (amap->hnode root) k v))))
+
 (define (pmap-assoc m k v)
   (let ((root (pmap-root m)))
     (if (hnode? root)
         (pmap-hash-assoc m root k v)
-        (let ((i (amap-index root (vector-length root) k)))
-          (cond ((fx>=? i 0)
-                 (if (eq? (vector-ref root (fx+ i 1)) v)
-                     m
-                     (make-pmap (vec-set root (fx+ i 1) v) (pmap-cnt m))))
-                ((pmap-array-keep? (pmap-cnt m) k)
-                 (make-pmap (vec-append2 root k v) (fx+ (pmap-cnt m) 1)))
-                (else (pmap-hash-assoc m (amap->hnode root) k v)))))))
+        (pmap-array-assoc-at m root (amap-index root (vector-length root) k) k v))))
 ;; force-hash insert for rebuilding a map whose final mode is already decided
 ;; (hash-map ctor, a set's backing map).
 (define (pmap-put-hash m k v)
@@ -1689,11 +1704,35 @@
 (define (make-pset m) (%mk-pset m 0 jolt-nil))
 ;; sets are ALWAYS hash-ordered (JVM PersistentHashSet), backed by pmap in hash mode.
 (define empty-pset (make-pset empty-pmap-hash))   ; sets are ALWAYS hash-ordered (JVM PersistentHashSet)
-(define (pset-conj s e) (if (pmap-contains? (pset-m s) e) s (make-pset (pmap-assoc (pset-m s) e e))))
+
+;; A set's private backing map has no user metadata. Its slot can carry a
+;; proof established on writes without changing either image record layout.
+;; Maps recovered from unverified sources start without the proof. A stable
+;; member has immutable hashing and equality, which is reflexive and never
+;; calls extensions even when compared with another kind of stable member.
+(define stable-set-marker (list 'stable-set))
+(define (stable-set-map? m)
+  (or (eq? (pmap-meta m) stable-set-marker) (fxzero? (pmap-cnt m))))
+(define (make-proved-pset m stable?) ; m is a fresh private backing map
+  ;; Write the slot either way: a proof must never ride along on a map
+  ;; derived from a proved one, whatever pmap-assoc does with meta.
+  (pmap-meta-set! m (if stable? stable-set-marker jolt-nil))
+  (make-pset m))
+(define (pset-conj s e)
+  (let ((m (pset-m s)))
+    (if (pmap-contains? m e) s
+        (let ((next (pmap-assoc m e e)))
+          (if (eq? m next) (make-pset next)
+              (make-proved-pset next (and (stable-set-map? m) (stable-hamt-key? e))))))))
 ;; a miss answers s itself, as PersistentHashSet.disjoin does (and pset-conj on a
 ;; hit): no allocation, and (identical? s (disj s x)) is how a caller sees the miss
 (define (pset-disj s e)
-  (let* ((m (pset-m s)) (m2 (pmap-dissoc m e))) (if (eq? m2 m) s (make-pset m2))))
+  (let* ((m (pset-m s)) (next (pmap-dissoc m e)))
+    (if (eq? next m) s
+        (begin
+          (when (eq? (pmap-meta m) stable-set-marker)
+            (pmap-meta-set! next stable-set-marker))
+          (make-pset next)))))
 (define (pset-contains? s e) (pmap-contains? (pset-m s) e))
 ;; A lookup answers with the element the set HOLDS, not with the equal probe key
 ;; it was handed — only the stored one carries the element's metadata, and callers
@@ -1714,6 +1753,151 @@
 (define (pset-from-pairs pairs)   ; pairs: list of (key . lookup-value)
   (make-pset (fold-left (lambda (m p) (pmap-put-hash m (car p) (cdr p))) empty-pmap-hash pairs)))
 (define (jolt-hash-set . xs) (let loop ((s empty-pset) (xs xs)) (if (null? xs) s (loop (pset-conj s (car xs)) (cdr xs)))))
+
+;; Trie subtraction is valid only after both maps are proved stable. Pointer
+;; identity is no proof of membership for a NaN or collection holding one.
+;; Unknown members can also run code during the baseline's hashing or equality.
+;; In either case we must decline before bypassing any lookup or deletion.
+;;
+;; The walk reads the node layout directly (an entry bitmap and a branch
+;; bitmap, see hnode above). A fragment's result is #f (nothing left), an entry
+;; as a (key . value) pair, or a branch (an hnode or hcoll).
+(define (hnode-empty? nd)
+  (and (hamt=? 0 (hnode-dmap nd)) (hamt=? 0 (hnode-nmap nd))))
+
+;; Checking at most the 32 aligned root fragments can reject independently
+;; built sets before walking either trie. Entry identity alone is a weak
+;; predictor, so only a shared branch node counts.
+(define (shared-set-root-child? left right)
+  (let ((lnm (hnode-nmap left)) (rnm (hnode-nmap right))
+        (la (hnode-arr left)) (ra (hnode-arr right)))
+    (let loop ((bits (hamt-and lnm rnm)))
+      (and (not (hamt=? bits 0))
+           (let* ((bit (hamt-low-bit bits))
+                  (child (vector-ref la (hamt-branch-slot la lnm bit))))
+             (or (and (hnode? child)
+                      (eq? child (vector-ref ra (hamt-branch-slot ra rnm bit))))
+                 (loop (hamt-sub bits bit))))))))
+
+;; No cached size on an hnode. Count only retained branches, without copying
+;; them or visiting any descendants of discarded shared nodes.
+(define (set-child-size child)
+  (cond ((hnode? child)
+         (let* ((arr (hnode-arr child)) (base (fx* 2 (hamt-popcount (hnode-dmap child)))))
+           (let loop ((i (fx- (vector-length arr) 1)) (n (hamt-popcount (hnode-dmap child))))
+             (if (fx<? i base) n
+                 (loop (fx- i 1) (fx+ n (set-child-size (vector-ref arr i))))))))
+        ((hcoll? child) (length (hcoll-alist child)))
+        (else 1)))
+
+;; is k in the branch b (an hnode one level down, or a bucket)?
+(define (set-branch-contains? b shift k)
+  (if (hnode? b)
+      (node-entry b shift (key-hash k) k)
+      (assoc-jolt k (hcoll-alist b))))
+
+;; a bucket minus the keys `contains?` answers for; one survivor becomes an entry
+(define (set-bucket-difference left contains?)
+  (let loop ((entries (hcoll-alist left)) (kept '()) (n 0) (changed? #f))
+    (cond
+      ((null? entries)
+       (values (cond ((not changed?) left)
+                     ((fxzero? n) #f)
+                     ((fx=? n 1) (car kept))
+                     (else (make-hcoll (hcoll-hash left) (reverse kept))))
+               n))
+      ((contains? (caar entries))
+       (loop (cdr entries) kept n #t))
+      (else
+       (loop (cdr entries) (cons (car entries) kept) (fx+ n 1) changed?)))))
+
+;; A node branch minus a few keys (the other side's entry or bucket here). A
+;; bucket may contain distinct hashes with the same prefix, so each key uses
+;; its own hash; stop once the branch is exhausted.
+(define (set-branch-difference left keys shift)
+  (let ((removed (box #f)))
+    (let loop ((node left) (keys keys))
+      (cond ((hnode-empty? node) (values #f 0))
+            ((null? keys) (values node (set-child-size node)))
+            (else (loop (node-dissoc node shift (key-hash (car keys)) (car keys) removed)
+                        (cdr keys)))))))
+
+;; left branch lb against right branch rb, both one level down (at shift)
+(define (set-child-difference lb rb shift)
+  (cond ((eq? lb rb) (values #f 0))
+        ((hnode? lb)
+         (if (hnode? rb)
+             (set-node-difference lb rb shift)
+             (set-branch-difference lb (map car (hcoll-alist rb)) shift)))
+        (else (set-bucket-difference lb (lambda (k) (set-branch-contains? rb shift k))))))
+
+(define (set-node-difference left right shift)
+  (let* ((ldm (hnode-dmap left)) (lnm (hnode-nmap left)) (la (hnode-arr left))
+         (rdm (hnode-dmap right)) (rnm (hnode-nmap right)) (ra (hnode-arr right))
+         (down (fx+ shift 5)))
+    (if (hamt=? 0 (hamt-and (hamt-ior ldm lnm) (hamt-ior rdm rnm)))
+        (values left (set-child-size left))
+        ;; ents: kept entries' slots, reversed; brs: kept branches, highest
+        ;; fragment first (the order they sit in the array)
+        (let loop ((rem (hamt-ior ldm lnm)) (di 0) (ni (fx- (vector-length la) 1))
+                   (dm 0) (nm 0) (ents '()) (brs '()) (n 0) (changed? #f))
+          (if (hamt=? 0 rem)
+              (values (cond ((not changed?) left)
+                            ((and (hamt=? 0 dm) (hamt=? 0 nm)) #f)
+                            (else (make-hnode dm nm (list->vector (append (reverse ents) brs)))))
+                      n)
+              (let* ((bit (hamt-low-bit rem)) (rest (hamt-and rem (hamt-sub rem 1))))
+                (define (keep-result kept size di ni changed?)
+                  (cond ((not kept) (loop rest di ni dm nm ents brs n #t))
+                        ((pair? kept)
+                         (loop rest di ni (hamt-ior dm bit) nm (cons (cdr kept) (cons (car kept) ents))
+                               brs (fx+ n size) changed?))
+                        (else (loop rest di ni dm (hamt-ior nm bit) ents (cons kept brs)
+                                    (fx+ n size) changed?))))
+                (if (not (hamt=? 0 (hamt-and ldm bit)))
+                    ;; left holds an entry here
+                    (let* ((lk (vector-ref la di)) (lv (vector-ref la (fx+ di 1)))
+                           (gone? (cond ((not (hamt=? 0 (hamt-and rdm bit)))
+                                         (jolt=2 lk (vector-ref ra (fx* 2 (hamt-arr-index rdm bit)))))
+                                        ((not (hamt=? 0 (hamt-and rnm bit)))
+                                         (set-branch-contains? (vector-ref ra (hamt-branch-slot ra rnm bit)) down lk))
+                                        (else #f))))
+                      (if gone?
+                          (loop rest (fx+ di 2) ni dm nm ents brs n #t)
+                          (loop rest (fx+ di 2) ni (hamt-ior dm bit) nm (cons lv (cons lk ents)) brs (fx+ n 1) changed?)))
+                    ;; left holds a branch here
+                    (let ((lb (vector-ref la ni)))
+                      (let-values (((kept size)
+                                    (cond ((not (hamt=? 0 (hamt-and rdm bit)))
+                                           (let ((rk (vector-ref ra (fx* 2 (hamt-arr-index rdm bit)))))
+                                             (if (hnode? lb)
+                                                 (set-branch-difference lb (list rk) down)
+                                                 (set-bucket-difference lb (lambda (k) (jolt=2 k rk))))))
+                                          ((not (hamt=? 0 (hamt-and rnm bit)))
+                                           (set-child-difference lb (vector-ref ra (hamt-branch-slot ra rnm bit)) down))
+                                          (else (values lb (set-child-size lb))))))
+                        (keep-result kept size di (fx- ni 1) (or changed? (not (eq? kept lb)))))))))))))
+
+(define (jolt-try-set-difference s1 s2 drop-member)
+  ;; Compare the actual callback selected by the caller against the host's
+  ;; built-in procedure. Looking up the Var's root here would miss bindings.
+  (if (and (eq? drop-member jolt-disj) (pset? s1) (pset? s2))
+      (let* ((m1 (pset-m s1)) (m2 (pset-m s2))
+             (l (pmap-root m1)) (r (pmap-root m2))
+             (n1 (pmap-cnt m1)) (n2 (pmap-cnt m2)))
+        (cond
+          ((and (eq? l r) (stable-set-map? m1) (stable-set-map? m2))
+           (if (fxzero? n1) s1
+               (meta-carry s1 (make-pset (make-pmap empty-hnode 0)))))
+          ;; Keep work proportional to the side the right reduction walks.
+          ;; A much larger left side can leave a large result to count.
+          ((and (fx>=? n2 32) (fx<=? n2 n1) (fx<=? (fx- n1 n2) (fxquotient n2 2))
+                (stable-set-map? m1) (stable-set-map? m2) (shared-set-root-child? l r))
+           (let-values (((root n) (set-node-difference l r 0)))
+             (if (eq? root l) s1
+                 (meta-carry s1 (make-proved-pset (make-pmap (or root empty-hnode) n) #t)))))
+          (else jolt-nil)))
+      jolt-nil))
 
 ;; A literal whose keys or elements are not all distinct constants is built
 ;; through these: the JVM builds it with createWithCheck, so keys that turn out

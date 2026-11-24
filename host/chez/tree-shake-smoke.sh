@@ -156,12 +156,12 @@ run_local_case() {
     sed -n '/^jolt build: tree-shake skipped/,/^jolt build: compiling/p' "$tmp/$1-shake-out" | grep -v '^jolt build: compiling' | head -8
     fail=1; return
   fi
-  o0="$(cd "$app" && "$b0" $args 2>&1)"
-  o1="$(cd "$app" && "$b1" $args 2>&1)"
-  if [ "$o0" != "$o1" ]; then
-    echo "  - $1: FAIL (output differs default vs --tree-shake)"
-    echo "    --- default ---"; echo "$o0" | head -5
-    echo "    --- shake -----"; echo "$o1" | head -5
+  o0="$(cd "$app" && "$b0" $args 2>&1)"; rc0=$?
+  o1="$(cd "$app" && "$b1" $args 2>&1)"; rc1=$?
+  if [ "$rc0" != 0 ] || [ "$rc1" != 0 ] || [ "$o0" != "$o1" ]; then
+    echo "  - $1: FAIL (output differs or a program exits nonzero)"
+    echo "    --- default (exit $rc0) ---"; echo "$o0" | head -5
+    echo "    --- shake (exit $rc1) ---"; echo "$o1" | head -5
     fail=1; return
   fi
   # Check that a def that should be pruned is indeed absent from the shaken
@@ -204,6 +204,9 @@ echo "shake smoke: correctness fixtures (ns-publics, defonce, data-readers)"
 run_local_case ns-publics-app   app.core  ""   ""   bail
 run_local_case defonce-app      app.core  ""   "\"app.core\" \"dead\""
 run_local_case datareader-app   app.core  ""   ""
+# The linked calls must retain update, assoc-in and comp for both the
+# optimized paths and ordinary dispatch after a root redefinition.
+run_local_case optional-guards-app app.core "" ""
 # data-reader literal rewriting: a #tag whose reader returns a FORM must splice
 # identically under a plain and a --tree-shake build (the tree-shake path once
 # skipped the per-form reader hook and crashed on the raw tagged literal).

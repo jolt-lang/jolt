@@ -74,9 +74,291 @@
               (loop (skip-form s i) i))))
       s))
 (define (ev s) (jolt-compile-eval s "u"))
+(define clj= (var-deref "clojure.core" "="))
 
 ;; inlining is a closed-world optimization — requires optimize + direct-link.
 (set-optimize! #t)
+(set-direct-link-flag! #t)
+
+(define assoc-in-pair
+  "(defn sibling-edits [m k a b] (-> m (assoc-in [:root k :a] a) (assoc-in [:root k :b] b)))")
+(let ((e (code-part (emitf "u" assoc-in-pair))))
+  (ok "assoc-in chain emits guards and ordered sibling writes"
+      (and (has? e "jolt-assoc-in-original") (has? e "(jolt-assoc-in-map-edit ")
+           (has? e "(jolt-assoc-in-leaf-edit ") (has? e "jv$clojure.core/assoc-in"))))
+(for-each
+  (lambda (form)
+    (ok (string-append "ordinary assoc-in emission: " form)
+        (not (has? (code-part (emitf "u" form)) "(jolt-assoc-in-map-edit "))))
+  '("(defn no-edit [assoc-in m k a b] (-> m (assoc-in [:root k :a] a) (assoc-in [:root k :b] b)))"
+    "(defn no-edit [m k a b] (-> m (assoc-in [:root k] a) (assoc-in [:root k :b] b)))"
+    "(defn no-edit [m k a b] (-> m (assoc-in [:root (k) :a] a) (assoc-in [:root (k) :b] b)))"
+    "(defn no-edit [m k a b] (-> m (assoc-in [:root k :a] (a)) (assoc-in [:root k :b] b)))"
+    "(defn no-edit [m k a b] (-> (m) (assoc-in [:root k :a] a) (assoc-in [:root k :b] b)))"
+    "(defn no-edit [m a b] (-> m (assoc-in [:root :shape :a] a) (assoc-in [:root :shape :b] b)))"
+    "(defn no-edit [m k a b] (assoc-in (let [k :other] (assoc-in m [:root k :a] a)) [:root k :b] b))"))
+(set-direct-link-flag! #f)
+(ok "dynamic calls keep ordinary assoc-in dispatch"
+    (not (has? (code-part (emitf "u" assoc-in-pair)) "(jolt-assoc-in-map-edit ")))
+(set-direct-link-flag! #t)
+(ev assoc-in-pair)
+(ev "(defrecord EditRecord [root])")
+(ok "assoc-in keeps nil and missing, native and record paths, and retained versions"
+    (ev "(let [ordinary (var-get #'clojure.core/assoc-in)
+               k (symbol \"namespace\") leaf (with-meta (hash-map :b 9) {:leaf true})
+               root (with-meta {:root {k leaf}} {:root true})]
+           (and (every? (fn [m]
+                          (= (sibling-edits m k nil false)
+                             (ordinary (ordinary m [:root k :a] nil) [:root k :b] false)))
+                        [nil {} {:root nil} {:root {k nil}} root (->EditRecord {k leaf})])
+                (= (sibling-edits nil nil 1 2) {:root {nil {:a 1 :b 2}}})
+                (= (sibling-edits nil [:composite] 1 2) {:root {[:composite] {:a 1 :b 2}}})
+                (= (sibling-edits {:root [{}]} 0 1 2) {:root [{:a 1 :b 2}]})
+                (= 9 (get-in root [:root k :b]))
+                (= {:root true} (meta (sibling-edits root k 1 2)))
+                (= {:leaf true} (meta (get-in (sibling-edits root k 1 2) [:root k])))
+                (= (class leaf) (class (get-in (sibling-edits root k 1 2) [:root k])))))"))
+(ok "assoc-in compares no-op identity without canonicalizing canceled edits"
+    (ev "(let [old (with-meta {:p {:x :old}} {:retained true})
+               same (-> old (assoc-in [:p :x] :old) (assoc-in [:p :x] :old))
+               changed (-> old (assoc-in [:p :x] :new) (assoc-in [:p :x] :old))]
+           (and (identical? old same) (= old changed)
+                (not (identical? old changed))
+                (not (identical? (:p old) (:p changed)))))"))
+(ev "(defn repeated-edit [m k a b] (-> m (assoc-in [k :x] a) (assoc-in [k :x] b)))")
+(ok "fused assoc-in preserves no-op and canceled edit identities"
+    (ev "(let [edit (var-get #'repeated-edit) m {:p {:x :old}}
+               same (edit m :p :old :old)
+               changed (edit m :p :new :old)]
+           (and (identical? m same) (= m changed) (not (identical? m changed))
+                (not (identical? (:p m) (:p changed)))))"))
+(ok "assoc-in preserves HAMT collision entries and the original stored UUID"
+    (ev "(let [stored #uuid \"00000000-0000-0000-0000-000000000001\"
+               sibling #uuid \"00000000-0000-0000-0000-000100000000\"
+               missing #uuid \"00000001-0000-0000-0000-000000000000\"
+               probe (parse-uuid (str stored))
+               m {:root (hash-map stored {} sibling :retained)}
+               replaced (sibling-edits m probe 1 2)
+               inserted (sibling-edits m missing false nil)]
+           (and (= (hash stored) (hash sibling) (hash missing))
+                (= {:a 1 :b 2} (get-in replaced [:root stored]))
+                (= :retained (get-in replaced [:root sibling]))
+                (identical? stored (key (find (:root replaced) probe)))
+                (= {:a false :b nil} (get-in inserted [:root missing]))
+                (= :retained (get-in inserted [:root sibling]))
+                (nil? (get-in m [:root missing]))))"))
+;; 54 and 95 share the low five hash bits with the \"AaAa\"/\"BBBB\" bucket but
+;; not its hash: the bucket nests beside them, in the JVM's order
+(ok "assoc-in of a key landing on a bucket's slot nests the bucket"
+    (ev "(let [ordinary (var-get #'clojure.core/assoc-in)
+               inner (hash-map \"AaAa\" {} \"BBBB\" {})
+               m {:root inner}]
+           (every? (fn [k]
+                     (let [got (sibling-edits m k 1 2)
+                           want (ordinary (ordinary m [:root k :a] 1) [:root k :b] 2)]
+                       (and (= got want) (= (keys (:root got)) (keys (:root want)))
+                            (= (count (:root got)) (count (:root want))))))
+                   [54 95 \"AaAa\" \"AaBB\"]))"))
+(ok "overlapping paths and externally retained intermediate maps stay ordered"
+    (ev "(let [old {:root {:shape {:discarded 0}}} child {:keep true}
+               first (assoc-in old [:root :shape] child)
+               second (assoc-in first [:root :shape :added] false)]
+           (and (= second (-> old (assoc-in [:root :shape] child)
+                                   (assoc-in [:root :shape :added] false)))
+                (= {:discarded 0} (get-in old [:root :shape]))
+                (identical? child (get-in first [:root :shape]))
+                (= {:keep true :added false} (get-in second [:root :shape]))))"))
+(ok "assoc-in fallback preserves an earlier bad receiver and operand order"
+    (ev "(let [seen (atom []) note (fn [k v] (swap! seen conj k) v)
+               run (fn [f] (try [(f)] (catch Throwable e [(class e) (.getMessage e)])))
+               invalid {:root {:bad 1}}
+               generic (var-get #'clojure.core/assoc-in)]
+           (and (= (run #(sibling-edits invalid :bad 1 2))
+                   (run #(generic (generic invalid [:root :bad :a] 1) [:root :bad :b] 2)))
+                (not= [:returned]
+                      (run #(do (-> (note :m invalid)
+                                    (assoc-in [:root (note :key :bad) :a] (note :value 1))
+                                    (assoc-in [:root (note :later-key :bad) :b] (note :later-value 2)))
+                                :returned)))
+                (= [:m :key :value] @seen)))"))
+(ok "assoc-in follows successive live core roots after a redefinition"
+    ;; Call the compiled body so inlining cannot turn its paths into constants.
+    (ev "(let [edit (var-get #'sibling-edits) seen (atom [])
+               next (fn [m path v] (swap! seen conj :next) (assoc m (peek path) v))
+               init (fn [m path v] (swap! seen conj :init)
+                      (alter-var-root #'clojure.core/assoc-in (constantly next))
+                      (assoc m (peek path) v))]
+           (with-redefs [clojure.core/assoc-in init]
+             (and (= {:a 1 :b 2} (edit {} :shape 1 2))
+                  (= [:init :next] @seen))))"))
+
+;; Both ordinary and fused array-map edits use this slot write. Install a new
+;; root after the first write has run, without changing an eligible operand.
+(let ((cell (var-cell-lookup "clojure.core" "assoc-in"))
+      (write-slot pmap-array-assoc-at)
+      (set-trace! (var-deref "jolt.backend-scheme" "set-trace-frames!"))
+      (root-key (keyword #f "root")) (shape (keyword #f "shape"))
+      (replaced (keyword #f "replaced")) (later (keyword #f "later")))
+  (define original (var-cell-root cell))
+  (define (run label trace? paths)
+    (let* ((name (format "assoc-in-rebind-~a" label))
+           (edits (apply string-append
+                         (map (lambda (path) (apply format " (assoc-in [:root ~a :~a] v)" path)) paths)))
+           (form (format "(defn ~a [m k v] (-> m~a))" name edits))
+           (ks (map (lambda (path) (keyword #f (cadr path))) paths))
+           (root (ev "(with-meta {:root {:shape {:old true}} :kept true} {:marked true})"))
+           (v (jolt-vector (keyword #f "token")))
+           (writes '()) (calls '()))
+      (define (value-at m k)
+        (jolt-get (jolt-get (jolt-get m root-key) shape) k))
+      (define (replacement marker)
+        (lambda (m path arg)
+          (set! calls (cons (list marker m path arg) calls))
+          (when (eq? marker replaced) (var-root-set! cell (replacement later)))
+          (original m path marker)))
+      (set-trace! trace?)
+      (ok (string-append name " uses fused edits")
+          (has? (code-part (emitf "u" form)) "(jolt-assoc-in-map-edit "))
+      (ev form)
+      (let ((result (dynamic-wind
+                      (lambda ()
+                        (set! pmap-array-assoc-at
+                          (lambda (m arr i k value)
+                            (let ((r (write-slot m arr i k value)))
+                              (when (memq k ks) (set! writes (cons k writes)))
+                              (when (eq? k (car ks)) (var-root-set! cell (replacement replaced)))
+                              r))))
+                      (lambda () ((var-deref "u" name) root shape v))
+                      (lambda ()
+                        (set! pmap-array-assoc-at write-slot)
+                        (var-root-set! cell original)))))
+        (ok name
+            (and (equal? (reverse writes) ks)
+                 (eq? jolt-nil (value-at root (car ks)))
+                 (eq? (jolt-meta root) (jolt-meta result))
+                 (= (length calls) (- (length ks) 1))
+                 (let loop ((i 0) (keys ks) (calls (reverse calls)) (before root))
+                   (or (null? keys)
+                       (let* ((k (car keys))
+                              (marker (cond ((= i 0) v) ((= i 1) replaced) (else later)))
+                              (path (jolt-vector root-key shape k)))
+                         (and (eq? marker (value-at result k))
+                              (or (= i 0)
+                                  (let ((entry (car calls)))
+                                    (and (eq? marker (car entry)) (clj= before (cadr entry))
+                                         (eq? (jolt-meta root) (jolt-meta (cadr entry)))
+                                         (clj= path (caddr entry)) (eq? v (cadddr entry)))))
+                              (loop (+ i 1) (cdr keys) (if (= i 0) calls (cdr calls))
+                                    (original before path marker)))))))))))
+  (run 'dynamic #f '(("k" "a") ("k" "b") ("k" "c") ("k" "d")))
+  (run 'traced-tail #t '((":shape" "a") (":shape" "b")))
+  (set-trace! #f))
+
+(ok "the UUID edit guard accepts the boot registries" (assoc-in-native-uuid?))
+
+(let ((original jolt-eq-arms) (observed 0))
+  (dynamic-wind
+    (lambda ()
+      (register-eq-arm!
+        (lambda (a b)
+          (and (juuid? a) (juuid? b)
+               (begin (set! observed (+ observed 1)) #t)))
+        (lambda (a b) #f)))
+    (lambda ()
+      (ok "a UUID equality extension keeps its original calls"
+          (ev "(defn uuid-edit-probe [mode]
+                 (let [stored #uuid \"00000000-0000-0000-0000-000000000001\"
+                       k (parse-uuid (str stored)) m {:root {stored {}}}
+                       edit (var-get #'sibling-edits)
+                       generic (var-get #'clojure.core/assoc-in)
+                       result (if mode (edit m k 1 2)
+                                  (generic (generic m [:root k :a] 1) [:root k :b] 2))]
+                   (and (= {:a 1 :b 2} (get-in result [:root k]))
+                        (= {} (get-in result [:root stored]))
+                        (= 2 (count (:root result))))))"))
+      (set! observed 0)
+      (let* ((generic (ev "(uuid-edit-probe false)")) (expected observed))
+        (set! observed 0)
+        (ok "the guard does no speculative equality calls"
+            (and (ev "(uuid-edit-probe true)") generic (positive? expected) (= expected observed)))))
+    (lambda () (set! jolt-eq-arms original))))
+
+;; Use a HAMT built under the installed arm so looking up the UUID with its
+;; native hash would miss the existing entry.
+(let ((original-hash jolt-hash-arms)
+      (original-hasheq jolt-hasheq-arms)
+      (observed 0))
+  (define (custom-hash k) (set! observed (+ observed 1)) 17)
+  (define (check label install restore)
+    (dynamic-wind install
+      (lambda ()
+        (let* ((probe (ev "(fn [f]
+                             (let [stored #uuid \"00000000-0000-0000-0000-000000000001\"
+                                   k (parse-uuid (str stored))
+                                   m {:root (hash-map stored {:kept true} :other :retained)}
+                                   result (f m k 1 2)]
+                               [(get-in result [:root k]) (count (:root result))
+                                (get-in result [:root :other]) (get-in m [:root k])]))"))
+               (ordinary (ev "(let [a (var-get #'clojure.core/assoc-in)]
+                                (fn [m k x y] (a (a m [:root k :a] x) [:root k :b] y)))")))
+          (set! observed 0)
+          (let* ((expected (jolt-invoke probe ordinary))
+                 (expected-calls observed))
+            (set! observed 0)
+            (let ((actual (jolt-invoke probe (var-deref "u" "sibling-edits"))))
+              (ok label
+                  (and (positive? expected-calls) (= expected-calls observed)
+                       (clj= expected actual)
+                       (clj= expected (ev "[{:kept true :a 1 :b 2} 2 :retained {:kept true}]"))))))))
+      restore))
+  (check "a UUID hash arm gets the ordinary HAMT edits and calls"
+         (lambda () (register-hash-arm! juuid? custom-hash))
+         (lambda () (set! jolt-hash-arms original-hash)))
+  (check "a UUID hasheq arm gets the ordinary HAMT edits and calls"
+         (lambda () (set! jolt-hasheq-arms (cons (cons juuid? custom-hash) original-hasheq)))
+         (lambda () (set! jolt-hasheq-arms original-hasheq))))
+
+(ev "(defn alias-edit-probe [a base-lang lang ns-sym alias-sym target]
+       (swap! a (fn [n] (-> n
+                          (assoc-in [base-lang lang ns-sym :qualify-ns alias-sym] target)
+                          (assoc-in [base-lang lang ns-sym :aliases alias-sym] target)))))")
+(ok "assoc-in alias callback re-reads the current maps after a failed CAS"
+    (ev "(let [path [:cljc :clj 'demo] a (atom (assoc-in {} path {:version :old}))
+               changed (atom false) seen (atom [])]
+           (set-validator! a
+             (fn [proposed]
+               (let [slot (get-in proposed path)]
+                 (when (:aliases slot)
+                   (swap! seen conj (:version slot))
+                   (when (compare-and-set! changed false true)
+                     (reset! a (assoc-in {} path {:version :new :kept true})))))
+               true))
+           (alias-edit-probe a :cljc :clj 'demo 'str 'clojure.string)
+           (and (= [:old :new] @seen)
+                (= {:version :new :kept true :qualify-ns {'str 'clojure.string}
+                    :aliases {'str 'clojure.string}} (get-in @a path))))"))
+
+;; One public site accepts both bounded native vector leaves and generic
+;; sources. Check the executable form, since the preamble quotes the input.
+(define widths-form
+  "(def row-widths (fn* ([xs] (into [] (comp (filter sequential?) (map count)) xs))))")
+(let ((e (code-part (emitf "u" widths-form))))
+  (ok "row widths calls the fused leaf walk" (has? e "(jolt-vector-filter-map "))
+  (ok "row widths checks the source representation" (has? e "(pvec-ent "))
+  (ok "row widths retains the ordinary transducers on a miss"
+      (and (has? e "(td-filter ") (has? e "(td-map "))))
+(ok "a shadowed stage is not fused"
+    (not (has? (code-part (emitf "u" "(def w (fn* ([filter xs] (into [] (comp (filter sequential?) (map count)) xs))))"))
+               "(jolt-vector-filter-map ")))
+(ok "a custom final stage is not fused"
+    (not (has? (code-part (emitf "u" "(def w (fn* ([stop xs] (into [] (comp (filter sequential?) (map count) stop) xs))))"))
+               "(jolt-vector-filter-map ")))
+(let ((e (code-part (emitf "u" "(def w (fn* ([pvec-ent td-map xs] (into [] (comp (filter pvec-ent) (map td-map)) xs))))"))))
+  (ok "filter/map locals cannot shadow emitted runtime names"
+      (and (has? e "$Rpvec-ent") (has? e "$Rtd-map") (has? e "(pvec-ent ") (has? e "(td-map "))))
+(set-direct-link-flag! #f)
+(ok "dynamically linked row widths keep the ordinary cascade"
+    (not (has? (code-part (emitf "u" widths-form)) "(jolt-vector-filter-map ")))
 (set-direct-link-flag! #t)
 
 ;; a small plain fn is spliced; the call to it disappears.
@@ -236,6 +518,862 @@
   (ok "a non-allocating field read twice is still scalar-replaced" (not (has? e "amap-slots->pmap"))))
 (ok "a nested map read twice computes the same value" (= 4 (jnum->exact (ev "((fn* ([a] (let [m {:p {:x a :y 2} :q 1}] (+ (:x (:p m)) (:y (:p m)) (:q m))))) 1)"))))
 
+;; Check executable bodies and run the same forms with and without the passes.
+(define (compare-map-scalarization name src args expected removes-map?)
+  (let ((run (string-append "(" src " " args ")"))
+        (map-constructor "(amap-slots->pmap "))
+    (set-optimize! #f)
+    (set-direct-link-flag! #f)
+    (let ((baseline (ev run))
+          (ordinary (code-part (emitf "u" src))))
+      (set-optimize! #t)
+      (set-direct-link-flag! #t)
+      (ok (string-append name ": executable constructor")
+          (and (has? ordinary map-constructor)
+               (eq? (not (has? (code-part (emitf "u" src)) map-constructor)) removes-map?)))
+      (ok (string-append name ": equal runtime values and effects")
+          (and (clj= baseline (ev expected)) (clj= baseline (ev run)))))))
+
+(compare-map-scalarization "direct lookup"
+  "(fn [x] (let [m {:k x}] (:k m)))" "7" "7" #t)
+(compare-map-scalarization "adjacent aliases and keyword projections"
+  "(fn [x] (let [m {:k x :other false} a m b a hit (get b :k)]
+             [hit (:k m) (:other b) (:missing a)]))" "7" "[7 7 false nil]" #t)
+(compare-map-scalarization "pooled literal behind an alias"
+  "(fn [] (let [m {:k 7} a m] (:k a)))" "" "7" #t)
+(compare-map-scalarization "nested alias preserves one allocating field"
+  "(fn [x] (let [m {:k [x]}] (let [a m] [(identical? (:k a) (:k m)) (:k a)])))"
+  "7" "[true [7]]" #t)
+(compare-map-scalarization "effects outside the aliased map's scope"
+  "(fn [x] (let [seen (atom [])]
+             (swap! seen conj :before)
+             [(let [m {:k x} a m] (:k a)) (swap! seen conj :after)]))"
+  "7" "[7 [:before :after]]" #t)
+(compare-map-scalarization "published aggregate"
+  "(fn [x] (let [m {:k x} a m] [a (:k a)]))" "7" "[{:k 7} 7]" #f)
+(compare-map-scalarization "observed map identity"
+  "(fn [x] (let [m {:k x} a m] [(identical? m a) (:k a)]))" "7" "[true 7]" #f)
+(compare-map-scalarization "shadowed value and alias"
+  "(fn [x] (let [m {:k x} a m] (let [x :inner a a] [(:k a) x])))"
+  "7" "[7 :inner]" #f)
+(compare-map-scalarization "field read under a shadowing binder"
+  "(fn [x] (let [m {:k x} a m] (let [x :inner] [(:k a) x])))"
+  "7" "[7 :inner]" #f)
+(compare-map-scalarization "live previous loop value"
+  "(fn [x] (let [m {:k x} a m]
+             (loop [cur a old nil]
+               (if old [(identical? old a) (:k old) (:k cur)]
+                 (recur (assoc cur :k (inc x)) cur)))))" "7" "[true 7 8]" #f)
+(compare-map-scalarization "locally consumed container needs further lowering"
+  "(fn [x] (let [m {:k x} a m box [a]] (:k (nth box 0))))" "7" "7" #f)
+(compare-map-scalarization "retained closure"
+  "(fn [x] (let [closures (let [m {:k x} a m] [(fn [] (:k a))]) f (nth closures 0)]
+             [(f) (f)]))"
+  "7" "[7 7]" #f)
+(compare-map-scalarization "throwing unread sibling"
+  "(fn [x] (let [seen (atom [])]
+             (try (let [m {:k x :bad (do (swap! seen conj :field) (/ 1 0))} a m]
+                    (swap! seen conj :body) (:k a))
+                  (catch ArithmeticException _ [:threw @seen]))))"
+  "7" "[:threw [:field]]" #f)
+
+;; Public eval's compiler-options path shares the emitter's unit, so a
+;; substitution can mark the fixpoint dirty and expose a let on the next pass.
+(set-optimize! #f)
+(set-direct-link-flag! #f)
+(for-each
+  (lambda (direct?)
+    (define (eval-form src)
+      (ev (format "(binding [*compiler-options* {:direct-linking ~a}] (eval (read-string ~s)))"
+                  (if direct? "true" "false") src)))
+    (for-each
+      (lambda (alias?)
+        (let ((bind (if alias? " a m" "")) (m (if alias? "a" "m")))
+          (ok "a field's inner let does not capture a later read of the enclosing x"
+              (clj= (ev "[9 7]")
+                    (eval-form (format "((fn [x] (let [m {:k (let [x 9] x)}~a v (:k ~a)] [v x])) 7)"
+                                       bind m))))
+          (ok "two unpooled reads of a quoted field share one object"
+              (eq? #t (eval-form (format "(let [m {:k '(1)}~a] (identical? (:k ~a) (:k ~a)))"
+                                         bind m m))))
+          (ok "an unused map still checks for keys that become duplicates after folding"
+              (equal? "Duplicate key: :k"
+                      (eval-form (format "(try (let [m {(if true :k :other) 1 :k 2}~a] :ok) (catch IllegalArgumentException e (.getMessage e)))"
+                                         bind))))))
+      '(#f #t))
+    (ok "flattening a let initializer preserves the scope of subsequent initializers"
+        (clj= (ev "[9 7]")
+              (eval-form "((fn [x] (let [v (let [x 9] x) outer x] [v outer])) 7)")))
+    (ok "a keyword projection still checks a discarded map literal for duplicate keys"
+        (equal? "Duplicate key: :k"
+                (eval-form "(try (:k {(if true :k :other) 1 :k 2}) (catch IllegalArgumentException e (.getMessage e)))")))
+    (ok "a discarded sibling map still checks for duplicate keys"
+        (equal? "Duplicate key: :k"
+                (eval-form "(try (:value {:value 1 :unused {(if true :k :other) 1 :k 2}}) (catch IllegalArgumentException e (.getMessage e)))"))))
+  '(#f #t))
+(set-optimize! #t)
+(set-direct-link-flag! #t)
+
+(let ((set-debug-locals! (var-deref "jolt.backend-scheme" "set-debug-locals!")))
+  (set-debug-locals! #t)
+  (ok "instrumented locals keep even a projection-only aliased map"
+      (has? (code-part (emitf "u" "(fn [x] (let [m {:k x} a m] (:k a)))")) "(amap-slots->pmap "))
+  (set-debug-locals! #f))
+
+;; Lexical facts describe occurrences in a particular IR revision. Scheme
+;; paths below use symbols for the IR's keyword keys and integers for indices.
+(define facts-unit ((var-deref "jolt.passes.types" "new-unit")))
+(define body-facts (var-deref "jolt.passes.facts" "body-facts"))
+(define binding-at (var-deref "jolt.passes.facts" "binding-at"))
+(define origins-at (var-deref "jolt.passes.facts" "origins-at"))
+(define (fact-kw name) (keyword #f (symbol->string name)))
+(define (ir-path steps)
+  (apply jolt-vector (map (lambda (s) (if (symbol? s) (fact-kw s) s)) steps)))
+(define (ir-at ir steps)
+  (fold-left (lambda (x s)
+               (if (symbol? s) (jolt-get x (fact-kw s) jolt-nil) (jolt-nth x s)))
+             ir steps))
+(define (fact-ir src) (jolt-ce-analyze (make-analyze-ctx "u") (jolt-ce-read src)))
+(define (facts-for src) (body-facts facts-unit (fact-ir src)))
+(define (binds? facts use binder)
+  (clj= (binding-at facts (ir-path use)) (ir-path binder)))
+(define (origin? facts use kind . path)
+  (let* ((base (jolt-hash-map (fact-kw 'kind) (fact-kw kind)))
+         (entry (if (eq? kind 'unknown)
+                    base
+                    (jolt-assoc base (fact-kw (if (eq? kind 'argument) 'binding 'site))
+                                (ir-path path)))))
+    (clj= (origins-at facts (ir-path use)) (jolt-hash-set entry))))
+
+(let ((f (facts-for "(fn* ([^double x ^long y z] (let* [a x b y c z] [a b c])))")))
+  (ok "numeric entry coercions give aliases an unknown origin"
+      (and (origin? f '(arities 0 body body items 0) 'unknown)
+           (origin? f '(arities 0 body body items 1) 'unknown)))
+  (ok "the adjacent uncoerced alias still has its incoming origin"
+      (origin? f '(arities 0 body body items 2) 'argument 'arities 0 'params 2)))
+
+(let ((f (facts-for "(fn* ([x] (let* [outer x x [x] alias x alias2 alias] [outer x alias2])))")))
+  (ok "a shadowing let initializer sees the outer parameter"
+      (binds? f '(arities 0 body bindings 1 1 items 0) '(arities 0 params 0)))
+  (ok "after shadowing, the same name resolves to the new binding"
+      (binds? f '(arities 0 body body items 1) '(arities 0 body bindings 1 0)))
+  (ok "a direct alias initializer resolves its original binding"
+      (binds? f '(arities 0 body bindings 2 1) '(arities 0 body bindings 1 0)))
+  (ok "the use still resolves to the last alias's own lexical binder"
+      (binds? f '(arities 0 body body items 2) '(arities 0 body bindings 3 0)))
+  (ok "an alias of a parameter has the caller-supplied origin"
+      (origin? f '(arities 0 body body items 0) 'argument 'arities 0 'params 0))
+  (ok "an alias chain retains the original execution-time constructor"
+      (origin? f '(arities 0 body body items 2) 'allocation 'arities 0 'body 'bindings 1 1)))
+
+(let* ((outer (fact-ir "(let* [x 1] (let* [x x] x))"))
+       (inner (ir-at outer '(body)))
+       (use (ir-at inner '(bindings 0 1)))
+       (shared (jolt-assoc outer (fact-kw 'body) (jolt-assoc inner (fact-kw 'body) use)))
+       (f (body-facts facts-unit shared)))
+  (ok "one shared local node resolves independently in two lexical scopes"
+      (and (eq? use (ir-at shared '(body body)))
+           (binds? f '(body bindings 0 1) '(bindings 0 0))
+           (binds? f '(body body) '(body bindings 0 0)))))
+
+(let ((f (facts-for "(letfn [(a [] [a b]) (b [] a)] [a b])")))
+  (ok "letfn binds a later sibling in an earlier closure"
+      (binds? f '(bindings 0 1 arities 0 body items 1) '(bindings 1 0)))
+  (ok "letfn binds an earlier sibling in a later closure"
+      (binds? f '(bindings 1 1 arities 0 body) '(bindings 0 0)))
+  (ok "the function self name shadows its letfn binder inside the function"
+      (binds? f '(bindings 0 1 arities 0 body items 0) '(bindings 0 1 name)))
+  (ok "the earlier closure sees the later sibling's constructor origin"
+      (origin? f '(bindings 0 1 arities 0 body items 1) 'allocation 'bindings 1 1)))
+
+(let ((f (facts-for "(fn* self ([self] self) ([x y & more] [self x y more]))")))
+  (ok "a parameter can shadow the fn self name in just its own arity"
+      (binds? f '(arities 0 body) '(arities 0 params 0)))
+  (ok "the fn self binder is visible in the second arity"
+      (binds? f '(arities 1 body items 0) '(name)))
+  (ok "rest has its own formal and an incoming origin"
+      (and (binds? f '(arities 1 body items 3) '(arities 1 rest))
+           (origin? f '(arities 1 body items 3) 'argument 'arities 1 'rest))))
+
+(let ((f (facts-for "(let* [e [:outer]] (try e (catch Throwable e e) (finally e)))")))
+  (ok "the source catch binding receives the exception from the IR catch binder"
+      (binds? f '(body catch-body bindings 0 1) '(body catch-sym)))
+  (ok "the catch name shadows the outer local only in the handler"
+      (and (binds? f '(body catch-body body) '(body catch-body bindings 0 0))
+           (binds? f '(body body) '(bindings 0 0))
+           (binds? f '(body finally) '(bindings 0 0))
+           (origin? f '(body catch-body body) 'unknown))))
+
+(let* ((ir (fact-ir "(fn* ([x] (let* [a [x] b [x] c [[1] :k] q '(x) r (identity x)] [a b c q r])))"))
+       (b '(arities 0 body))
+       (let-ir (ir-at ir b))
+       (alloc (ir-at let-ir '(bindings 0 1)))
+       ;; The two constructor occurrences now use the same map object.
+       (bindings (ir-at let-ir '(bindings)))
+       (shared (jolt-assoc let-ir (fact-kw 'bindings)
+                 (jolt-assoc bindings 1 (jolt-vector "b" alloc))))
+       (original (body-facts facts-unit ir))
+       (f (body-facts facts-unit shared)))
+  (ok "equal constructor syntax yields two distinct origin paths"
+      (and (origin? original '(arities 0 body body items 0) 'allocation 'arities 0 'body 'bindings 0 1)
+           (origin? original '(arities 0 body body items 1) 'allocation 'arities 0 'body 'bindings 1 1)))
+  (ok "even the same constructor node object has distinct occurrences"
+      (and (eq? (ir-at shared '(bindings 0 1)) (ir-at shared '(bindings 1 1)))
+           (origin? f '(body items 0) 'allocation 'bindings 0 1)
+           (origin? f '(body items 1) 'allocation 'bindings 1 1)))
+  (ok "constant collection and quoted data have potentially shared literal origins"
+      (and (origin? f '(body items 2) 'literal 'bindings 2 1)
+           (origin? f '(body items 3) 'literal 'bindings 3 1)))
+  (ok "an opaque invoke and a binding outside the requested root have unknown origins"
+      (and (origin? f '(body items 4) 'unknown)
+           (origin? f '(bindings 0 1 items 0) 'unknown)
+           (jolt-nil? (binding-at f (ir-path '(bindings 0 1 items 0)))))))
+
+(let* ((src "(fn* ([x] (loop* [i 0 prev nil] (let* [obj [x] alias obj] (if (= i 0) (recur 1 alias) [(= alias prev) (identical? alias prev)])))))")
+       (f (facts-for src)))
+  (ok "a loop body's alias carries its constructor site onto the backedge"
+      (origin? f '(arities 0 body body body then args 1) 'allocation 'arities 0 'body 'body 'bindings 0 1))
+  (ok "the outer fn parameter remains incoming across an inner loop's recur"
+      (origin? f '(arities 0 body body bindings 0 1 items 0) 'argument 'arities 0 'params 0))
+  (ok "a loop-carried local might have been rebound by recur"
+      (and (binds? f '(arities 0 body body body else items 0 args 1) '(arities 0 body bindings 1 0))
+           (origin? f '(arities 0 body body body else items 0 args 1) 'unknown)))
+  (ok "two evaluations of one loop site produce equal objects with distinct identities"
+      (equal? (seq->list (ev (string-append "(" src " 7)"))) '(#t #f))))
+(let ((f (facts-for "(fn* ([x] (let* [alias x] (if x alias (recur [x])))))")))
+  (ok "aliases of a fn parameter can see a value rebound by fn recur"
+      (origin? f '(arities 0 body body then) 'unknown)))
+(let ((f (facts-for "(fn* ([x] (loop* [x [x] y x] y)))")))
+  (ok "loop initializers have sequential scope and see first-entry values"
+      (and (binds? f '(arities 0 body bindings 0 1 items 0) '(arities 0 params 0))
+           (origin? f '(arities 0 body bindings 1 1) 'allocation 'arities 0 'body 'bindings 0 1))))
+(let ((f (facts-for "(fn* ([x] {x x}))")))
+  (ok "a map key and value are separate child occurrences"
+      (and (binds? f '(arities 0 body pairs 0 0) '(arities 0 params 0))
+           (binds? f '(arities 0 body pairs 0 1) '(arities 0 params 0)))))
+
+(ev "(def facts-copy (fn* ([p] [p p])))")
+(let* ((ctx (make-analyze-ctx "u"))
+       (before (jolt-ce-analyze ctx (jolt-ce-read "(fn* ([x] (let* [a [x]] (facts-copy a))))")))
+       (original (body-facts facts-unit before))
+       (after (jolt-ce-run-passes before ctx))
+       (rewritten (body-facts facts-unit after))
+       (other (body-facts ((var-deref "jolt.passes.types" "new-unit")) after)))
+  (ok "the same body revision hits the unit's fact cache"
+      (eq? rewritten (body-facts facts-unit after)))
+  (ok "different compilation units compute separate snapshots" (not (eq? rewritten other)))
+  (ok "the pass pipeline splices the call"
+      (not (has? (code-part (jolt-ce-emit after)) "facts-copy")))
+  (ok "recomputing after a splice finds both substituted uses in caller scope"
+      (and (origin? original '(arities 0 body body) 'unknown)
+           (binds? original '(arities 0 body body args 0) '(arities 0 body bindings 0 0))
+           (binds? rewritten '(arities 0 body body items 0) '(arities 0 body bindings 0 0))
+           (binds? rewritten '(arities 0 body body items 1) '(arities 0 body bindings 0 0))
+           (origin? rewritten '(arities 0 body body items 1) 'allocation 'arities 0 'body 'bindings 0 1)))
+  (let* ((opaque (jolt-hash-map (fact-kw 'op) (fact-kw 'future-op)))
+         (mixed (jolt-hash-map (fact-kw 'op) (fact-kw 'vector)
+                               (fact-kw 'items) (jolt-vector after opaque)))
+         (f (body-facts facts-unit mixed)))
+    (ok "an unrecognized IR op discards partial facts"
+        (and (origin? f '(items 1) 'unknown)
+             (origin? f '(items 0 arities 0 body body items 1) 'unknown)))))
+
+(let* ((leaf (fact-ir "1"))
+       (deep (let loop ((n 200) (ir leaf))
+               (if (zero? n) ir
+                   (loop (- n 1) (jolt-hash-map (fact-kw 'op) (fact-kw 'vector)
+                                                (fact-kw 'items) (jolt-vector ir))))))
+       (node (jolt-hash-map (fact-kw 'op) (fact-kw 'vector)
+                            (fact-kw 'items) (jolt-vector leaf deep))))
+  (ok "an exhausted analysis budget discards even the prefix's facts"
+      (origin? (body-facts facts-unit node) '(items 0) 'unknown)))
+
+(define projection-at (var-deref "jolt.passes.facts" "projection-at"))
+(define contained-at (var-deref "jolt.passes.facts" "contained-at"))
+(define captures-at (var-deref "jolt.passes.facts" "captures-at"))
+(define confined? (var-deref "jolt.passes.facts" "confined?"))
+(define may-publish? (var-deref "jolt.passes.facts" "may-publish?"))
+(define observations-at (var-deref "jolt.passes.facts" "observations-at"))
+(define (in-body . path) (ir-path (append '(arities 0 body) path)))
+(define map-site (in-body 'bindings 0 1))
+(define box-site (in-body 'bindings 1 1))
+(define ret-site (in-body 'body))
+(define (fact-get facts key) (jolt-get facts (fact-kw key) jolt-nil))
+(define (projects? f path present? from)
+  (let ((p (projection-at f path)))
+    (and (not (jolt-nil? p))
+         (eq? (fact-get p 'present?) present?)
+         (clj= (fact-get p 'origins) (origins-at f from)))))
+
+(let ((f (facts-for "(fn [x] (loop* [m {:k x} saved m] (identical? m saved)))")))
+  (ok "identity observed through a loop slot reaches its confined initializer"
+      (and (confined? f map-site)
+           (clj= (observations-at f map-site) (jolt-hash-set (fact-kw 'identity))))))
+(let ((f (facts-for "(fn [x] (loop* [m {:k x} saved m] (class saved)))")))
+  (ok "class through a loop slot retains its representation and opaque observations"
+      (clj= (observations-at f map-site)
+            (jolt-hash-set (fact-kw 'representation) (fact-kw 'unknown)))))
+
+(let ((f (facts-for "(fn [x] (let [m {:k x} box [m]] (:k (nth box 0))))")))
+  (ok "nested projections forward only the selected field"
+      (and (projects? f (in-body 'body 'args 0) #t map-site)
+           (projects? f ret-site #t (in-body 'bindings 0 1 'pairs 0 1))))
+  (ok "projecting through both containers confines both allocations"
+      (and (confined? f map-site) (confined? f box-site)
+           (may-publish? f (in-body 'bindings 0 1 'pairs 0 1))
+           (clj= (contained-at f box-site) (origins-at f map-site)))))
+
+(let* ((prefix "(fn [x] (let [m {:k x} alias m box [alias]] ")
+       (local (facts-for (string-append prefix "(:k (nth box 0))))")))
+       (published (facts-for (string-append prefix "box))")))
+       (box (in-body 'bindings 2 1)))
+  (ok "returning the same container publishes its aliased map"
+      (and (confined? local map-site) (confined? local box)
+           (may-publish? published map-site) (may-publish? published box))))
+
+(for-each
+ (lambda (tail)
+   (let ((f (facts-for (string-append "(fn [x sink] (let [m {:k x} box [[m] [m]] other [x]] " tail "))"))))
+     (ok (string-append "shared child publishes transitively via " tail)
+         (and (not (confined? f map-site)) (not (confined? f box-site))
+              (confined? f (in-body 'bindings 2 1))))))
+ '("box" "(reset! sink box)" "(set! *print-length* box)" "(throw box)"
+   "(try (throw box) (catch Throwable e nil))"))
+
+(let ((f (facts-for "(fn [x callback] (let [field [x] m {:k field} box [m]] (callback (:k (nth box 0)))))")))
+  (ok "passing only a projected child to an opaque callback confines its holders"
+      (and (not (confined? f (in-body 'bindings 0 1)))
+           (confined? f (in-body 'bindings 1 1))
+           (confined? f (in-body 'bindings 2 1)))))
+
+(let ((f (facts-for "(fn [x i] (let [m {:k x} box [m] other [x]] (nth box i)))")))
+  (ok "unknown indexing conservatively exposes possible children and leaves unrelated sites local"
+      (and (jolt-nil? (projection-at f ret-site))
+           (not (confined? f map-site)) (not (confined? f box-site))
+           (confined? f (in-body 'bindings 2 1)))))
+
+(let ((f (facts-for "(fn [x] (let [m {:k x} box [m]] (identical? m (nth box 0))))")))
+  (ok "local identity is observable even while both objects are confined"
+      (and (confined? f map-site) (confined? f box-site)
+           (clj= (observations-at f map-site) (jolt-hash-set (fact-kw 'identity)))
+           (clj= (observations-at f box-site) (jolt-hash-set)))))
+
+(let ((f (facts-for "(fn [x] (let [m {:k x}] (class m)))")))
+  (ok "representation and opaque uses are reported separately"
+      (and (not (confined? f map-site))
+           (clj= (observations-at f map-site)
+                 (jolt-hash-set (fact-kw 'representation) (fact-kw 'unknown))))))
+
+(let ((f (facts-for "(fn [x] (let [m {:a nil :b false :c (x)} v [nil false (x)]] [(get m :a x) (:b m x) (:c m) (nth v 0 x) (nth v 1) (nth v 2) (:z m x)]))")))
+  (ok "nil, false, and unknown values preserve literal key and slot presence"
+      (and (projects? f (in-body 'body 'items 0) #t (in-body 'bindings 0 1 'pairs 0 1))
+           (projects? f (in-body 'body 'items 1) #t (in-body 'bindings 0 1 'pairs 1 1))
+           (projects? f (in-body 'body 'items 2) #t (in-body 'bindings 0 1 'pairs 2 1))
+           (projects? f (in-body 'body 'items 3) #t (in-body 'bindings 1 1 'items 0))
+           (projects? f (in-body 'body 'items 4) #t (in-body 'bindings 1 1 'items 1))
+           (projects? f (in-body 'body 'items 5) #t (in-body 'bindings 1 1 'items 2))
+           (projects? f (in-body 'body 'items 6) #f (in-body 'body 'items 6 'args 1)))))
+
+(let ((f (facts-for "(fn [x] (let [key [x] val [x] m {key val} members #{key val}] [m members]))")))
+  (ok "maps retain both keys and values and sets retain members"
+      (let ((children (jolt-conj2 (origins-at f map-site)
+                                  (jolt-first (origins-at f box-site)))))
+        (and (clj= (contained-at f (in-body 'bindings 2 1)) children)
+             (clj= (contained-at f (in-body 'bindings 3 1)) children)))))
+(let ((f (facts-for "(fn [] (get #{false} false :missing))")))
+  (ok "set lookup forwards the stored member"
+      (projects? f (in-body) #t (in-body 'args 0 'items 0))))
+
+(let* ((f (facts-for "(fn [x] (let [m {:k x} f (fn [m] (fn [] m)) g (fn [] (fn [] m))] g))"))
+       (g (captures-at f (in-body 'bindings 2 1)))
+       (capture (jolt-get g "m" jolt-nil)))
+  (ok "nested capture follows lexical shadowing and returning a closure publishes its capture"
+      (and (clj= (captures-at f box-site) (jolt-hash-map))
+           (clj= (fact-get capture 'binding) (in-body 'bindings 0 0))
+           (clj= (fact-get capture 'origins) (origins-at f map-site))
+           (not (confined? f map-site)))))
+
+(ev "(def facts-make-fn (fn* ([p q] (fn* ([] [p q])))))")
+(let* ((ctx (make-analyze-ctx "u"))
+       (ir (jolt-ce-analyze ctx (jolt-ce-read "(fn [x] (let [m {:k x}] (facts-make-fn m false)))")))
+       (spliced (jolt-ce-run-passes ir ctx))
+       (closure (ir-at spliced '(arities 0 body body)))
+       (captures (captures-at (body-facts facts-unit spliced) ret-site)))
+  (ok "spliced image metadata retains a renamed live binding and carries false as data"
+      (and (clj= (fact-get closure 'free-names) (jolt-vector "p" "q"))
+           (clj= (fact-get closure 'live-names) (jolt-vector "m" (jolt-vector #f)))
+           (clj= (fact-get (jolt-get captures "m" jolt-nil) 'binding) (in-body 'bindings 0 0))
+           (= 1 (jolt-count captures)))))
+
+(let ((f (facts-for "(fn [x] (let [m {:k x} f (fn [] m) a f] (:k (a))))")))
+  (ok "a proven local zero-arg invocation forwards its capture without publication"
+      (and (confined? f map-site) (confined? f box-site)
+           (projects? f ret-site #t (in-body 'bindings 0 1 'pairs 0 1)))))
+(let ((f (facts-for "(fn [x] (let [m {:k x}] ((fn [] (throw m)))))")))
+  (ok "an immediately invoked closure can still publish a capture through its effects"
+      (not (confined? f map-site))))
+
+(let* ((f (facts-for "(fn [x] (let [field [x] m {:k field} f (^:once fn* [] (let [box [m]] (:k (nth box 0) :missing)))] (f)))"))
+       (once-site (in-body 'bindings 2 1))
+       (capture (jolt-get (captures-at f once-site) "m" jolt-nil))
+       (read-site (in-body 'bindings 2 1 'arities 0 'body 'bindings 0 1 'items 0))
+       (lookup-site (in-body 'bindings 2 1 'arities 0 'body 'body))
+       (receiver-site (in-body 'bindings 2 1 'arities 0 'body 'body 'args 0)))
+  (ok "a once closure keeps the lexical binder and possible first-call value"
+      (and (clj= (fact-get capture 'binding) (in-body 'bindings 1 0))
+           (clj= (binding-at f read-site) (in-body 'bindings 1 0))
+           (clj= (fact-get capture 'origins) (origins-at f box-site))
+           (jolt-contains? (origins-at f read-site) (jolt-hash-map (fact-kw 'kind) (fact-kw 'unknown)))
+           (jolt-contains? (origins-at f read-site) (jolt-first (origins-at f box-site)))))
+  (ok "a cleared capture invalidates derived field proofs and may still publish its child"
+      (and (projects? f receiver-site #t read-site)
+           (jolt-nil? (projection-at f lookup-site))
+           (origin? f '(arities 0 body body) 'unknown)
+           (may-publish? f map-site))))
+
+(ok "a once closure retried after throwing reads the cleared capture"
+    (clj= (ev "(let [m {:k [1]} f (^:once fn* [fail?] (let [v (:k m :missing)] (if fail? (throw (ex-info \"retry\" {})) v)))] [(try (f true) (catch Throwable e :threw)) (f false)])")
+          (jolt-vector (fact-kw 'threw) (fact-kw 'missing))))
+
+(for-each
+  (lambda (hint)
+    (let* ((f (facts-for (string-append "(fn [x] ((fn* ^" hint " [] x)))")))
+           (read (in-body 'fn 'arities 0 'body))
+           (returns (origins-at f (in-body))))
+      (ok (string-append "^" hint " closure return may preserve or replace the captured argument")
+          (and (origin? f '(arities 0 body fn arities 0 body) 'argument 'arities 0 'params 0)
+               (jolt-contains? returns (jolt-first (origins-at f read)))
+               (jolt-contains? returns (jolt-hash-map (fact-kw 'kind) (fact-kw 'unknown)))
+               (may-publish? f read)))))
+  '("double" "long"))
+(let* ((source "(fn [v] (let [m {:k v}] (try ((fn* ^double [] m)) (catch Throwable e (ex-message e)))))")
+       (f (facts-for source)))
+  (ok "a caught return coercion can report the map's runtime representation"
+      (and (jolt-contains? (observations-at f map-site) (fact-kw 'representation))
+           (has? (ev (string-append "(" source " 1)")) "PersistentArrayMap"))))
+(let* ((body (fact-ir "(fn [x] (let [m {:k x}] (try ((fn* ^double [] m)) nil (catch Throwable e e))))"))
+       (unit ((var-deref "jolt.passes.types" "new-unit")))
+       (plain (body-facts unit body)))
+  ((var-deref "clojure.core" "reset!") (fact-get unit 'debug-locals?) #t)
+  (let ((debug (body-facts unit body)))
+    (ok "a returned debug exception may retain the map even if the normal cast result is discarded"
+        (and (confined? plain map-site) (may-publish? debug map-site)
+             (not (confined? debug map-site))))))
+(let ((d (ev "((fn [x] ((fn* ^double [] x))) 1)"))
+      (n (ev "((fn [x] ((fn* ^long [] x))) 18446744073709551616N)")))
+  (ok "fixed-arity return coercion widens to double and wraps long"
+      (and (flonum? d) (= d 1.0) (fixnum? n) (= n 0))))
+
+;; A positional record constructor stores its arguments, so its fields are
+;; contained values for escape purposes.
+(ev "(defrecord FactRecord [a b])")
+((var-deref "jolt.passes.types" "set-record-shapes!") facts-unit (chez-record-shapes-map))
+(let* ((f (facts-for "(fn [a b] (get (FactRecord. a b) :a :missing))"))
+       (first-arg (in-body 'args 0 'args 0)))
+  (ok "a positional record retains both field arguments"
+      (clj= (contained-at f (in-body 'args 0))
+            (jolt-hash-set (jolt-first (origins-at f first-arg))
+                           (jolt-first (origins-at f (in-body 'args 0 'args 1)))))))
+(let ((f (facts-for "(fn [x sink] (let [m {:k x} r (FactRecord. m false)] (sink r) (:a r)))")))
+  (ok "record fields exposed to mutation have no unconditional proof"
+      (and (jolt-nil? (projection-at f (in-body 'body 'ret)))
+           (not (confined? f map-site)) (not (confined? f box-site)))))
+
+(define call-summary-at (var-deref "jolt.passes.facts" "call-summary-at"))
+(define (argument-effects summary i)
+  (jolt-nth (fact-get summary 'arguments) i))
+(define (effects? summary i . effects)
+  (clj= (argument-effects summary i) (apply jolt-hash-set (map fact-kw effects))))
+
+(let* ((source "(fn [x] (let [m {:k x} read-k (fn [a] (:k a))] (read-k m)))")
+       (f (facts-for source)))
+  (ok "a fixed-arity helper reads the caller's map and returns just its field"
+      (and (confined? f map-site)
+           (effects? (call-summary-at f ret-site) 0 'read)
+           (origin? f '(arities 0 body body) 'argument 'arities 0 'params 0)
+           (clj= (ev (string-append "(" source " 42)")) 42))))
+
+;; The same request lookup shape that Ring uses for path-info with a URI fallback.
+(let* ((source "(fn [path uri] (let [request {:path-info path :uri uri}] (letfn [(path-for [r] (or (:path-info r) (:uri r)))] (path-for request))))")
+       (f (facts-for source))
+       (call (in-body 'body 'body)))
+  (ok "a closed request helper reads both fields without exposing the request"
+      (and (confined? f map-site) (effects? (call-summary-at f call) 0 'read)
+           (equal? (ev (string-append "(" source " nil \"/fallback\")")) "/fallback")
+           (equal? (ev (string-append "(" source " \"/path\" \"/fallback\")")) "/path"))))
+
+(let* ((f (facts-for "(fn [x] (let [m {:k x} pass (fn [a] a) r (pass m)] (:k r)))"))
+       (call (in-body 'bindings 2 1)))
+  (ok "returning an argument forwards its original alias"
+      (and (confined? f map-site) (effects? (call-summary-at f call) 0 'return-alias)
+           (clj= (origins-at f call) (origins-at f map-site)))))
+
+(for-each
+  (lambda (pack read-out)
+    (let* ((prefix (string-append "(fn [x] (let [m {:k x} pack " pack " r (pack m)] "))
+           (inside (facts-for (string-append prefix read-out "))")))
+           (outside (facts-for (string-append prefix "r))")))
+           (call (in-body 'bindings 2 1)))
+      (ok (string-append "the result retains its argument until it escapes: " pack)
+          (and (effects? (call-summary-at inside call) 0 'return-contains)
+               (confined? inside map-site) (may-publish? outside map-site)))))
+  '("(fn [a] [a])" "(fn [a] (fn [] a))")
+  '("(:k (nth r 0))" "(:k (r))"))
+
+(ev "(def call-summary-sink (atom nil))")
+(let* ((prefix "(fn [x] (let [m {:k x} pack (fn [a] (fn [] (reset! call-summary-sink a))) run (pack m)] ")
+       (discarded (facts-for (string-append prefix "nil))")))
+       (returned (facts-for (string-append prefix "run))")))
+       (called (facts-for (string-append prefix "(do (run) nil)))")))
+       (call (in-body 'bindings 2 1)))
+  (ok "a returned closure's publication stays latent until it is called or escapes"
+      (and (effects? (call-summary-at discarded call) 0 'return-contains)
+           (confined? discarded map-site)
+           (may-publish? returned map-site) (may-publish? called map-site))))
+
+(let* ((f (facts-for "(fn [x] (let [m {:k x} helper (fn ([a] (:k a)) ([a b] [a b]))] (do (helper m) (helper m x) nil)))"))
+       (one (call-summary-at f (in-body 'body 'statements 0)))
+       (two (call-summary-at f (in-body 'body 'statements 1))))
+  (ok "one closure has independent fixed-arity summaries"
+      (and (confined? f map-site)
+           (= (fact-get one 'arity) 1) (effects? one 0 'read)
+           (= (fact-get two 'arity) 2) (effects? two 0 'return-contains)
+           (effects? two 1 'return-contains))))
+
+(let* ((source "(fn [x] (let [m {:k x} same? (fn [a b] (identical? a b))] (same? m m)))")
+       (f (facts-for source))
+       (s (call-summary-at f ret-site)))
+  (ok "identity observations cross the call without publishing either argument"
+      (and (confined? f map-site) (effects? s 0 'identity) (effects? s 1 'identity)
+           (clj= (observations-at f map-site) (jolt-hash-set (fact-kw 'identity)))
+           (eq? #t (ev (string-append "(" source " 1)"))))))
+
+(ev "(defprotocol CallSummaryProtocol (call-summary-step [receiver a]))")
+(for-each
+  (lambda (action)
+    (let* ((f (facts-for (string-append "(fn [x cb] (let [m {:k x} helper (fn [a] "
+                                       action ")] (do (helper m) nil)))")))
+           (summary (call-summary-at f (in-body 'body 'statements 0))))
+      (ok (string-append "an argument can escape during " action)
+          (and (may-publish? f map-site)
+               (jolt-contains? (argument-effects summary 0) (fact-kw 'publish))
+               (jolt-contains? (argument-effects summary 0) (fact-kw 'unknown))))))
+  '("(reset! call-summary-sink a)" "(.toString a)" "(cb a)" "(call-summary-step cb a)"
+    "(throw a)" "(class a)" "((jolt.ffi/__cfn \"puts\" [:string] :int) a)"))
+
+(let* ((f (facts-for "(fn [x cb] (let [field [x] m {:k field} helper (fn [a] (cb (:k a)))] (helper m)))"))
+       (field (in-body 'bindings 0 1))
+       (map (in-body 'bindings 1 1)))
+  (ok "an opaque callback can publish a field while the helper's map stays confined"
+      (and (confined? f map) (may-publish? f field)
+           (effects? (call-summary-at f ret-site) 0 'read))))
+
+(ev "(deftype CallSummaryLookup [value] clojure.lang.ILookup (valAt [this k] (reset! call-summary-sink this) value) (valAt [this k d] (reset! call-summary-sink this) value))")
+(let* ((source "(fn [receiver] (let [lookup (fn [a] (:k a))] (lookup receiver)))")
+       (f (facts-for source)))
+  (ok "a literal-key helper cannot assume how a custom receiver looks up a key"
+      (and (effects? (call-summary-at f ret-site) 0 'publish 'unknown)
+           (eq? #t (ev (string-append "(let [custom (CallSummaryLookup. :found)] "
+                                      "(and (= :found (" source " custom)) "
+                                      "(identical? custom @call-summary-sink)))"))))))
+
+(let* ((source "(fn [x] (let [m {:k x} fail (fn [a] (throw (ex-info \"stop\" {:value a})))] (try (fail m) (catch Throwable e (:value (ex-data e))))))")
+       (f (facts-for source)))
+  (ok "an argument can reach the caller through a thrown exception"
+      (and (may-publish? f map-site)
+           (clj= (ev (string-append "(" source " 7)")) (ev "{:k 7}")))))
+
+(let ((f (facts-for "(fn [x] (let [m {:k x} inspect (fn [a] (class a))] (inspect m)))")))
+  (ok "a representation observer is carried through its helper"
+      (jolt-contains? (argument-effects (call-summary-at f ret-site) 0)
+                      (fact-kw 'representation))))
+
+(let* ((f (facts-for "(fn [x cb] (let [m {:k x}] (letfn [(apply1 [f a] (f a)) (read-k [a] (:k a))] [(apply1 read-k m) (apply1 cb m)])))"))
+       (inside (in-body 'body 'body 'items 0))
+       (opaque (in-body 'body 'body 'items 1)))
+  (ok "higher-order dispatch uses the supplied closure, with an opaque fallback"
+      (and (effects? (call-summary-at f inside) 1 'read)
+           (effects? (call-summary-at f opaque) 1 'publish 'unknown)
+           (may-publish? f map-site))))
+
+(for-each
+  (lambda (helper)
+    (let* ((f (facts-for (string-append "(fn [x] (let [m {:k x} helper " helper "] (helper m true)))")))
+           (summary (call-summary-at f ret-site)))
+      (ok "a recursive transfer is conservative"
+          (and (may-publish? f map-site)
+               (jolt-contains? (argument-effects summary 0) (fact-kw 'unknown))))))
+  '("(fn self [a again?] (if again? (self a false) (:k a)))"
+    "(fn [a again?] (if again? (recur a false) (:k a)))"))
+
+(let* ((f (facts-for "(fn [x] (let [m {:k x}] (letfn [(a [v] (b v)) (b [v] (a v))] (a m))))")))
+  (ok "a mutually recursive cycle does not yield confinement"
+      (and (may-publish? f map-site)
+           (jolt-contains? (argument-effects (call-summary-at f (in-body 'body 'body)) 0)
+                           (fact-kw 'unknown)))))
+
+(let* ((f (facts-for "(fn [x] (let [m {:k x} helper (fn [a] a)] (helper m x)))"))
+       (summary (call-summary-at f ret-site)))
+  (ok "unsupported arities use the conservative path"
+      (and (eq? #f (fact-get summary 'resolved?)) (may-publish? f map-site))))
+
+(set-optimize! #f)
+(set-direct-link-flag! #f)
+
+(define reducer-confinement-at (var-deref "jolt.passes.facts" "reducer-confinement-at"))
+(define opaque-accumulator-frames (fact-kw 'opaque-accumulator-frames))
+(define (reducer-call step seed source)
+  (string-append "(reduce-kv " step " " seed " " source ")"))
+(define plain-reducer "(fn [a k v] (assoc a k v))")
+(define (reducer-facts source path)
+  (let* ((ctx (make-analyze-ctx "u"))
+         (ir (jolt-ce-run-passes (jolt-ce-analyze ctx (jolt-ce-read source)) ctx)))
+    (reducer-confinement-at facts-unit ir path opaque-accumulator-frames)))
+(define (guarded-reducer? proof)
+  (let ((guard (fact-get proof 'guard)))
+    (and (clj= (fact-get proof 'driver) (fact-kw 'native-map-reduce-kv))
+         (equal? (fact-get guard 'predicate) "pmap?")
+         (clj= (fact-get guard 'argument) 2))))
+
+(define named-params
+  "(fn [opts sym->kw] (reduce-kv (fn [m k v] (assoc m (sym->kw k) v)) {} (:params opts)))")
+(define request-headers
+  "(fn [request replace-newline] (reduce-kv (fn [m k v] (assoc m k (replace-newline v))) {} (:headers request)))")
+
+;; Code generation happens after the analysis and can use another profile.
+;; Compile the same emitted Scheme with and without named inspector locals.
+(define (compile-with-inspector emitted inspector?)
+  (let-values (((out bytes) (open-bytevector-output-port)))
+    (parameterize ((optimize-level 2)
+                   (generate-inspector-information inspector?)
+                   (generate-procedure-source-information inspector?))
+      (call-with-port (open-input-string emitted) (lambda (in) (compile-port in out))))
+    (call-with-port (open-bytevector-input-port (bytes)) load-compiled-from-port)))
+
+(jolt-load-string (call-with-input-file "stdlib/jolt/debug.clj" get-string-all))
+(define reducer-frame-acc
+  (ev "(fn [t] (some #(get (:locals %) 'acc) (jolt.debug/frames t)))"))
+(define (raw-frame-value? t matches?)
+  (exists (lambda (frame)
+            (let loop ((i 0))
+              (and (< i (frame 'length))
+                   (or (matches? (((frame 'ref i) 'ref) 'value))
+                       (loop (+ i 1))))))
+          (sa-continuation-frames (car (jolt-thrown-cont t)))))
+
+(for-each
+  (lambda (enabled)
+    (set-optimize! enabled)
+    (set-direct-link-flag! enabled)
+    (let* ((src "(defn inspecting-alias [x f]
+                   (let [m {:observed x} alias m retained (f)]
+                     [retained (:observed alias)]))")
+           (emitted (emitf "u" src))
+           (payload (jolt-vector 7))
+           (callback (ev "(fn [] (try (throw (ex-info \"snapshot\" {})) (catch Throwable t t)))")))
+      (compile-with-inspector emitted #f)
+      (let* ((answer (jolt-invoke (var-deref "u" "inspecting-alias") payload callback))
+             (thrown (jolt-nth answer 0)))
+        (ok "a throwable retained by an opaque callback sees the aliased map in raw frames"
+            (and (has? (code-part emitted) "(amap-slots->pmap ")
+                 (eq? payload (jolt-nth answer 1))
+                 (raw-frame-value? thrown (lambda (v)
+                                            (and (pmap? v)
+                                                 (eq? payload (jolt-get v (fact-kw 'observed)))))))))))
+  '(#f #t))
+
+(for-each
+  (lambda (enabled)
+    (set-optimize! enabled)
+    (set-direct-link-flag! enabled)
+    (let ((proof (reducer-facts named-params (in-body))))
+      (ok "HoneySQL's named parameter reducer needs the native map guard"
+          (and (guarded-reducer? proof)
+               (clj= (fact-get proof 'step) (in-body 'args 0 'arities 0 'body))
+               (clj= (ev (string-append "(" named-params " {:params {'p 2}} keyword)"))
+                     (ev "{:p 2}")))))
+    (ok "Pedestal's header reducer keeps its capture and guards the lookup result"
+        (and (guarded-reducer? (reducer-facts request-headers (in-body)))
+             (clj= (ev (string-append "(" request-headers " {:headers {\"accept\" \"x\\ny\"}}"
+                                      " #(clojure.string/replace % \"\\n\" \",\"))"))
+                   (ev "{\"accept\" \"x,y\"}"))))
+    (let* ((proof (reducer-facts "(fn [x] (let [source {:z x}] (reduce-kv (fn [a k v] (assoc a (let [a k] a) v)) {} source)))"
+                                 (in-body 'body)))
+           (code (code-part (emitf "u" named-params))))
+      (ok "a literal-map alias needs no guard and a shadowed name is independent"
+          (and (clj= (fact-get proof 'driver) (fact-kw 'native-map-reduce-kv))
+               (jolt-nil? (fact-get proof 'guard))))
+      (ok "the query leaves the public driver and assoc in executable code"
+          (and (has? code "jolt-reduce-kv") (has? code "jolt-assoc3"))))
+    ;; This closed fixture binds the transform to the core keyword operation
+    ;; and uses only builtin keys. Neither it nor assoc's comparisons have a
+    ;; stack observer. Compile it without named locals, as in the --opt app.
+    (compile-with-inspector (emitf "u" (string-append "(def named-param-fixture " named-params ")")) #f)
+    (ok "the closed named-parameter fixture runs after deferred code generation"
+        (clj= (jolt-invoke (var-deref "u" "named-param-fixture")
+                          (ev "{:params (array-map 'p 2 'q 3)}")
+                          (var-deref "clojure.core" "keyword"))
+              (ev "{:p 2 :q 3}")))
+    (for-each
+      (lambda (step)
+        (let* ((ctx (make-analyze-ctx "u"))
+               (source (string-append "(defn inspecting-reducer [f m] "
+                          (reducer-call step "{}" "m") ")"))
+               (ir (jolt-ce-run-passes (jolt-ce-analyze ctx (jolt-ce-read source)) ctx))
+               (path (ir-path '(init arities 0 body)))
+               (emitted (jolt-ce-emit ir))
+               (inputs (ev "(array-map :a 1 :b 2)"))
+               (capture (ev "(fn [k] (try (throw (ex-info (name k) {})) (catch Throwable t t)))"))
+               (a (fact-kw 'a))
+               (b (fact-kw 'b)))
+          (ok "generic analysis withholds the proof for a frame-observing step"
+              (jolt-nil? (reducer-confinement-at facts-unit ir path)))
+          (for-each
+            (lambda (inspector?)
+              (compile-with-inspector emitted inspector?)
+              (let* ((m (jolt-invoke (var-deref "u" "inspecting-reducer") capture inputs))
+                     (first-error (jolt-get m a))
+                     (second-error (jolt-get m b))
+                     (previous? (lambda (x)
+                                  (and (pmap? x) (= 1 (pmap-cnt x))
+                                       (eq? first-error (jolt-get x a))))))
+                (ok "the final profile can expose both previous maps through jolt.debug/frames"
+                    (if inspector?
+                        (and (clj= empty-pmap (reducer-frame-acc first-error))
+                             (previous? (reducer-frame-acc second-error)))
+                        (and (jolt-nil? (reducer-frame-acc first-error))
+                             (jolt-nil? (reducer-frame-acc second-error)))))
+                (ok "the native inspector sees the previous map even without inspector metadata"
+                    (raw-frame-value? second-error previous?))))
+            '(#t #f))))
+      '("(fn [acc k v] (assoc acc k (ex-info \"snapshot\" {})))"
+        "(fn [acc k v] (assoc acc k (f k)))")))
+  '(#f #t))
+(set-optimize! #f)
+(set-direct-link-flag! #f)
+
+;; Even the plain assoc step can call an observer for a user-defined key.
+(let* ((a (vector 'reducer-eq-probe-a))
+       (b (vector 'reducer-eq-probe))
+       (source (jolt-array-map a 1 b 2))
+       (run "(fn [m] (reduce-kv (fn [acc k v] (assoc acc k v)) {} m))")
+       (ordinary (ev run))
+       (old-arms jolt-eq-arms)
+       (snap #f))
+  (dynamic-wind
+    (lambda ()
+      (register-eq-arm! (lambda (x y) (and (eq? x a) (eq? y b)))
+                        (lambda (x y) (set! snap (jolt-ex-info "comparison" empty-pmap)) #f)))
+    (lambda () (jolt-invoke ordinary source))
+    (lambda () (set! jolt-eq-arms old-arms)))
+  (ok "a key comparison can indirectly retain the previous map of a plain assoc step"
+      (and snap
+           (raw-frame-value? snap (lambda (x) (and (pmap? x) (= 1 (pmap-cnt x))
+                                                   (eqv? 1 (jolt-get x a)))))
+           (jolt-nil? (reducer-confinement-at facts-unit (fact-ir run) (in-body))))))
+
+(ev "(def reducer-sink (atom nil))")
+(ev "(defn reducer-forward [x] x)")
+(for-each
+  (lambda (step)
+    (ok (string-append "unsupported reducer step: " step)
+        (jolt-nil? (reducer-facts (reducer-call step "{}" "{:x 1}") (ir-path '())))))
+  '("(fn [a k v] (assoc a k (do (reset! reducer-sink a) v)))"
+    "(fn [a k v] (assoc a k [a]))"
+    "(fn [a k v] (assoc a k (let [alias a] (reducer-forward [alias]))))"
+    "(fn [a k v] (assoc a k (fn [] a)))"
+    "(fn [a k v] (assoc a k (class a)))"
+    "(fn [a k v] (assoc a k (identical? a a)))"
+    "(fn [a k v] (assoc a k (count a)))"
+    "(fn [a k v] (assoc a k (throw (ex-info \"stop\" {:acc a}))))"
+    "(fn [a k v] (reduced (assoc a k v)))"
+    "(fn [a k v] (assoc k a v))"
+    "(fn [a k v & more] (assoc a k v))"
+    "(fn [a k ^long v] (assoc a k v))"
+    "assoc"))
+
+(for-each
+  (lambda (source path)
+    (ok (string-append "unsupported reduction call: " source)
+        (jolt-nil? (reducer-facts source path))))
+  (list "(fn [reduce-kv] (reduce-kv (fn [a k v] (assoc a k v)) {} {}))"
+        "(fn [assoc] (reduce-kv (fn [a k v] (assoc a k v)) {} {}))"
+        "(reduce (fn [a [k v]] (assoc a k v)) {} {:x 1})"
+        (reducer-call plain-reducer "{:seed true}" "{:x 1}")
+        (reducer-call plain-reducer "(reduced {})" "{:x 1}"))
+  (list (in-body) (in-body) (ir-path '()) (ir-path '()) (ir-path '())))
+
+(let* ((ir (fact-ir (reducer-call plain-reducer "{}" "{:x 1}")))
+       (annotated (jolt-assoc ir (fact-kw 'proto) "test/OtherProtocol"))
+       (debug-unit ((var-deref "jolt.passes.types" "new-unit"))))
+  ((var-deref "clojure.core" "reset!") (fact-get debug-unit 'debug-locals?) #t)
+  (ok "protocol dispatch and debug-local frames withhold the proof"
+      (and (jolt-nil? (reducer-confinement-at facts-unit annotated (ir-path '()) opaque-accumulator-frames))
+           (jolt-nil? (reducer-confinement-at debug-unit ir (ir-path '()) opaque-accumulator-frames))))
+  (ok "even a literal native source needs the final frame guarantee"
+      (and (jolt-nil? (reducer-confinement-at facts-unit ir (ir-path '())))
+           (jolt-nil? (reducer-confinement-at facts-unit ir (ir-path '()) (fact-kw 'stripped)))
+           (clj= (fact-get (reducer-confinement-at facts-unit ir (ir-path '()) opaque-accumulator-frames)
+                          'driver)
+                 (fact-kw 'native-map-reduce-kv)))))
+
+(ok "direct core calls and calls through values retain their different redefinition behavior"
+    (eq? #t (ev "(with-redefs [reduce-kv (fn [& _] :replacement) assoc (fn [& _] :step)]
+                    (let [driver @#'reduce-kv step @#'assoc]
+                      (and (= {:x 1} (reduce-kv (fn [a k v] (assoc a k v)) {} {:x 1}))
+                           (= :replacement (driver step {} {:x 1}))
+                           (= :step (reduce-kv step {} {:x 1})))))")))
+
+(let* ((custom (ev "(reify clojure.lang.IKVReduce
+                     (kvreduce [_ f seed]
+                       (let [first-step (f seed :b 2) final (f first-step :a 1)]
+                         (reduced [seed first-step final]))))"))
+       (run (ev "(fn [source] (reduce-kv (fn [a k v] (assoc a k v)) {} source))"))
+       (answer (jolt-invoke run custom)))
+  (ok "the pmap guard excludes a custom driver that keeps the seed and an old step"
+      (and (pmap? (ev "{:x 1}")) (pmap? (ev "(hash-map :x 1)"))
+           (not (pmap? custom)) (not (pmap? (ev "(sorted-map :x 1)")))
+           (not (pmap? (ev "[:x]"))) (not (pmap? jolt-nil))
+           (jolt-reduced? answer)
+           (clj= (jolt-reduced-val answer) (ev "[{} {:b 2} {:b 2 :a 1}]")))))
+
+(ok "ordinary reduction keeps published and nested snapshots distinct"
+    (clj= (ev "(let [m (reduce-kv (fn [a k v] (assoc a k (do (reset! reducer-sink a) [a v])))
+                                {} (array-map :a 1 :b 2))]
+                 [@reducer-sink m])")
+          (ev "[{:a [{} 1]} {:a [{} 1] :b [{:a [{} 1]} 2]}]")))
+(ok "a callback can observe the count and class of successive persistent versions"
+    (clj= (ev "(reduce-kv (fn [a k v] (assoc a k [(count a) (= clojure.lang.PersistentArrayMap (class a))]))
+                        {} (array-map :a 1 :b 2))")
+          (ev "{:a [0 true] :b [1 true]}")))
+(ok "ordinary native traversal preserves step order, stops on reduced and never retries a throw"
+    (eq? #t (ev "(let [source (hash-map :c 3 :b 2 :a 1) order (vec (keys source)) seen (atom [])
+                       run (fn [f m]
+                             (reduce-kv (fn [a k v] (assoc a (do (swap! seen conj [:key k]) k) (f k v))) {} m))
+                       all (run (fn [k v] (swap! seen conj [:val k]) v) source)
+                       trace @seen
+                       _ (reset! seen [])
+                       problem (ex-info \"stop\" {})
+                       thrown (try (run (fn [k v] (swap! seen conj [:val k]) (throw problem)) source)
+                                   (catch Throwable e e))
+                       before-throw @seen
+                       _ (reset! seen [])
+                       early (reduce-kv (fn [a k v] (swap! seen conj k) (reduced (assoc a k v))) {} source)]
+                   (and (= source all) (= trace (vec (mapcat (fn [k] [[:key k] [:val k]]) order)))
+                        (= before-throw [[:key (first order)] [:val (first order)]])
+                        (identical? thrown problem) (= early (select-keys source [(first order)]))
+                        (= @seen [(first order)])))")))
+(ok "empty native traversal returns its original seed and skips the callback"
+    (eq? #t (ev "(let [seed {}] (identical? seed (reduce-kv (fn [_ _ _] (throw (ex-info \"called\" {}))) seed {})))")))
+(ok "equal nine-key results expose different persistent and transient representations"
+    (eq? #t (ev "(let [source (apply array-map (interleave [:a :b :c :d :e :f :g :h :i] (range 9)))
+                       ordinary (reduce-kv (fn [a k v] (assoc a k v)) {} source)
+                       built (persistent! (reduce-kv assoc! (transient {}) source))]
+                   (and (= ordinary built) (= (vec (keys ordinary)) (vec (keys source)))
+                        (= clojure.lang.PersistentArrayMap (class ordinary))
+                        (= clojure.lang.PersistentHashMap (class built))
+                        (not= (vec (keys ordinary)) (vec (keys built)))))")))
+
 ;; --- a letfn spliced into a let keeps its letrec* (#1808) ----------------------
 ;; A letfn passed as an argument to an inlined call becomes a let binding init.
 ;; flatten-lets hoisted its bindings into the enclosing let*, dropping the
@@ -268,8 +1406,423 @@
     (equal? "[:other :other]" (ev "(pr-str [(let [g 1.5] (letfn [(f [] (if (number? g) :num :other)) (g [] 0)] (f))) (let [g nil] (letfn [(f [] (if (nil? g) :nil :other)) (g [] 0)] (f)))])")))
 (ok "a loop init reads the earlier loop var, not an outer local of its name"
     (equal? "[3.0 3.5]" (ev "(pr-str [(let [x 1.5] (loop [x 1 y x i 0] (if (< i 2) (recur x (+ y 1.0) (inc i)) y))) (let [x 1] (loop [x 1.5 y x i 0] (if (< i 2) (recur x (+ y 1) (inc i)) y)))])")))
+;; --- fixed-field loop accumulators (jolt.passes.loop-maps) -------------------
+(define direct-loop
+  "(fn [x] (loop* [i 0 m {:k x}] (if (< i 3) (recur (inc i) (assoc m :k (inc (:k m)))) m)))")
+(ok "ordinary evaluation computes the same fixed-field result"
+    (clj= (ev (string-append "(" direct-loop " 5)")) (ev "{:k 8}")))
 
+;; Exercise the loop rewrite through analyze, passes, emission and evaluation.
+(define (loop-shape src)
+  (code-part (emitf "u" src)))
+
+(define boxed-loop-divide
+  "(fn [a] (loop* [again true m {:x 0.0 :n 0}]
+             (if again (recur false (assoc m :n 1)) (/ a (:x m)))))")
+(define destructured-loop
+  "(fn [n]
+     (let [{:keys [items schemas]}
+           (loop [i n m {:items [] :schemas []}]
+             (if (zero? i) m (recur (dec i) (update m :items conj i))))]
+       [items schemas]))")
+
+(for-each
+  (lambda (enabled)
+    (set-optimize! enabled)
+    (set-direct-link-flag! enabled)
+    (ok "a let can rebind the name of a loop result"
+        (clj= (ev "(let* [x (loop* [n 2] (if (pos? n) (recur (dec n)) 12))
+                          x (inc x)]
+                      x)")
+              13))
+    (ok "destructuring a non-map exit uses its original sequence coercion"
+        (clj= (ev "(let [f (fn [stay? other]
+                           (let [{:keys [a b]}
+                                 (loop* [i 0 m {:a 1 :b 2}]
+                                   (if (zero? i) (recur 1 (assoc m :a 3))
+                                     (if stay? m other)))]
+                             [a b]))]
+                     [(f true nil) (f false (list :a 7 :b 8)) (f false nil) (f false 6)])")
+              (ev "[[3 2] [7 8] [nil nil] [nil nil]]")))
+    (ok "an update replacement can return a sequence to the destructurer"
+        (clj= (ev (string-append "(let [f " destructured-loop "]
+                      (with-redefs [clojure.core/update (fn [& _] (list :items [7] :schemas [8]))]
+                        (f 2)))"))
+              (ev "[[7] [8]]")))
+    (ok "fallback lookup order and exceptions protect the consumer"
+        (clj= (ev "(let [seen (atom [])
+                         error (ex-info \"lookup\" {})
+                         other (reify clojure.lang.ILookup
+                                 (valAt [_ k] (swap! seen conj k)
+                                   (if (= k :a) 1 (throw error))))]
+                     (try
+                       (let [{:keys [a b]}
+                             (loop* [i 0 m {:a 1 :b 2}]
+                               (if (zero? i) (recur 1 (assoc m :a 3))
+                                 (if (= i 2) m (do (swap! seen conj :exit) other))))]
+                         (swap! seen conj :consumer)
+                         [a b])
+                       (catch Throwable t [(identical? t error) @seen])))")
+              (ev "[true [:exit :a :b]]")))
+    (ok "destructuring with :as receives the unchanged seed object"
+        (eq? #t (ev "(let [seed {:a 1 :b 2}
+                            {:keys [a b] :as out}
+                            (loop* [i 0 m seed]
+                              (if (zero? i) m (recur (dec i) (assoc m :a 3))))]
+                        (and (identical? seed out) (= [1 2] [a b])))")))
+    (ok "a consumer recur still targets the enclosing loop"
+        (let ((src "(loop* [i 0 total {:x 1}]
+                       (let [{:keys [a b]}
+                             (loop* [j 0 m {:a 1 :b 2}]
+                               (if (zero? j) (recur 1 (assoc m :a 3)) m))]
+                         (if (= i 2) (:x total)
+                           (recur (inc i) (assoc total :x (+ (:x total) a b))))))"))
+          (and (eq? (not enabled) (has? (loop-shape src) "(jolt-assoc3 "))
+               (clj= (ev src) 11))))
+    (ok "a default expression still runs when the field is present"
+        (eq? #t (ev "(let [error (ex-info \"default\" {})]
+                        (try
+                          (let [{:keys [a b] :or {a (throw error)}}
+                                (loop* [i 0 m {:a 1 :b 2}]
+                                  (if (zero? i) (recur 1 (assoc m :a 3)) m))]
+                            [a b])
+                          (catch Throwable t (identical? t error))))")))
+    (ok "a destructurer compiled with a nonstandard seed predicate still calls it"
+        (clj= (ev (string-append "(let [standard seq?
+                                        seen (atom [])
+                                        f (with-redefs [clojure.core/seq?
+                                                        (fn [x]
+                                                          (when (and (map? x) (contains? x :items)
+                                                                     (contains? x :schemas))
+                                                            (swap! seen conj x))
+                                                          (standard x))]
+                                            (eval '" destructured-loop "))]
+                                    [(f 1) @seen])"))
+              (ev (if enabled "[[[1] []] [{:items [1] :schemas []}]]" "[[[1] []] []]")))))
+  '(#f #t))
+
+(for-each
+  (lambda (enabled)
+    (set-optimize! enabled)
+    (set-direct-link-flag! enabled)
+    (let ((s (loop-shape direct-loop)))
+      (ok "scalar loop carries the field and keeps the final array map"
+          (and (eq? (not enabled) (has? s "(jolt-assoc3 "))
+               (has? s "(amap-slots->pmap "))))
+    (ok "zero and no-op iterations preserve the seed; changing it and back creates a fresh map"
+        (eq? #t (ev "(let [f (fn [n forced]
+                              (let [seed {:a :initial :b 2}
+                                    out (loop [m seed i n]
+                                          (if (zero? i) m
+                                            (recur (assoc m :a (if (and forced (= i 2))
+                                                                 :different :initial))
+                                                   (dec i))))]
+                                [(identical? seed out) (= (vec seed) (vec out))
+                                 (= (class seed) (class out))]))]
+                        (= [[true true true] [true true true] [false true true]]
+                           [(f 0 true) (f 2 false) (f 2 true)]))")))
+    (ok "branch-dependent writes preserve old values and simultaneous recur order"
+        (clj= (ev "(let [events (atom [])
+                         ans (loop [a 0 m {:x 1 :y 0} b 0]
+                               (if (< a 2)
+                                 (recur (do (swap! events conj [:first (:x m)]) (inc a))
+                                        (assoc (assoc m :x (if (zero? a) 7 9))
+                                               :y (do (swap! events conj [:field (:x m)]) (:x m)))
+                                        (do (swap! events conj [:last (:x m)]) (:x m)))
+                                 [(:x m) (:y m) b]))]
+                     [ans @events])")
+              (ev "[[9 7 7] [[:first 1] [:field 1] [:last 1]
+                                       [:first 7] [:field 7] [:last 7]]]")))
+    (ok "throwing field expression short-circuits the following recur operand"
+        (clj= (ev "(let [events (atom []) problem (ex-info \"stop\" {})]
+                     (try
+                       (loop [a 0 m {:k a} b 0]
+                         (if (zero? a)
+                           (recur (do (swap! events conj :first) 1)
+                                  (assoc m :k (do (swap! events conj :field) (throw problem)))
+                                  (do (swap! events conj :last) 1))
+                           (:k m)))
+                       (catch Throwable e [(identical? e problem) @events])))")
+              (ev "[true [:first :field]]")))
+    (let ((src "(fn [x] (:k (loop [m {:k x} n 2]
+                              (if (zero? n) m (recur (assoc m :k (inc (:k m))) (dec n))))))"))
+      (ok "a direct consumer gets the field at loop exit"
+          (and (eq? (not enabled) (has? (loop-shape src) "(jolt-assoc3 "))
+               (clj= (ev (string-append "(" src " 5)")) 7))))
+    (ok "a projected flonum still participates in boxed division"
+        (clj= (ev (string-append "(try (" boxed-loop-divide
+                                 " 1.0) (catch ArithmeticException _ :arithmetic))"))
+              (ev ":arithmetic")))
+    (ok "a projected get remains boxed through an alias and another arithmetic call"
+        (clj= (ev "(let [f (fn [a]
+                           (loop* [again true m {:x 0.0}]
+                             (if again (recur false (assoc m :x 0.0))
+                               (let [x (get m :x)] (/ a (+ x 0.0))))))]
+                     (try (f 1.0) (catch ArithmeticException _ :arithmetic)))")
+              (ev ":arithmetic")))
+    (ok "an explicit double cast of a projected field keeps primitive division"
+        (clj= (ev "(let [f (fn [a]
+                           (loop* [again true m {:x 0.0}]
+                             (if again (recur false (assoc m :x 0.0))
+                               (/ a (double (:x m))))))]
+                     (f 1.0))")
+              (ev "##Inf")))
+    (ok "a boxed map read truncates before the byte range check"
+        (clj= (ev "(loop* [again true m {:x 127.5}]
+                     (if again (recur false (assoc m :x 127.5)) (byte (:x m))))")
+              127))
+    (ok "destructured loop exits bind multiple fields directly when optimized"
+        (and (eq? enabled (has? (loop-shape destructured-loop) "(let-values "))
+             (clj= (ev (string-append "(" destructured-loop " 2)"))
+                   (ev "[[2 1] []]")))))
+  '(#f #t))
+
+(for-each
+  (lambda (case)
+    (let ((src (cadr case)))
+      (ok (car case)
+          (and (has? (loop-shape src) "(jolt-assoc3 ")
+               (clj= (ev src) (ev (caddr case)))))))
+  '(("a prior version carried alongside the loop state stays persistent"
+     "(loop [m {:k 0} i 0 prev nil]
+        (if (< i 2) (recur (assoc m :k (inc i)) (inc i) m) [m prev]))"
+     "[{:k 2} {:k 1}]")
+    ("a closure capturing the loop state sees its original snapshot"
+     "(loop [m {:k 0} i 0 prior nil]
+        (if (< i 2) (recur (assoc m :k (inc i)) (inc i) #(:k m)) [(:k m) (prior)]))"
+     "[2 1]")
+    ("adding a key keeps ordinary recurrence"
+     "(loop [m {:k 0} i 0]
+        (if (zero? i) (recur (assoc m :extra 2) (inc i)) m))"
+     "{:k 0 :extra 2}")
+    ("a dynamic receiver use inside the loop keeps ordinary recurrence"
+     "(let [f (fn [m k] (m k))]
+        (loop [m {:k 0} i 0]
+          (if (< i 2) (do (f m :k) (recur (assoc m :k (inc i)) (inc i))) m)))"
+     "{:k 2}")))
+
+(let ((debug! (var-deref "jolt.backend-scheme" "set-debug-locals!")))
+  (debug! #t)
+  (ok "debug frames keep the source accumulator"
+      (has? (loop-shape direct-loop) "(jolt-assoc3 "))
+  (debug! #f))
+
+(define guarded-counter
+  "(defn guarded-counter [change]
+     (loop [i 0 m {:count 0 :items []}]
+       (if (= i 2) m
+         (recur (inc i)
+                (let [m (update m :count inc)]
+                  (update m :items conj (change i)))))))")
+(ok "linked update checks the operation-time callee after its operands"
+    (has? (loop-shape guarded-counter) "jolt-loop-map-update"))
+(ev guarded-counter)
+(ok "an update rebound midway through recur sees the current map and can return nil"
+    (clj= (ev "(let [original update seen (atom [])
+                     replacement (fn [m k f & args]
+                                   (swap! seen conj [m k (vec args)])
+                                   nil)]
+                 (try
+                   (let [answer (guarded-counter
+                                  (fn [i]
+                                    (when (zero? i)
+                                      (alter-var-root #'clojure.core/update (constantly replacement)))
+                                    i))]
+                     [answer @seen])
+                   (finally (alter-var-root #'clojure.core/update (constantly original)))))")
+          (ev "[nil [[{:count 1 :items []} :items [0]] [nil :count []] [nil :items [1]]]]")))
+(ev "(defmulti loop-map-edit (fn [& args] (count args)))")
+(ev "(defmethod loop-map-edit 3 [m k f] (assoc m k 20))")
+(ev "(defmethod loop-map-edit 4 [m k f v] (assoc m k [v]))")
+(ok "an invokable replacement for update keeps ordinary linked dispatch"
+    (clj= (ev "(with-redefs [clojure.core/update loop-map-edit] (guarded-counter identity))")
+          (ev "{:count 20 :items [1]}")))
+
+;; Resume once before a write and once after it. A write that runs a second
+;; time creates a different map, while a repeated exit from one write returns
+;; the very same map. Keep the continuation in Scheme so it can be re-entered.
+(define continuation-loop
+  "(fn [done?]
+     (loop [i 0 m {:k 0}]
+       (if (done? i) m (recur (inc i) (assoc m :k (inc (:k m)))))))")
+(define (loop-reentry f capture-at)
+  (let ((saved #f) (first-map #f))
+    (let* ((done? (lambda (i)
+                    (if (= i capture-at)
+                        (call/cc (lambda (k) (set! saved k) (= i 1)))
+                        (= i 1))))
+           (result (jolt-invoke1 f done?)))
+      (if first-map
+          (and (clj= result first-map) (eq? (eq? result first-map) (= capture-at 1)))
+          (begin (set! first-map result) (saved (= capture-at 1)))))))
+(for-each
+  (lambda (enabled)
+    (set-optimize! enabled)
+    (set-direct-link-flag! enabled)
+    (let ((f (ev continuation-loop)))
+      (ok "continuation reentry before a write makes a fresh version" (loop-reentry f 0))
+      (ok "continuation reentry after a write returns the same version" (loop-reentry f 1))))
+  '(#f #t))
+
+;; Put a real Chez timer delivery inside the first native replacement, after
+;; its caller has chosen the replacement procedure for that entry.
+(set-optimize! #t)
+(set-direct-link-flag! #t)
+(define builder-headers-body
+  "[m] (reduce-kv (fn [a k v] (assoc a k (clojure.string/replace v \"\\n\" \",\"))) {} m)")
+(ok "a closed header reducer emits a guarded builder"
+    (has? (code-part (emitf "u" (string-append "(fn " builder-headers-body ")")))
+          "(jolt-reduce-kv-build-string-replace "))
+(ev (string-append "(defn builder-headers " builder-headers-body ")"))
+(define builder-header-source (ev "(array-map :a \"a\\n1\" :b \"b\\n2\" :c \"c\\n3\")"))
+(define (with-header-tick handler run)
+  (let ((replace str-replace-literal) (fired? #f))
+    (parameterize ((timer-interrupt-handler (lambda () (set! fired? #t) (handler))))
+      (dynamic-wind
+        (lambda ()
+          (set! str-replace-literal
+            (lambda (s match replacement)
+              (when (and (not fired?) (string=? s "a\n1"))
+                (set-timer 1)
+                (let spin ((i 2000) (x s))
+                  (unless (zero? i) (spin (- i 1) (cons i x)))))
+              (replace s match replacement))))
+        run
+        (lambda () (set-timer 0) (set! str-replace-literal replace))))))
+(let* ((root (jolt-var "clojure.string" "replace")) (original (var-cell-deref root))
+       (calls 0))
+  (dynamic-wind
+    (lambda () (void))
+    (lambda ()
+      (with-header-tick
+        (lambda ()
+          (var-root-set! root (lambda (s _match _replacement) (set! calls (+ calls 1)) s)))
+        (lambda ()
+          (let ((result (jolt-invoke1 (var-deref "u" "builder-headers") builder-header-source)))
+            (ok "header steps dispatch at the time of the individual replacement"
+                (and (= calls 2) (clj= result (ev "{:a \"a,1\" :b \"b\\n2\" :c \"c\\n3\"}"))))))))
+    (lambda () (var-root-set! root original))))
+(let ((resume #f) (results '()) (expected (ev "{:a \"a,1\" :b \"b,2\" :c \"c,3\"}")))
+  (with-header-tick
+    (lambda () (call/cc (lambda (k) (set! resume k))))
+    (lambda ()
+      (let ((result (guard (e (#t #f))
+                      (jolt-invoke1 (var-deref "u" "builder-headers") builder-header-source))))
+        (set! results (cons result results))
+        (if (and resume (< (length results) 3))
+            (resume (void))
+            (ok "a native header fold can resume twice from the same timer continuation"
+                (and (= (length results) 3)
+                     (for-all (lambda (m) (and (pmap? m) (clj= m expected))) results)
+                     (not (eq? (car results) (cadr results)))
+                     (not (eq? (cadr results) (caddr results))))))))))
+
+(ev "(defn builder-keyword [s]
+       (if (symbol? s) (if-let [n (namespace s)] (keyword n (name s)) (keyword (name s))) s))")
+(for-each
+  (lambda (name body proc)
+    (ok proc (has? (code-part (emitf "u" (string-append "(fn " body ")")))
+                   (string-append "(" proc " ")))
+    (ev (string-append "(defn " name " " body ")")))
+  '("builder-copy" "builder-symbols")
+  '("[source] (reduce-kv (fn [a k v] (assoc a k v)) {} (source))"
+    "[source] (reduce-kv (fn [a k v] (assoc a (builder-keyword k) v)) {} source)")
+  '("jolt-reduce-kv-build-copy" "jolt-reduce-kv-build-symbol-keys"))
+(for-each
+  (lambda (step)
+    (ok "an observing or early-exit reducer keeps its original driver"
+        (not (has? (code-part (emitf "u" (string-append "(fn [f m] "
+                              (reducer-call step "{}" "m") ")")))
+                   "(jolt-reduce-kv-build-"))))
+  '("(fn [a k v] (assoc a k (do (reset! reducer-sink a) v)))"
+    "(fn [a k v] (assoc a k [a]))"
+    "(fn [a k v] (assoc a (f k) v))"
+    "(fn [a k v] (reduced (assoc a k v)))"))
+(ok "an IKVReduce source gets the original callback and seed, following one source evaluation"
+    (eq? #t (ev "(let [seen (atom [])
+                       custom (reify clojure.lang.IKVReduce
+                                (kvreduce [_ f seed]
+                                  (let [first-map (f seed :first 1)]
+                                    (reduced [f seed first-map (f first-map :second 2)]))))
+                       r (builder-copy #(do (swap! seen conj :source) custom))
+                       [f seed old result] @r]
+                   (and (= [:source] @seen) (= old {:first 1}) (= result {:first 1 :second 2})
+                        (= (f old :third 3) {:first 1 :third 3})
+                        (identical? seed (builder-copy (constantly {})))))")))
+(ok "duplicate transformed keys retain output order and value identity"
+    (eq? #t (ev "(let [value (Object.)
+                       source (array-map 'k :discard :k value 'app/k value (symbol \"app/k\") value)
+                       result (builder-symbols source)]
+                   (and (= [:k :app/k] (vec (keys result)))
+                        (identical? value (:k result)) (identical? value (:app/k result))))")))
+(ok "a cold transformed key retains the completed prefix and the ordinary suffix"
+    (eq? #t (ev "(let [k (gensym \"cold-builder-key\")
+                       source (array-map 'k 1 k 2 'app/k 3)
+                       actual (builder-symbols source)]
+                   (= [[:k 1] [(keyword (name k)) 2] [:app/k 3]] (vec actual)))")))
+(let ((thrown (ev "(try (builder-headers (array-map :a \"a\\n1\" :b nil :c \"unused\"))
+                    (catch Throwable t t))")))
+  (ok "late invalid header conversion sees the persistent prefix"
+      (raw-frame-value? thrown (lambda (x)
+                                 (and (pmap? x) (= 1 (pmap-cnt x))
+                                      (equal? "a,1" (jolt-get x (fact-kw 'a))))))))
+
+;; Force the same root change while the native path is enabled. The step
+;; that switches to the ordinary callable can itself capture a continuation.
+(let* ((root (jolt-var "clojure.string" "replace")) (original (var-cell-deref root))
+       (native-replace str-replace-literal) (builder-put pmap-builder-put!)
+       (freeze jolt-persistent!) (builder #f) (edits 0)
+       (resume #f) (first #f) (unmasked? #f)
+       (source (ev "(array-map :a \"a\\n1\" :b \"b\\n2\" :c \"c\\n3\")")))
+  (dynamic-wind
+    (lambda ()
+      (set! pmap-builder-put!
+        (lambda (t k v) (set! builder t) (set! edits (+ edits 1)) (builder-put t k v)))
+      (set! jolt-persistent!
+        (lambda (t)
+          (when (eq? t builder)
+            (var-root-set! root (lambda (s _match _replacement) (string-append s "!"))))
+          (freeze t)))
+      (set! str-replace-literal
+        (lambda (s match replacement)
+          (when (string=? s "a\n1")
+            (var-root-set! root
+              (lambda (s _match _replacement)
+                (if (string=? s "b\n2")
+                    (begin
+                      (set! unmasked? (zero? (sa-disable-count)))
+                      (call/cc (lambda (k) (set! resume k) "first")))
+                    s))))
+          (native-replace s match replacement))))
+    (lambda ()
+      (let ((result (jolt-invoke1 (var-deref "u" "builder-headers") source)))
+        (cond
+          (first
+           (ok "a changed root uses its captured callable and can resume with the frozen prefix"
+               (and (= edits 1) unmasked?
+                    (clj= first (ev "{:a \"a,1\" :b \"first\" :c \"c\\n3!\"}"))
+                    (clj= result (ev "{:a \"a,1\" :b \"second\" :c \"c\\n3!\"}")))))
+          (resume (set! first result) (resume "second"))
+          (else (ok "a changed root was invoked" #f)))))
+    (lambda ()
+      (set! pmap-builder-put! builder-put)
+      (set! jolt-persistent! freeze)
+      (set! str-replace-literal native-replace)
+      (var-root-set! root original))))
+(ev "(defmulti builder-replace-multi (fn [s _ _] s))")
+(ev "(defmethod builder-replace-multi :default [s _ _] (str s \"!\"))")
+(ok "the captured replace root can be an IFn"
+    (eq? #t (ev "(with-redefs [clojure.string/replace builder-replace-multi]
+                   (= {:a \"a!\" :b \"b!\" :c \"c!\"}
+                      (builder-headers (array-map :a \"a\" :b \"b\" :c \"c\"))))")))
+(ok "a root replacement receives the same literal objects on every ordinary step"
+    (eq? #t (ev "(let [args (atom [])]
+                   (with-redefs [clojure.string/replace (fn [s m r] (swap! args conj [m r]) s)]
+                     (builder-headers (array-map :a \"a\" :b \"b\" :c \"c\")))
+                   (let [[[a b] [c d] [e f]] @args]
+                     (and (identical? a c) (identical? c e) (identical? b d) (identical? d f))))")))
 (set-optimize! #f)
 (set-direct-link-flag! #f)
+
 (printf "~a/~a passed~n" (- total fails) total)
 (exit (if (zero? fails) 0 1))

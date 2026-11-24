@@ -7,15 +7,17 @@
   access, fixnum bit ops, static host calls. Each takes its operands already
   emitted, through an order-args fn of the caller's."
   (:require [clojure.string :as str]
+            [jolt.host :refer [seed-callable?]]
+            [jolt.ir :as ir]
             [jolt.op-registry :as op-registry]
             [jolt.backend-scheme.names :refer [chez-str-lit munge-name]]
             [jolt.backend-scheme.session :as session
              :refer [*array-vecs* *self-wrap* *site-call* *trace-self* *trace-site*
-                     clone-site? ctor-shapes fresh-label marker-safe-fqn?
-                     note-tail-call! target trace-frames? unsafe-prefix var-cache?]]
+                     clone-site? ctor-shapes direct-link? fresh-label marker-safe-fqn?
+                     note-tail-call! seed-mint? target trace-frames? unsafe-prefix var-cache?]]
             [jolt.backend-scheme.hoist
-             :refer [*cache-cells* *const-pool* cached-tag-desc const-coll-node?
-                     hoist-const hoist-const-per-site]]))
+             :refer [*cache-cells* *const-pool* cached-tag-desc
+                     hoist-const hoist-const-per-site hoist-seed-root]]))
 
 ;; The op-registry tables the call heads read, bound to local names as
 ;; jolt.backend-scheme binds them (qualified refs, not :refer — see the note
@@ -77,7 +79,7 @@
       ;; 98000 ordering temporaries, one hoisted constant in every form wrapped in
       ;; an ordering let* it cannot need. The reference emits no ordering
       ;; temporaries for constants at all; they are constant-pool loads.
-      (const-coll-node? n)))
+      (ir/eager-const-coll-node? n)))
 
 ;; A var VALUE read is effect-free but order-SENSITIVE: a mutating sibling
 ;; (def/alter-var-root/set!) changes what it yields, so it must not move across
@@ -282,16 +284,22 @@
 (defn- simple-operand? [s]
   (and (pos? (count s))
        (not (some #{\( \) \space \newline \tab \" \' \# \| \;} s))))
+;; A lowering that read a linked root itself binds that value's local here,
+;; keyed by the jv$ name, around one call's emission. The call then applies
+;; the value it was handed through the same text as a read of the root.
+(def ^:private ^:dynamic *read-roots* nil)
+(defn- apply-linked-root [root names]
+  (let [args (if (seq names) (str " " (str/join " " names)) "")]
+    (str "(if (" (unsafe-prefix) "procedure? " root ") (" root args
+         ") (jolt-invoke " root args "))")))
 (defn- linked-call [callee operand-strs]
   (let [p (fresh-label "_lp$")
         bound (mapv (fn [s] (if (simple-operand? s) [s nil] (let [t (fresh-label "_la$")] [t s])))
                     operand-strs)
         names (mapv first bound)
-        binds (str "(" p " " callee ")"
-                   (apply str (keep (fn [[t s]] (when s (str " (" t " " s ")"))) bound)))
-        args (if (seq names) (str " " (str/join " " names)) "")]
-    (str "(let (" binds ") (if (" (unsafe-prefix) "procedure? " p ") (" p args
-         ") (jolt-invoke " p args ")))")))
+        binds (str "(" p " " (get *read-roots* callee callee) ")"
+                   (apply str (keep (fn [[t s]] (when s (str " (" t " " s ")"))) bound)))]
+    (str "(let (" binds ") " (apply-linked-root p names) ")")))
 (defn- linked-binding? [callee]
   (and (string? callee) (str/starts-with? callee "jv$")))
 
@@ -666,4 +674,19 @@
                                                   " (and " d " (" pred " " x ") (eq? (jrec-desc " x ") " d ")))"))))
                                        (range (quot (count as) 2))))
                      ")"))))
+
+(defn emit-seed-callable-invoke [fnode args tail? tl ich order-args]
+  (when (and (direct-link?) (not (seed-mint?)))
+    (when-let [sc (seed-callable? nil (:ns fnode) (:name fnode) (count args))]
+      (let [head (if (string? sc) sc (hoist-seed-root (:ns fnode) (:name fnode)))
+            root (:root-binding fnode)]
+        (when (and root (not (string? sc)))
+          (throw (ex-info "emit: a supplied root needs a linked call head" {:var (:name fnode)})))
+        (binding [*read-roots* (if root {head root} *read-roots*)]
+          (order-args (fn [as] (emit-call tail? head as tl ich))))))))
+
+(defn record-ctor-shape [fnode n]
+  (when-let [shape (get (ctor-shapes) (str (:ns fnode) "/" (:name fnode)))]
+    (when (and (= (count (get shape :fields)) n) (<= n 6))
+      shape)))
 

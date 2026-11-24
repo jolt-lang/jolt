@@ -47,9 +47,17 @@
   ([s1 s2]
    ;; walk the SMALLER side (the reference's branch): disj-ing a big s2 out of a
    ;; three-element s1 must cost 3, so a smaller s1 keeps what s2 lacks
-   (if (< (count s1) (count s2))
-     (reduce (fn [result item] (if (contains? s2 item) (disj result item) result)) s1 s1)
-     (reduce disj s1 s2)))
+   (let [n1 (count s1)
+         n2 (count s2)]
+     (if (< n1 n2)
+       ;; This branch walks the left and resolves disj at each matching item.
+       (reduce (fn [result item] (if (contains? s2 item) (disj result item) result)) s1 s1)
+       ;; The right reduction reads its callback once. Use that same value if
+       ;; the host declines, including when disj is rebound.
+       (let [drop-member disj]
+         (or (when (>= n2 32)
+               (jolt.host/try-set-difference s1 s2 drop-member))
+             (reduce drop-member s1 s2))))))
   ([s1 s2 & sets] (reduce difference (difference s1 s2) sets)))
 
 (defn select

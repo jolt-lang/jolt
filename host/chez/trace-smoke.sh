@@ -567,6 +567,173 @@ out_bt="$("$work/tailbin" 2>&1)"
 expect_match "built: the spliced callee is named at its own line" "$out_bt" 'app\.tail/boom (app/tail\.clj:4)'
 expect_match "built: and its caller at the call site" "$out_bt" 'app\.tail/-main (app/tail\.clj:8)'
 
+# Rebinding comp takes the ordinary fallback at the fused filter/map site.
+# A throw there points to the call to comp, one line below into.
+cat > "$work/src/app/filtertrace.clj" <<'EOF'
+(ns app.filtertrace)
+(defn ^:redef widths [rows]
+  (into []
+        (comp
+          (filter sequential?)
+          (map count))
+        rows))
+(defn broken-comp [_ _] (throw (ex-info "broken comp" {})))
+(defn -main [& _]
+  (with-redefs [clojure.core/comp broken-comp]
+    (println (widths [[1] [2]]))))
+EOF
+( cd "$work" && "$joltabs" build -m app.filtertrace -o filtertracebin >/dev/null 2>&1 )
+out_xf="$("$work/filtertracebin" 2>&1)"
+expect_match "built: rebound comp points to its own call in the pipeline" "$out_xf" 'app\.filtertrace/widths (app/filtertrace\.clj:4)'
+
+# A rebound clojure.string/replace takes the header builder's ordinary step.
+# That step runs the reducer's own body with the root the builder read, so
+# whatever the root does there, the throwable is the one a custom timer
+# handler's ordinary driver produces: the same :via, :trace and data. The
+# roots cover a throwing fn, a host fn's type error (subs), a type error from
+# a core fn, IFn and procedure arity errors and a value that is not an IFn.
+cat > "$work/src/app/kvtrace.clj" <<'EOF'
+(ns app.kvtrace
+  (:require [clojure.string :as string]))
+(defn ^:redef headers [m]
+  (reduce-kv (fn [a k v]
+               (assoc a k (string/replace v "x" "y")))
+             {} m))
+(defn explode [s _ _] (throw (ex-info "changed root" {:s s})))
+(def roots
+  [["explode" explode] ["subs" subs] ["assoc" assoc]
+   ["keyword" :replacement] ["fn" (fn [_ _] "wrong arity")] ["long" 42]])
+(defn -main [& [mode]]
+  (let [tick (jolt.host/scheme-proc "timer-interrupt-handler")
+        standard (tick)
+        m (array-map :a "ax" :b "bx" :c "cx")]
+    (when (= "ordinary" mode) (tick (fn [] nil)))
+    (println "KVGUARD" ((jolt.host/scheme-proc "jolt-reduce-kv-builder-source?") m))
+    (doseq [[label root] roots]
+      (try (with-redefs [string/replace root] (headers m))
+           (catch Throwable e
+             (println "KVTRACE" label (pr-str (Throwable->map e))))))
+    (tick standard)))
+EOF
+( cd "$work" && "$joltabs" build -m app.kvtrace -o kvtracebin >/dev/null 2>&1 )
+calls="$(grep -hoF '(jolt-reduce-kv-build-string-replace ' "$work/kvtracebin.build"/app-[0-9]*.ss | wc -l | tr -d '[:space:]')"
+expect_match "built: the header reducer emits its builder" "$calls" '^1$'
+kv_default="$("$work/kvtracebin" 2>&1)"
+kv_ordinary="$("$work/kvtracebin" ordinary 2>&1)"
+expect_match "built: the default driver admits the header map" "$kv_default" '^KVGUARD true$'
+expect_match "built: a custom timer handler declines it" "$kv_ordinary" '^KVGUARD false$'
+printf '%s\n' "$kv_default" | grep '^KVTRACE' > "$work/kvtrace.default" || true
+printf '%s\n' "$kv_ordinary" | grep '^KVTRACE' > "$work/kvtrace.ordinary" || true
+kv_maps="$(cat "$work/kvtrace.default")"
+expect_match "built: every rebound root threw" "$(wc -l < "$work/kvtrace.default" | tr -d '[:space:]')" '^6$'
+if cmp -s "$work/kvtrace.default" "$work/kvtrace.ordinary"; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: built: the builder's ordinary step throws what the ordinary driver throws"
+  diff "$work/kvtrace.ordinary" "$work/kvtrace.default"
+  fails=$((fails + 1))
+fi
+expect_match "built: a throwing root is innermost, above the reducer" "$kv_maps" \
+  '^KVTRACE explode .*:trace \[\[app\.kvtrace\$explode invoke [^]]*\] \[app\.kvtrace\$headers\$fn__[0-9][0-9]* invoke'
+expect_match "built: a host fn's type error is at the reducer" "$kv_maps" \
+  '^KVTRACE subs .*:at \[app\.kvtrace\$headers\$fn__[0-9][0-9]* invoke.*:trace \[\[app\.kvtrace\$headers\$fn__[0-9][0-9]* invoke'
+expect_no_match "built: no step reports the tail-called headers frame" "$kv_maps" 'app\.kvtrace\$headers invoke'
+
+# A full Chez continuation may return to a callback after the reduction has
+# advanced or finished. Test both AOT paths and check which one was emitted.
+cat > "$work/src/app/filterreentry.clj" <<'EOF'
+(ns app.filterreentry (:require [jolt.scheme :as scheme]))
+
+(def capture (scheme/proc "call/cc"))
+
+(defn ^:redef collect-rows [pred mapper rows]
+  (into [] (comp (filter pred) (map mapper)) rows))
+
+(defn mapper-reentry []
+  (let [saved (atom nil)
+        results (atom [])
+        out (collect-rows identity
+                          (fn [x]
+                            (if (= x 2)
+                              (capture (fn [k] (reset! saved k) :first))
+                              x))
+                          [1 2])
+        completed (swap! results conj out)]
+    (case (count completed)
+      1 (@saved :second)
+      2 (@saved :third)
+      (assert (= [[1 :first] [1 :second] [1 :third]] completed)))))
+
+(defn predicate-reentry []
+  (let [saved (atom nil)
+        resumed? (atom false)
+        visited (atom [])
+        rows (subvec (vec (range 132)) 33 99)
+        out (collect-rows (fn [x]
+                            (if (= x 62)
+                              (capture (fn [k] (reset! saved k) true))
+                              true))
+                          (fn [x]
+                            (swap! visited conj x)
+                            (when (and (= x 96) (compare-and-set! resumed? false true))
+                              (@saved false))
+                            x)
+                          rows)]
+    (assert (= (into (vec (range 33 62)) (range 63 99)) out))
+    (assert (= (into (vec (range 33 97)) (range 63 99)) @visited))))
+
+(deftype CapturingRow [saved]
+  clojure.lang.Sequential
+  clojure.lang.Counted
+  (count [_] (capture (fn [k] (reset! saved k) 2))))
+
+(defn ^:redef widths [rows]
+  (into [] (comp (filter sequential?) (map count)) rows))
+
+(defn count-reentry []
+  (let [saved (atom nil)
+        results (atom [])
+        out (widths [[1] (CapturingRow. saved) (list 1 2 3)])
+        completed (swap! results conj out)]
+    (if (= 1 (count completed))
+      (@saved 9)
+      (assert (= [[1 2 3] [1 9 3]] completed)))))
+
+(defn -main [which & _]
+  (case which
+    "mapper" (mapper-reentry)
+    "predicate" (predicate-reentry)
+    "count" (count-reentry))
+  (println "REENTRY" which))
+EOF
+echo "trace smoke: resuming inside a built filter/map keeps the captured output prefix"
+for mode in fused ordinary; do
+  case "$mode" in
+    fused) set -- --opt ;;
+    ordinary) set -- --opt --no-direct-link ;;
+  esac
+  reentrybin="$work/reentry-$mode"
+  if out_reentry="$(cd "$work" && "$joltabs" build "$@" -m app.filterreentry -o "$reentrybin" 2>&1)"; then
+    calls="$(grep -hoF '(jolt-vector-filter-map ' "$reentrybin.build"/app-[0-9]*.ss | wc -l | tr -d '[:space:]')"
+    if [ "$mode" = fused ]; then
+      expect_match "built: both filter/map re-entry sites exercise fusion" "$calls" '^2$'
+    else
+      expect_match "built: filter/map re-entry ordinary control skips fusion" "$calls" '^0$'
+    fi
+    for callback in mapper predicate count; do
+      if out_reentry="$("$reentrybin" "$callback" 2>&1)"; then
+        expect_match "built: $mode $callback re-entry" "$out_reentry" "^REENTRY $callback\$"
+      else
+        printf '  FAIL: %s %s re-entry exited nonzero\n%s\n' "$mode" "$callback" "$out_reentry"
+        fails=$((fails + 1))
+      fi
+    done
+  else
+    printf '  FAIL: %s re-entry build\n%s\n' "$mode" "$out_reentry"
+    fails=$((fails + 1))
+  fi
+done
+
 # The same shape where the callee CANNOT be spliced (^:redef stays var-routed):
 # a real frame, not a reconstructed one. Without this row the block above would
 # pass on a build that had stopped inlining altogether.

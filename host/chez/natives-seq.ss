@@ -134,6 +134,38 @@
     ;; transient path, conj's own carry otherwise), as jolt-into does
     (if (jolt-nil? to) res (meta-carry-conj to res))))
 
+;; A native vector (including an RRB slice tagged as a SubVector) has its
+;; own logical count and leaves. Only the predicate and mapper call out.
+;; Either callback can capture a continuation, so the output so far must stay
+;; immutable: resuming one sees it as it was at capture time, even after
+;; completion. An immutable list gives that at one cons per kept element, where
+;; a persistent pvec-conj per element copied the 32-slot tail every time. The
+;; vector is built once, at the end, from the list.
+;; Mapper results, even Reduced values, are elements of the output.
+(define (vector-filter-map-finish to kept n)
+  (if (fxzero? n)
+      to
+      (let ((buf (make-vector n)))
+        (let fill ((k (fx- n 1)) (xs kept))
+          (if (pair? xs)
+              (begin (vector-set! buf k (car xs)) (fill (fx- k 1) (cdr xs)))))
+        (let ((built (make-pvec buf)))
+          (if (fxzero? (pvec-cnt to)) built (pvec-catvec to built))))))
+(define (jolt-vector-filter-map to pred mapper from)
+  (let ((end (pvec-cnt from)))
+    (let walk ((i 0) (kept '()) (n 0))
+      (if (fx=? i end)
+          (meta-carry-conj to (vector-filter-map-finish to kept n))
+          (let*-values (((leaf offset) (pv-leaf-for from i))
+                        ((stop) (fxmin (vector-length leaf) (fx+ offset (fx- end i)))))
+            (let step ((j offset) (kept kept) (n n))
+              (if (fx<? j stop)
+                  (let ((x (vector-ref leaf j)))
+                    (if (jolt-truthy? (jolt-invoke1 pred x))
+                        (step (fx+ j 1) (cons (jolt-invoke1 mapper x) kept) (fx+ n 1))
+                        (step (fx+ j 1) kept n)))
+                  (walk (fx+ i (fx- stop offset)) kept n))))))))
+
 ;; mapcat: (mapcat f) -> transducer; (mapcat f coll & colls) -> map f across the
 ;; colls (stops at shortest), then concat the results.
 (define (jolt-mapcat f . colls)
