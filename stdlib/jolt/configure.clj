@@ -399,6 +399,10 @@
   :dry-run, :no-verify, :file (where to write), :dir (the project; the current
   one by default) and :libs (names to limit it to). Exits 1 when a required
   library is missing, so a task chain stops there."
+  {:org.babashka/cli {:coerce {:all :boolean :dry-run :boolean :no-verify :boolean
+                               :file :string :dir :string :libs [:string]}
+                      :alias {:n :dry-run}
+                      :args->opts (repeat :libs)}}
   [{:keys [all dry-run no-verify file dir libs] :as _opts}]
   (let [dir (or dir (project-dir))
         file (or file (deps/local-deps-path dir))

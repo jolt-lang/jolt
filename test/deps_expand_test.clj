@@ -619,6 +619,15 @@
        nil (jolt.configure/find-library {:name "joltfake-absent"} {:verify? false}))
   (jolt.host/delete-tree! root))
 
+;; `jolt run configure --dry-run sqlite3`: a task's default parse would read
+;; "sqlite3" as --dry-run's value and drop every positional, so configure!
+;; carries its own babashka.cli spec.
+(require 'babashka.cli)
+(is= "configure!'s cli spec collects library names and boolean flags"
+     {:dry-run true :all true :libs ["sqlite3" "z"]}
+     (babashka.cli/parse-opts ["--dry-run" "sqlite3" "--all" "z"]
+                              (:org.babashka/cli (meta (var jolt.configure/configure!)))))
+
 (println (str "deps-expand: " (- @checks @failures) "/" @checks " passed"))
 (when (pos? @failures)
   (System/exit 1))
