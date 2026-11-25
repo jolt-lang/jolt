@@ -1902,7 +1902,15 @@
      (throw-jvm 'IllegalArgumentException
                 "native region: this long-array holds a value outside the fixnum range"))
     (else a)))
-;; The flvector or fxvector C reads in place. Only after the arg checks.
+;; A ^bytes parameter: a byte-array, whose backing is always a bytevector of
+;; signed bytes, which C reads in place and never writes.
+(define (jolt-native-arg-bytes a)
+  (if (and (jolt-array? a) (eq? (jolt-array-kind a) 'byte) (bytevector? (jolt-array-vec a)))
+      a
+      (throw-jvm 'ClassCastException
+                 (string-append "native region: a ^bytes parameter got "
+                                (jolt-class-name a)))))
+;; The flvector, fxvector or bytevector C reads in place. Only after the arg checks.
 (define (jolt-native-flv a) (jolt-array-vec a))
 ;; An owned array result arrives as the region's malloc'd buffer PTR, which the
 ;; stub copies into a fresh Scheme array and frees. Until the copy has freed
@@ -2029,6 +2037,12 @@
     (else
      (let ((m (jolt-mir-module (substring sym 0 19))))
        (and (not (string? m)) (jolt-mir-lookup m sym))))))
+
+;; jolt.native/jit?: whether this process can compile a region (it has MIR).
+(define (jolt-native-jit?)
+  (jolt-with-mutex jolt-mir-mutex
+    (unless jolt-mir-procs (set! jolt-mir-procs (jolt-mir-find!)))
+    (not (eq? jolt-mir-procs 'none))))
 
 ;; A region call whose entry did not resolve.
 (define (jolt-native-unavailable sym)

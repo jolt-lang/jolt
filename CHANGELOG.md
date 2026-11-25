@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `jolt.native/native-fn`: compile a native region at runtime from data (a
+  params vector and body forms), with the JIT, and get back a fn that runs it
+  as native code. A program can generate a region from what it only learns at
+  runtime; `jolt.native/jit?` says whether this process can.
+- `jolt.native.layout`: a binary record layout (`[[:magic :u32] [:pad 1]
+  [:count :u16] ...]`, little- or big-endian) lowered into a region:
+  `parser` reads one record, `column` scans a field across every record in a
+  byte-array, with the offsets, widths and sign extension as constants in C.
+- Native regions take `^bytes` parameters (read in place, each element a
+  signed byte as a long; a region never writes one) and the bit operations
+  `bit-and`, `bit-or`, `bit-xor`, `bit-not`, `bit-shift-left`,
+  `bit-shift-right` and `unsigned-bit-shift-right`, with the JVM's masked
+  shift counts. A mask by a non-negative constant bounds an index for the
+  range analysis, so `(aget xs (bit-and i 3))` drops its bounds check.
+
 ### Changed
 
 - `jolt.native` regions always run as native code. Outside a `jolt build`

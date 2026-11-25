@@ -176,6 +176,7 @@
 ;; the backend runs each argument through the host check for its kind before
 ;; the call; the harness does the same
 (def arg-checks {[:ref :double] "jolt-native-arg-doubles" [:ref :long] "jolt-native-arg-longs"
+                 [:ref :byte] "jolt-native-arg-bytes"
                  :long "jolt-native-arg-long" :double "jolt-native-arg-double" :bool "jolt-native-arg-bool"})
 (defn checked [r f] (fn [& args] (apply f (map (fn [p a] (scm/call (arg-checks (:type p)) a)) (:params r) args))))
 
@@ -974,6 +975,134 @@
 (defnative halve-on [x] (on "1" (ext-half x)) (on :default (* 0.5 x)))
 (check-run "a C function used only in a platform body is declared" '[^double x]
            '((halve-on x)) [[3.0] [-1.5]])
+
+;; --- ^bytes parameters and bit operations ---------------------------------------
+;; A region reads a byte-array in place, each element a signed byte as a long;
+;; the bit operations are the JVM's long ones, shift counts masked to 0..63.
+
+(defn ba [& xs] (byte-array xs))
+
+(check-run "sum the bytes of a ^bytes parameter, signed and unsigned" '[^bytes bs]
+           '((loop [i 0 s 0 u 0]
+               (if (< i (alength bs))
+                 (recur (inc i) (+ s (aget bs i)) (+ u (bit-and (aget bs i) 255)))
+                 (+ (* s 100000) u))))
+           [[(ba)] [(ba 1 2 3)] [(ba -1 -128 127 0)]] :raw true)
+(check-run "bit operations" '[^long a ^long b]
+           '((bit-xor (bit-and a b) (bit-shift-left (bit-or a b) 1) (bit-shift-left (bit-xor a b) 2)
+                      (bit-not a) (bit-and a b 7) (bit-or a b 1)))
+           [[0 0] [-1 12345] [Long/MAX_VALUE Long/MIN_VALUE] [6 3]] :raw true)
+(check-run "shifts mask their count as the JVM does" '[^long a ^long k]
+           '((bit-xor (bit-shift-left a k) (bit-shift-right a k) (unsigned-bit-shift-right a k)))
+           [[1 0] [1 63] [1 64] [1 65] [-1 1] [-8 2] [Long/MIN_VALUE 63] [12345 -1] [7 200]] :raw true)
+(check-run "little-endian u32 from bytes" '[^bytes bs ^long off]
+           '((bit-or (bit-and (aget bs off) 255)
+                     (bit-shift-left (bit-and (aget bs (+ off 1)) 255) 8)
+                     (bit-shift-left (bit-and (aget bs (+ off 2)) 255) 16)
+                     (bit-shift-left (bit-and (aget bs (+ off 3)) 255) 24)))
+           [[(ba 1 2 3 4 5) 0] [(ba 1 2 3 4 5) 1] [(ba -1 -1 -1 -1) 0] [(ba 1 2 3) 0] [(ba 1 2 3 4) -1]] :raw true)
+(defnative byte-at [bs i] (aget bs i))
+(check-run "a helper borrows a ^bytes parameter" '[^bytes bs]
+           '((+ (byte-at bs 0) (byte-at bs (dec (alength bs)))))
+           [[(ba 5 -7)] [(ba 9)] [(ba)]] :raw true)
+(check-reject "a region cannot write a ^bytes parameter" '[^bytes bs] '((aset bs 0 1))
+              #"cannot write it")
+(check-reject "a region cannot clone a ^bytes parameter" '[^bytes bs] '((alength (aclone bs)))
+              #"cannot clone a \^bytes")
+(check-reject "a ^bytes parameter is not a C function's array" '[^bytes bs] '((ext-sum bs))
+              #"takes \[:array :double\] here")
+(check-eq "a ^bytes parameter must be a byte-array"
+          (outcome #(apply (checked (:region (compile-region '[^bytes bs] '((alength bs))))
+                                    (fn [_] :called)) %)
+                   [(double-array 2)])
+          {:throw "java.lang.ClassCastException" :msg "native region: a ^bytes parameter got [D"})
+
+;; a mask by a non-negative constant bounds an index: the fast copy drops the
+;; bounds check once the guard has the array longer than the mask
+(let [src (c-of '[^doubles xs ^long i] '((aget xs (bit-and i 3))))
+      fast (fast-copy src)]
+  (check-eq "a masked index is proven in bounds" (boolean (and fast (str/includes? fast ".len > 3LL"))) true))
+
+;; an unsigned shift by 1 can still answer 2^63 - 1: its range must not drop the
+;; bounds check or the overflow check after it
+(check-run "an unsigned shift by 1 keeps the index checked" '[^longs xs ^long i]
+           '((aget xs (unsigned-bit-shift-right i 1)))
+           [[(long-array [1 2 3 4]) 6] [(long-array [1 2 3 4]) -1] [(long-array [1 2 3 4]) -2]] :raw true)
+(defn ushr1-inc [^long i] (jolt.native/native [^long i] (inc (unsigned-bit-shift-right i 1))))
+(check-eq "an unsigned shift by 1 keeps the overflow check (the JVM's inc throws)"
+          [(outcome (fn [_] (ushr1-inc 6)) nil) (outcome (fn [_] (ushr1-inc -1)) nil)]
+          [{:value 4} {:throw "java.lang.ArithmeticException" :msg "integer overflow"}])
+
+;; --- native-fn: regions compiled at runtime from data ------------------------------
+;; through eval, the backend and the JIT, as a call site in the REPL is
+
+(def rt-sq (jolt.native/native-fn '[^long n] '((* n n))))
+(check-eq "native-fn compiles a region from data" (rt-sq 7) 49)
+(check-eq "native-fn's region overflows as a region does"
+          (outcome (fn [_] (rt-sq 4000000000)) nil)
+          {:throw "java.lang.ArithmeticException" :msg "integer overflow"})
+(check-eq "native-fn throws the region's compile error"
+          (try (jolt.native/native-fn '[^long n] '((aget n 0))) :compiled
+               (catch Throwable e (boolean (re-find #"aget takes an array" (.getMessage e)))))
+          true)
+(check-eq "native-fn resolves helpers in the namespace it is given"
+          ((jolt.native/native-fn '[^bytes bs] '((byte-at bs 1)) 'native-test) (ba 3 -4)) -4)
+(check-eq "native-fn checks the region in the namespace it is given, not the caller's"
+          (binding [*ns* (the-ns 'clojure.core)]
+            ((jolt.native/native-fn '[^bytes bs] '((byte-at bs 0)) 'native-test) (ba 3 -4)))
+          3)
+(check-eq "native-fn runs as JIT'd code" (some #{:jit} (vals (jolt.native/linked-regions))) :jit)
+
+;; --- jolt.native.layout: a record layout lowered into a parser and a scan ---------
+
+(require '[jolt.native.layout :as layout])
+
+(defn- ref-field
+  "A field read in plain Clojure: the oracle for the layout's region."
+  [^bytes buf base {:keys [type offset]} endian]
+  (let [w ({:u8 1 :i8 1 :u16 2 :i16 2 :u32 4 :i32 4 :i64 8} type)
+        bs (map #(bit-and (aget buf (+ base offset %)) 255) (range w))
+        bs (if (= endian :big) (reverse bs) bs)
+        u (reduce (fn [acc [k b]] (bit-or acc (bit-shift-left b (* 8 k)))) 0 (map-indexed vector bs))]
+    (case type
+      :i8 (aget buf (+ base offset))
+      :i16 (if (>= u 0x8000) (- u 0x10000) u)
+      :i32 (if (>= u 0x80000000) (- u 0x100000000) u)
+      u)))
+
+(defn- ref-fields [lay]
+  (first (reduce (fn [[fs off] [n t]]
+                   (if (= :pad n) [fs (+ off t)]
+                       [(conj fs {:name n :type t :offset off})
+                        (+ off ({:u8 1 :i8 1 :u16 2 :i16 2 :u32 4 :i32 4 :i64 8} t))]))
+                 [[] 0] lay)))
+
+(def lay [[:magic :u32] [:version :u8] [:pad 1] [:count :u16] [:size :i64] [:delta :i16]
+          [:tag :i8] [:big :i32] [:small :u16]])
+(def lay-size (layout/record-size lay))
+(check-eq "a layout's size counts its padding" lay-size 25)
+(def lay-buf (let [r (java.util.Random. 20261125)]
+               (byte-array (map (fn [_] (- (.nextInt r 256) 128)) (range (+ (* 40 lay-size) 7))))))
+
+(doseq [endian [:little :big]]
+  (let [parse (layout/parser lay :endian endian)
+        fs (ref-fields lay)]
+    (doseq [base [0 lay-size (* 17 lay-size) 3]]
+      (check-eq (str "a " (name endian) "-endian layout parses as plain Clojure reads it, at " base)
+                (vec (parse lay-buf base))
+                (mapv #(ref-field lay-buf base % endian) fs)))
+    (doseq [f fs]
+      (check-eq (str "a " (name endian) "-endian column scan of " (:name f))
+                (vec ((layout/column lay (:name f) :endian endian) lay-buf))
+                (mapv #(ref-field lay-buf (* % lay-size) f endian) (range 40))))))
+(check-eq "a layout read past the end raises as aget does"
+          (outcome (fn [_] ((layout/parser lay) lay-buf (- (alength lay-buf) 3))) nil)
+          {:throw "java.lang.ArrayIndexOutOfBoundsException"
+           :msg (str "Index " (alength lay-buf) " out of bounds for length " (alength lay-buf))})
+(check-eq "a layout field names a width"
+          (try (layout/parser [[:x :u24]]) :compiled
+               (catch Throwable e (boolean (re-find #"one of :u8" (.getMessage e)))))
+          true)
 
 ;; --- random programs ----------------------------------------------------------
 ;; A generator builds well-typed region programs and tracks ownership with its

@@ -769,14 +769,14 @@
 ;; per-thread status (code, two longs, a double, and an owned result's length),
 ;; and the raise fn turns it into the JVM's exception.
 (def ^:private native-arg-chez
-  {"doubles" "scheme-object" "longs" "scheme-object" "long" "integer-64" "double" "double"
-   "bool" "boolean"})
+  {"doubles" "scheme-object" "longs" "scheme-object" "bytes" "scheme-object" "long" "integer-64"
+   "double" "double" "bool" "boolean"})
 (def ^:private native-result-chez
   {"doubles" "uptr" "longs" "uptr" "unit" "int" "long" "integer-64" "double" "double"
    "bool" "boolean"})
 (def ^:private native-arg-check
-  {"doubles" "jolt-native-arg-doubles" "longs" "jolt-native-arg-longs" "long" "jolt-native-arg-long"
-   "double" "jolt-native-arg-double" "bool" "jolt-native-arg-bool"})
+  {"doubles" "jolt-native-arg-doubles" "longs" "jolt-native-arg-longs" "bytes" "jolt-native-arg-bytes"
+   "long" "jolt-native-arg-long" "double" "jolt-native-arg-double" "bool" "jolt-native-arg-bool"})
 
 (defn- native-entry-expr
   ([sym argtypes ret] (native-entry-expr sym argtypes ret false))
@@ -861,7 +861,7 @@
             code (fresh-label "jn_code")
             info (fresh-label "jn_info")
             as (mapv (fn [_] (fresh-label "jn_a")) kinds)
-            bs (mapv (fn [k] (when (contains? #{"doubles" "longs"} k) (fresh-label "jn_b"))) kinds)
+            bs (mapv (fn [k] (when (contains? #{"doubles" "longs" "bytes"} k) (fresh-label "jn_b"))) kinds)
             backings (filterv some? bs)]
         (str "(let ((" p " " (:entry acc) ")"
              (apply str (map (fn [a k v] (str " (" a " (" (native-arg-check k) " " v "))")) as kinds args))
