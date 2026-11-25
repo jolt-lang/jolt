@@ -180,3 +180,34 @@
                 {:jolt/class c
                  :jolt/claimed-by (vec (sort (map who owners)))}))))
     (vec (distinct entries))))
+
+;; --- precedence ---------------------------------------------------------------
+;; jolt.deps orders the selected libraries with these so every first-wins
+;; reconciliation above reads closest-first.
+
+(defn dependents-first
+  "ORDER re-ordered so each library precedes every library it depends on, the
+  original order breaking ties. A dependency cycle is broken at its earliest
+  member rather than dropped."
+  [order children]
+  (let [parents (reduce-kv (fn [acc p cs] (reduce #(update %1 %2 (fnil conj #{}) p) acc cs))
+                           {} children)]
+    (loop [remaining (vec order) out []]
+      (if (empty? remaining)
+        out
+        (let [left (set remaining)
+              ready? #(not-any? left (get parents %))
+              pick (or (first (filter ready? remaining)) (first remaining))]
+          (recur (filterv #(not= pick %) remaining) (conj out pick)))))))
+
+(defn descendants-by-lib
+  "\"lib\" -> #{\"lib\" …} every library it transitively depends on, as the
+  strings :jolt/provides rows carry."
+  [children]
+  (letfn [(walk [seen lib]
+            (reduce (fn [seen c] (if (seen c) seen (walk (conj seen c) c)))
+                    seen (get children lib)))]
+    (into {} (for [lib (keys children)
+                   :let [ds (disj (walk #{} lib) lib)]
+                   :when (seq ds)]
+               [(str lib) (into #{} (map str) ds)]))))
