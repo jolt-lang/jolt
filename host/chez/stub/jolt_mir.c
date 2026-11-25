@@ -130,7 +130,9 @@ static void *jolt_mir_resolve(const char *name) {
 #define JOLT_MIR_PATH_SEP ':'
 #endif
 static const char *jolt_mir_incs[64];
-static size_t jolt_mir_incs_n = (size_t)-1;
+/* zero-initialized, so .bss: the footprint gate keeps .data to the boot arrays */
+static size_t jolt_mir_incs_n;
+static int jolt_mir_incs_ready;
 static void jolt_mir_add_inc(const char *dir, size_t len) {
   if (len == 0 || jolt_mir_incs_n >= 64) return;
   char *d = malloc(len + 1);
@@ -140,8 +142,8 @@ static void jolt_mir_add_inc(const char *dir, size_t len) {
   jolt_mir_incs[jolt_mir_incs_n++] = d;
 }
 static void jolt_mir_init_incs(void) {
-  if (jolt_mir_incs_n != (size_t)-1) return;
-  jolt_mir_incs_n = 0;
+  if (jolt_mir_incs_ready) return;
+  jolt_mir_incs_ready = 1;
   const char *env = getenv("JOLT_MIR_INCLUDE");
   while (env && *env) {
     const char *end = strchr(env, JOLT_MIR_PATH_SEP);
