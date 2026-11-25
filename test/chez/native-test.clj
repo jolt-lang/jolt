@@ -193,7 +193,12 @@
 (def arg-checks {[:ref :double] "jolt-native-arg-doubles" [:ref :long] "jolt-native-arg-longs"
                  [:ref :byte] "jolt-native-arg-bytes"
                  :long "jolt-native-arg-long" :double "jolt-native-arg-double" :bool "jolt-native-arg-bool"})
-(defn checked [r f] (fn [& args] (apply f (map (fn [p a] (scm/call (arg-checks (:type p)) a)) (:params r) args))))
+;; An array's check answers the backing it tested, which the call site hands C;
+;; :call takes the array itself, so the harness keeps it.
+(defn checked [r f]
+  (fn [& args]
+    (apply f (map (fn [p a] (let [v (scm/call (arg-checks (:type p)) a)] (if (ast/borrowed? (:type p)) a v)))
+                  (:params r) args))))
 
 (defn outcome [f args]
   (try {:value (f args)}
@@ -950,6 +955,20 @@
 (check-eq "called outside a region, a C function's changes are written back"
           (let [a (da 1 2)] (ext-scale a 3.0) (vec a))
           [3.0 6.0])
+;; outside a region each array is copied into foreign memory; one that cannot be
+;; copied (not an array) must not leak the buffers already made for the others
+(defextern ^double ext-dot2 [^doubles xs ^doubles ys] {:c "jn_ext_dot_avx2"})
+(let [live (atom 0)
+      alloc jolt.ffi/alloc
+      free jolt.ffi/free]
+  (with-redefs [jolt.ffi/alloc (fn [n] (swap! live inc) (alloc n))
+                jolt.ffi/free (fn [p] (swap! live dec) (free p))]
+    (check-eq "outside a region, a C call frees its buffers when an argument fails"
+              [(:throw (outcome (fn [_] (ext-dot2 (da 1 2) nil)) nil)) @live]
+              ["java.lang.NullPointerException" 0])
+    (check-eq "outside a region, a C call frees its buffers on success"
+              [(ext-dot2 (da 1 2) (da 3 4)) @live]
+              [11.0 0])))
 
 ;; --- platform bodies: defnative's (on guard ...), chosen by the C compiler ------
 
@@ -1031,6 +1050,26 @@
                                     (fn [_] :called)) %)
                    [(double-array 2)])
           {:throw "java.lang.ClassCastException" :msg "native region: a ^bytes parameter got [D"})
+;; The call site hands C what the check answers: the backing it tested, read
+;; once. Reading it again after the check would race a thread whose store widens
+;; a long-array's fxvector to a vector, and C would read that vector as fixnums.
+;; An owned array result is only a C pointer until its wrap copies and frees
+;; it; the call site wraps it while interrupts are still off, so an
+;; asynchronous throw (a fiber kill, an interrupt) cannot land in between.
+(let [scm (jolt.backend-scheme/emit-top-form
+           (jolt.analyzer/analyze (jolt.host/ctx-for-ns "native-test")
+                                  '(fn [n] (jolt.native/native [^long n] (double-array n)))
+                                  (@#'jolt.analyzer/empty-env)))
+      wrap (str/index-of scm "jolt-native-wrap-doubles")
+      on (str/last-index-of scm "(enable-interrupts)")]
+  (check-eq "an owned result is taken before interrupts are back on"
+            (boolean (and wrap on (< wrap on))) true))
+(check-eq "an array argument's check answers the backing it tested"
+          (mapv (fn [[check a pred]] (scm/call pred (scm/call check a)))
+                [["jolt-native-arg-doubles" (double-array 2) "flvector?"]
+                 ["jolt-native-arg-longs" (long-array 2) "fxvector?"]
+                 ["jolt-native-arg-bytes" (byte-array 2) "bytevector?"]])
+          [true true true])
 
 ;; a mask by a non-negative constant bounds an index: the fast copy drops the
 ;; bounds check once the guard has the array longer than the mask
@@ -1190,6 +1229,15 @@
 (check-eq "an argument the region's cast refuses raises the region's own error"
           (outcome (fn [_] (spec-k "x" (double-array [1.0]))) nil)
           (outcome (fn [_] (let [k "x"] (jolt.native/native [^double k] k))) nil))
+
+;; Two sites with the same params and body compile to the same generic region,
+;; but specialize different params: each needs its own variants, or one site
+;; runs the other's constants.
+(defn spec-on-x [x y] (jolt.native/native ^{:specialize [x]} [^long x ^long y] (- (* x 10) y)))
+(defn spec-on-y [x y] (jolt.native/native ^{:specialize [y]} [^long x ^long y] (- (* x 10) y)))
+(check-eq "same-body sites specializing different params keep their own variants"
+          [(spec-on-x 5 1) (spec-on-y 1 5) (spec-on-y 2 5) (spec-on-x 2 5)]
+          [49 5 15 15])
 
 (doseq [[label params msg] [["an array" '^{:specialize [xs]} [^doubles xs] #"is an array"]
                             ["a non-parameter" '^{:specialize [q]} [^long n] #"not a parameter"]

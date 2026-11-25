@@ -829,20 +829,32 @@
   "The call and the reads of its status, with interrupts off from before the
   call until every status field is read: the status is per OS thread, so a
   fiber switched in on this carrier could run another region and overwrite it.
-  Pinned, the borrowed BACKINGS are locked around the call too. Answers a
-  `(values r code info)`: info is the result length on success (when the
-  result is an array), else #(a b d) for the raise."
-  [p c-args backings pinned? array-result? {:keys [status err-l err-d]}]
-  (let [call (str "(" p (apply str (map #(str " " %) c-args)) ")")
+  Pinned, the borrowed BACKINGS are locked around the call too. An owned array
+  result is taken (copied into a jolt array, its buffer freed) before
+  interrupts are back on, so no asynchronous throw can land while only a C
+  pointer holds it; its wrap frees the buffer itself if it fails. Answers a
+  `(values v code info)`: v is the jolt result on success, info #(a b d) for
+  the raise."
+  [p c-args backings pinned? result acc]
+  (let [{:keys [status err-l err-d]} acc
+        array-result? (contains? #{"doubles" "longs"} result)
+        call (str "(" p (apply str (map #(str " " %) c-args)) ")")
         each (fn [f] (apply str (map #(str "(" f " " % ") ") backings)))
-        r (fresh-label "jn_r") code (fresh-label "jn_code") info (fresh-label "jn_info")]
+        r (fresh-label "jn_r") code (fresh-label "jn_code") info (fresh-label "jn_info")
+        v (fresh-label "jn_v") e (fresh-label "jn_e")]
     (str "(begin (disable-interrupts) " (when pinned? (each "sa-lock-object"))
          "(let* ((" r " " call ") (" code " (" status ")) "
          "(" info " (if (fx= 0 " code ") "
          (if array-result? (str "(" err-l " 2)") "#f") " "
          "(vector (" err-l " 0) (" err-l " 1) (" err-d "))))) "
-         (when pinned? (each "sa-unlock-object")) "(enable-interrupts) "
-         "(values " r " " code " " info ")))")))
+         (when pinned? (each "sa-unlock-object"))
+         (if array-result?
+           (str "(let ((" v " (if (fx= 0 " code ") "
+                "(guard (" e " (#t (enable-interrupts) (raise " e "))) "
+                (native-result-value result r info acc) ") " r "))) "
+                "(enable-interrupts) (values " v " " code " " info "))))")
+           (str "(enable-interrupts) "
+                "(values " (native-result-value result r info acc) " " code " " info ")))")))))
 
 (defn- emit-native-region [emit node]
   (let [kinds (:kinds node)
@@ -860,19 +872,18 @@
             r (fresh-label "jn_r")
             code (fresh-label "jn_code")
             info (fresh-label "jn_info")
+            ;; an array's check answers the backing it tested, which C reads
             as (mapv (fn [_] (fresh-label "jn_a")) kinds)
-            bs (mapv (fn [k] (when (contains? #{"doubles" "longs" "bytes"} k) (fresh-label "jn_b"))) kinds)
-            backings (filterv some? bs)]
+            backings (vec (keep (fn [[a k]] (when (contains? #{"doubles" "longs" "bytes"} k) a))
+                                (map vector as kinds)))]
         (str "(let ((" p " " (:entry acc) ")"
              (apply str (map (fn [a k v] (str " (" a " (" (native-arg-check k) " " v "))")) as kinds args))
              ") (if " p " "
-             "(let* (" (apply str (map (fn [a b] (when b (str "(" b " (jolt-native-flv " a ")) "))) as bs))
-             ") (let-values (((" r " " code " " info ") "
-             (native-call-expr p (map (fn [a b] (or b a)) as bs) backings (and pinned? (seq backings))
-                               (contains? #{"doubles" "longs"} (:result node)) acc)
+             "(let-values (((" r " " code " " info ") "
+             (native-call-expr p as backings (and pinned? (seq backings)) (:result node) acc)
              ")) "
-             "(if (fx= 0 " code ") " (native-result-value (:result node) r info acc) " "
-             "(jolt-invoke " (emit (:raise node)) " " code " (vector-ref " info " 0) (vector-ref " info " 1) (vector-ref " info " 2))))) "
+             "(if (fx= 0 " code ") " r " "
+             "(jolt-invoke " (emit (:raise node)) " " code " (vector-ref " info " 0) (vector-ref " info " 1) (vector-ref " info " 2)))) "
              "(jolt-native-unavailable " sym ")))")))))
 
 (defn emit-ffi-node [emit node]
