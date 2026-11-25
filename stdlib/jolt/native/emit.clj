@@ -439,11 +439,31 @@
 
 (def prelude
   "#include <stdint.h>
+#ifdef __MIRC__
+/* jolt's JIT (host/chez/stub/jolt_mir.c): c2mir declares the few C library
+   functions a region calls here, so a machine with no C headers can run one */
+#include <stddef.h>
+#ifndef JN_MIRC_DECLS
+#define JN_MIRC_DECLS
+#define __attribute__(x)
+void *calloc(size_t, size_t); void *malloc(size_t); void free(void *);
+void *memcpy(void *, const void *, size_t);
+double sqrt(double); double sin(double); double cos(double); double tan(double);
+double exp(double); double log(double); double floor(double); double ceil(double);
+double pow(double, double); double atan2(double, double); double fabs(double);
+static const union { uint64_t u; double d; } jn_nan_bits = {0x7ff8000000000000ULL};
+static const union { uint64_t u; double d; } jn_inf_bits = {0x7ff0000000000000ULL};
+#define NAN (jn_nan_bits.d)
+#define isnan(x) ((x) != (x))
+#define isinf(x) (fabs(x) == jn_inf_bits.d)
+#endif
+#else
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 /* (== x x) on a double is how NaN is tested; the comparison is meant */
 #pragma GCC diagnostic ignored \"-Wtautological-compare\"
+#endif
 #if UINTPTR_MAX != 0xffffffffffffffffu
 #error \"jolt native regions need a 64-bit target\"
 #endif
@@ -460,7 +480,11 @@ typedef struct { int64_t code; int64_t a; int64_t b; double d; int64_t len;
    into one translation unit, so a binary has one. JN_EXTERN_STATUS is for a
    single-threaded host that loads each region as its own shared object (the
    native gate) and defines one plain jn_tls for all of them. */
-#ifdef JN_EXTERN_STATUS
+#if defined(__MIRC__)
+/* MIR has no thread-local storage: the JIT keeps the status (jolt_mir.c) */
+jn_out *jolt_mir_status(void);
+#define jn_tls (*jolt_mir_status())
+#elif defined(JN_EXTERN_STATUS)
 extern jn_out jn_tls;
 #else
 static _Thread_local jn_out jn_tls;
@@ -472,6 +496,14 @@ static _Thread_local jn_out jn_tls;
 #ifndef JN_STACK_HEADROOM
 #define JN_STACK_HEADROOM (256 * 1024)
 #endif
+#if defined(__MIRC__)
+/* c2mir has no __builtin_frame_address; the JIT answers both */
+uintptr_t jolt_mir_stack_limit(uintptr_t headroom);
+uintptr_t jolt_mir_frame(void);
+#define jn_stack_limit() jolt_mir_stack_limit(JN_STACK_HEADROOM)
+#define JN_FRAME() jolt_mir_frame()
+#else
+#define JN_FRAME() ((uintptr_t)__builtin_frame_address(0))
 #if defined(_WIN32)
 __declspec(dllimport) void __stdcall GetCurrentThreadStackLimits(unsigned long long *, unsigned long long *);
 __declspec(dllimport) unsigned long __stdcall GetCurrentThreadId(void);
@@ -513,6 +545,7 @@ __attribute__((unused)) static inline uintptr_t jn_stack_limit(void) {
   return jn_tls.stack_lo ? jn_tls.stack_lo : jn_stack_limit_slow();
 #endif
 }
+#endif
 /* Chez's 64-bit flvector layout (scheme.h Sflvector_length / Sflvector_ref) */
 #define JN_FLV_LEN(x) ((int64_t)((uintptr_t)(*((intptr_t *)((uintptr_t)(x) + 1))) >> 4))
 #define JN_FLV_DATA(x) ((double *)((uintptr_t)(x) + 9))
@@ -570,7 +603,7 @@ static inline __attribute__((unused)) double jn_pow(double x, double y) {
   (when (*recursive* (:iid inst))
     (let [takes (get-in @*region* [:takes (:iid inst) :positions])
           taken (keep-indexed (fn [i p] (when (contains? takes i) (:id p))) (:params inst))]
-      (str "if ((uintptr_t)__builtin_frame_address(0) < jn_st->stack_lo) { " (frees taken)
+      (str "if (JN_FRAME() < jn_st->stack_lo) { " (frees taken)
            " jn_st->code = " (err-codes :stack-overflow) "; return " (ret-zero) "; }"))))
 
 (defn- useful? [facts]

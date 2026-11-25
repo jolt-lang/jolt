@@ -1006,6 +1006,45 @@
 ;; (jb-emit-source-embeds). Always written by that step, so no absent-file arm.
 (jb-c-array jb-source-blob-path (string-append jb-build "/source_blob_data.h") "jolt_source_blob")
 
+;; --- the native-region JIT -----------------------------------------------------
+;; MIR (vendor/mir) and jolt's shim over it (host/chez/stub/jolt_mir.c), linked
+;; into jolt so a native region runs as native code in the REPL and under jolt
+;; run (stdlib/jolt/native, host/chez/java/natives-array.ss). Nothing calls into
+;; it until a region's call site loads. Each object is rebuilt only when its
+;; source is newer. A machine MIR has no code generator for, or JOLT_NO_MIR=1,
+;; leaves it out: regions then raise there unless a jolt build linked them.
+(define jb-mir-sources
+  '("vendor/mir/mir.c" "vendor/mir/mir-gen.c" "vendor/mir/c2mir/c2mir.c" "host/chez/stub/jolt_mir.c"))
+(define (jb-mir-machine?)
+  (let ((m (bld-eff-machine)))
+    (or (bld-contains? m "a6") (bld-contains? m "arm64") (bld-contains? m "rv64")
+        (bld-contains? m "ppc64le"))))
+(define jb-mir-objects
+  (cond
+    ((bld-env-override "JOLT_NO_MIR")
+     (display "build-jolt: JOLT_NO_MIR set, linking no native-region JIT\n") '())
+    ((not (jb-mir-machine?))
+     (display (string-append "build-jolt: MIR has no code generator for " (bld-eff-machine)
+                             ", linking no native-region JIT\n"))
+     '())
+    ((not (file-exists? "vendor/mir/c2mir/c2mir.c"))
+     (error 'build-jolt "vendor/mir is empty: run git submodule update --init vendor/mir (or set JOLT_NO_MIR=1)"))
+    (else
+     (let ((dir (string-append jb-build "/mir")))
+       (bld-system (string-append "mkdir -p '" dir "'"))
+       (map (lambda (src)
+              (let* ((base (path-root (path-last src)))
+                     (o (string-append dir "/" base ".o")))
+                (unless (and (file-exists? o)
+                             (time<=? (file-modification-time src) (file-modification-time o)))
+                  (display (string-append "build-jolt: compiling " src "\n"))
+                  (bld-system (string-append
+                               (bld-cc) " " (bld-arch-flag)
+                               " -O2 -DNDEBUG -std=gnu11 -fsigned-char -w -Ivendor/mir -c '"
+                               src "' -o '" o "'")))
+                o))
+            jb-mir-sources)))))
+
 (jb-write-embed-s!)
 (define jb-main-c (string-append jb-build "/main.c"))
 (let ((mc (open-output-file jb-main-c 'replace)))
@@ -1046,5 +1085,7 @@
   ;; the embedded jolt_* arrays must be foreign-entry-visible at runtime:
   ;; -rdynamic on ELF; on Windows an exe needs an export table (GetProcAddress).
   (bld-cc) " " (bld-arch-flag) " -O2 " (if (bld-tgt-nt?) "-Wl,--export-all-symbols " "-rdynamic ") "-I'" (bld-csv-dir) "' -I'" jb-build "' -I'host/chez/stub' '" jb-main-c "' '" jb-embed-s "' '"
-  (bld-csv-dir) "/libkernel.a' -o '" jb-out "' " (bld-link-libs)))
+  (bld-csv-dir) "/libkernel.a' "
+  (apply string-append (map (lambda (o) (string-append "'" o "' ")) jb-mir-objects))
+  "-o '" jb-out "' " (bld-link-libs)))
 (display (string-append "build-jolt: wrote " jb-out "\n"))

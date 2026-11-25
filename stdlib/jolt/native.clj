@@ -39,14 +39,17 @@
 
       (native ^:hold-gc [^double x] (* x x))
 
-  In a binary built with jolt build the body runs as C. Anywhere else (the
-  REPL, jolt run) the same checked program runs as Jolt, so the two agree. jolt
-  build needs a C compiler for a program with regions."
+  A region always runs as native code, from the same C. jolt build compiles it
+  with the C compiler and links it into the binary, so a build needs a C compiler
+  for a program with regions. Anywhere else (the REPL, jolt run) jolt compiles
+  the region in process with MIR (github.com/vnmakarov/mir) when its call site
+  loads, so a hot loop runs at native speed while you tune it. Where there is
+  no native path (the gambit target, a platform MIR does not support) calling a
+  region raises UnsupportedOperationException."
   (:require [clojure.string :as str]
             [jolt.native.ast :as ast]
             [jolt.native.memory :as memory]
             [jolt.native.emit :as emit]
-            [jolt.native.fallback :as fallback]
             [jolt.native.rt]
             [jolt.ffi]
             [jolt.scheme]))
@@ -78,20 +81,19 @@
     {:sym sym :src (emit/emit-region r sym) :region r}))
 
 (defmacro native
-  "Run body as C in a built binary, as checked Jolt elsewhere. params names the
-  locals it reads, each hinted ^long ^double ^boolean ^doubles or ^longs."
+  "Run body as native code: linked into a jolt build binary, compiled by the
+  JIT elsewhere. params names the locals it reads, each hinted ^long ^double
+  ^boolean ^doubles or ^longs."
   [params & body]
   (let [{:keys [sym src region]} (compile-region params body)
-        names (mapv :name (:params region))
-        plain (mapv #(with-meta % nil) names)]
-    ;; (jolt.native/__region sym src [param-kinds] result-kind [args] fallback-fn raise! mode)
+        plain (mapv #(with-meta (:name %) nil) (:params region))]
+    ;; (jolt.native/__region sym src [param-kinds] result-kind [args] raise! mode)
     ;; the analyzer derives the Chez foreign types from the kinds
     (list 'jolt.native/__region
           sym src
           (mapv (comp param-kind :type) (:params region))
           (result-kind (:type region))
           plain
-          (list 'fn* names (fallback/region-form region))
           'jolt.native.rt/raise!
           (if (:hold-gc (meta params)) :hold-gc :pinned))))
 
@@ -144,10 +146,10 @@
   Each guard is a C preprocessor condition; the first that holds is compiled,
   and a platform no guard covers is a build error unless there is an
   (on :default ...). The bodies must agree on their result type and on which
-  arguments they take. The Jolt fallback runs the :default body, or the first.
+  arguments they take.
 
-  Outside a region, name is an ordinary fn over the same body, with Jolt's own
-  semantics."
+  Outside a region, name is an ordinary fn over the same body (the :default
+  one, or the first), with Jolt's own semantics."
   [name params & body]
   (let [variants (on-variants name body)
         default (or (first (filter #(= :default (:guard %)) variants)) (first variants))
@@ -211,9 +213,9 @@
   The region's C calls the function directly: it is declared from these hints,
   or by its :header when one is given (as Ferret's native-header does). A jolt
   build links it like any other symbol, so it must come from a :static
-  :jolt/native library (or libc/libm). Outside a region, and in a region's
-  Jolt fallback, name calls the same function through jolt.ffi, copying arrays
-  in and back out.
+  :jolt/native library (or libc/libm); the JIT finds it among the libraries
+  this process has loaded. Outside a region, name calls the same function
+  through jolt.ffi, copying arrays in and back out.
 
   The C name is the symbol's with each character C does not allow as _
   (fast-erf is fast_erf), unless :c names it. Without a :header the
@@ -221,10 +223,10 @@
   (abs, labs) needs its own :header or a wrapper of another name: the
   hinted prototype would conflict with the one the region's C includes.
 
-  The same array passed twice reaches C as one pointer, but the Jolt
-  fallback copies each argument into its own buffer: a function that reads
-  one while it writes the other sees different values in the two, so pass
-  distinct arrays.
+  The same array passed twice reaches C as one pointer from a region, but
+  name called outside one copies each argument into its own buffer: a
+  function that reads one while it writes the other sees different values in
+  the two, so pass distinct arrays.
 
   The checker cannot see into the C: a region that calls one is memory safe
   only as far as that function is."
@@ -253,7 +255,9 @@
 
 (defn linked-regions
   "Each native region whose call site has loaded in this process, as a map of
-  its C symbol to whether that region runs as C here (true in a binary built
-  with jolt build, false in the REPL or under jolt run)."
+  its C symbol to how it runs here: :linked (compiled into a binary jolt build
+  made), :jit (compiled in this process, in the REPL or under jolt run), or
+  nil (no native path here; calling it raises)."
   []
-  (into {} (jolt.scheme/call "jolt-native-linked")))
+  (into {} (map (fn [[sym how]] [sym (some-> how keyword)]))
+        (jolt.scheme/call "jolt-native-linked")))

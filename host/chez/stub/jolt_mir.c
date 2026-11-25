@@ -1,0 +1,190 @@
+/* jolt's JIT for native regions (stdlib/jolt/native): a region's C, compiled
+   in this process by MIR's C compiler (vendor/mir, c2mir) the first time the
+   region's call site loads, so a region runs as native code in the REPL and
+   under jolt run as it does in a binary jolt build linked it into.
+
+   The release jolt links this file and MIR in (build-jolt.ss); a source
+   checkout loads them as one shared object, target/mir/libjoltmir (make
+   mirlib). host/chez/java/natives-array.ss finds jolt_mir_compile either way.
+
+   A region's C reaches the JIT exactly as cc sees it in a build, but c2mir
+   predefines __MIRC__, and under it the prelude (stdlib/jolt/native/emit.clj)
+   takes three things from here rather than from headers a machine without a
+   C toolchain may not carry:
+     jolt_mir_status       the status of the region this thread ran last. MIR
+                           has no thread-local storage, so every JIT'd region
+                           shares this one, as every region a build links
+                           shares the translation unit's.
+     jolt_mir_stack_limit  the lowest stack address a recursive helper may
+                           enter at (the thread's stack less HEADROOM).
+     jolt_mir_frame        an address in the caller's frame, for the helper's
+                           check against that limit.
+   Everything else a region calls (malloc, sqrt, a defextern's function) is
+   resolved by the resolver Chez passes in, which is Chez's own foreign-entry. */
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <setjmp.h>
+#include <stdarg.h>
+#include "mir.h"
+#include "mir-gen.h"
+#include "c2mir/c2mir.h"
+
+#if defined(_WIN32)
+#include <windows.h>
+#define JOLT_MIR_EXPORT __declspec(dllexport)
+#else
+#include <pthread.h>
+#define JOLT_MIR_EXPORT __attribute__((visibility("default")))
+#endif
+
+/* the layout of the prelude's jn_out */
+typedef struct {
+  int64_t code; int64_t a; int64_t b; double d; int64_t len;
+  uintptr_t stack_lo; uintptr_t stack_thr;
+} jolt_mir_out;
+
+static _Thread_local jolt_mir_out jolt_mir_tls;
+
+JOLT_MIR_EXPORT jolt_mir_out *jolt_mir_status(void) { return &jolt_mir_tls; }
+
+JOLT_MIR_EXPORT __attribute__((noinline)) uintptr_t jolt_mir_frame(void) {
+  volatile char here = 0;
+  return (uintptr_t)&here;
+}
+
+#if defined(__linux__)
+int pthread_getattr_np(pthread_t, pthread_attr_t *);
+#endif
+
+/* The prelude's jn_stack_limit_slow, for the JIT: read once per thread. */
+JOLT_MIR_EXPORT uintptr_t jolt_mir_stack_limit(uintptr_t headroom) {
+  if (jolt_mir_tls.stack_lo) return jolt_mir_tls.stack_lo;
+  uintptr_t lo = 0, size = 0;
+#if defined(__APPLE__)
+  uintptr_t hi = (uintptr_t)pthread_get_stackaddr_np(pthread_self());
+  size = pthread_get_stacksize_np(pthread_self());
+  lo = hi - size;
+#elif defined(__linux__)
+  pthread_attr_t at; void *addr; size_t sz;
+  if (pthread_getattr_np(pthread_self(), &at) == 0) {
+    if (pthread_attr_getstack(&at, &addr, &sz) == 0) { lo = (uintptr_t)addr; size = sz; }
+    pthread_attr_destroy(&at);
+  }
+#elif defined(_WIN32)
+  ULONG_PTR l = 0, h = 0;
+  GetCurrentThreadStackLimits(&l, &h);
+  lo = (uintptr_t)l; size = (uintptr_t)(h - l);
+#endif
+  uintptr_t head = size / 4 < headroom ? size / 4 : headroom;
+  jolt_mir_tls.stack_lo = size ? lo + head : 1;
+  return jolt_mir_tls.stack_lo;
+}
+
+/* --- the compiler ----------------------------------------------------------
+   One MIR context for the process, used under the caller's lock (Chez holds a
+   mutex around every call here). A failure MIR reports through its error
+   function (an unresolved name at link, an internal error) longjmps back to
+   jolt_mir_compile, which then abandons the context: the code it generated
+   for earlier regions stays where it is, and the next compile starts a fresh
+   one. */
+static MIR_context_t jolt_mir_ctx;
+static long jolt_mir_modules;
+static jmp_buf *jolt_mir_jmp;
+static char jolt_mir_msg[4096];
+static void *(*jolt_mir_resolver)(const char *);
+
+static void MIR_NO_RETURN jolt_mir_on_error(MIR_error_type_t type, const char *fmt, ...) {
+  va_list ap;
+  (void)type;
+  va_start(ap, fmt);
+  vsnprintf(jolt_mir_msg, sizeof jolt_mir_msg, fmt, ap);
+  va_end(ap);
+  if (jolt_mir_jmp) longjmp(*jolt_mir_jmp, 1);
+  abort();
+}
+
+static void *jolt_mir_resolve(const char *name) {
+  void *p = jolt_mir_resolver ? jolt_mir_resolver(name) : NULL;
+  /* MIR's link raises on a NULL: name the symbol rather than its message */
+  if (p == NULL) {
+    snprintf(jolt_mir_msg, sizeof jolt_mir_msg, "undefined symbol %s", name);
+    if (jolt_mir_jmp) longjmp(*jolt_mir_jmp, 1);
+  }
+  return p;
+}
+
+typedef struct { const char *s; size_t i; } jolt_mir_src;
+static int jolt_mir_getc(void *data) {
+  jolt_mir_src *src = data;
+  unsigned char c = (unsigned char)src->s[src->i];
+  if (c == 0) return EOF;
+  src->i++;
+  return c;
+}
+
+/* What the last failed compile reported. */
+JOLT_MIR_EXPORT const char *jolt_mir_error(void) { return jolt_mir_msg; }
+
+/* Compile SRC, a region's C, and generate its code. Answers the module, whose
+   functions jolt_mir_lookup finds, or NULL with the reason in jolt_mir_error.
+   RESOLVE answers the address of a C name the source uses but does not define,
+   or NULL. */
+JOLT_MIR_EXPORT void *jolt_mir_compile(const char *src, void *(*resolve)(const char *)) {
+  jmp_buf here;
+  MIR_module_t module = NULL;
+  FILE *messages = NULL;
+  jolt_mir_msg[0] = 0;
+  jolt_mir_resolver = resolve;
+  jolt_mir_jmp = &here;
+  if (setjmp(here)) {
+    /* abandoned, not finished: earlier regions' code lives in it */
+    jolt_mir_ctx = NULL;
+    jolt_mir_jmp = NULL;
+    if (messages) fclose(messages);
+    if (!jolt_mir_msg[0]) snprintf(jolt_mir_msg, sizeof jolt_mir_msg, "MIR failed");
+    return NULL;
+  }
+  if (jolt_mir_ctx == NULL) {
+    jolt_mir_ctx = MIR_init();
+    MIR_set_error_func(jolt_mir_ctx, jolt_mir_on_error);
+    c2mir_init(jolt_mir_ctx);
+    MIR_gen_init(jolt_mir_ctx);
+    MIR_gen_set_optimize_level(jolt_mir_ctx, 2);
+  }
+  struct c2mir_options opts;
+  memset(&opts, 0, sizeof opts);
+  messages = tmpfile();
+  opts.message_file = messages;
+  opts.module_num = ++jolt_mir_modules;
+  jolt_mir_src in = {src, 0};
+  int ok = c2mir_compile(jolt_mir_ctx, &opts, jolt_mir_getc, &in, "native-region.c", NULL);
+  if (!ok) {
+    size_t n = 0;
+    if (messages) {
+      rewind(messages);
+      n = fread(jolt_mir_msg, 1, sizeof jolt_mir_msg - 1, messages);
+    }
+    jolt_mir_msg[n] = 0;
+    if (n == 0) snprintf(jolt_mir_msg, sizeof jolt_mir_msg, "c2mir could not compile the region");
+    if (messages) fclose(messages);
+    jolt_mir_jmp = NULL;
+    return NULL;
+  }
+  if (messages) fclose(messages);
+  messages = NULL;
+  module = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(jolt_mir_ctx));
+  MIR_load_module(jolt_mir_ctx, module);
+  MIR_link(jolt_mir_ctx, MIR_set_gen_interface, jolt_mir_resolve);
+  jolt_mir_jmp = NULL;
+  return module;
+}
+
+/* The address of the function NAME that MODULE defines, or NULL. */
+JOLT_MIR_EXPORT void *jolt_mir_lookup(void *module, const char *name) {
+  MIR_module_t m = module;
+  for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it != NULL; it = DLIST_NEXT(MIR_item_t, it))
+    if (it->item_type == MIR_func_item && strcmp(it->u.func->name, name) == 0) return it->addr;
+  return NULL;
+}

@@ -1658,8 +1658,8 @@
 ;; AOT cache alike. Compile them as one translation unit (each region's prelude
 ;; is include-guarded) and link the object with the static natives, so in the
 ;; binary each site's (jolt-native-entry sym) finds its entry and runs as C.
-;; -ffp-contract=off: a fused multiply-add rounds once where the Jolt fallback
-;; rounds twice, and the two halves of a region must agree.
+;; -ffp-contract=off: a fused multiply-add rounds once where the JIT (MIR, which
+;; never fuses) rounds twice, and a region must answer the same in both.
 (define (bld-add-native-regions! natives out-path)
   (let ((regions (jolt-native-registered)))
     (if (null? regions)
