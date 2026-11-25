@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Native regions specialize on runtime values: `(native ^{:specialize [n]}
+  [^long n ^doubles m] ...)` compiles a variant of the region, with the JIT,
+  for each distinct `n` the call site sees (up to `:max-variants`, 8 by
+  default), with the value as a constant, so the range analysis drops checks it
+  could not for an unknown `n`: a 512x512 matrix sum runs about 1.7 times
+  faster. Other values, and a `jolt build` binary, run the region as written;
+  the answers are the same. `jolt.native/specializations` lists the variants.
+
 - `jolt.native/native-fn`: compile a native region at runtime from data (a
   params vector and body forms), with the JIT, and get back a fn that runs it
   as native code. A program can generate a region from what it only learns at
