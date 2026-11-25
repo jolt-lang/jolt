@@ -351,64 +351,90 @@
    (when-not (jit?)
      (throw (UnsupportedOperationException.
              "jolt.native/native-fn: this process has no JIT (a jolt build binary runs only the regions linked into it)")))
-   ;; checked first, so a bad program throws the region's own error
-   (compile-region params body)
    (binding [*ns* (the-ns ns)]
+     ;; checked first, so a bad program throws the region's own error; in ns,
+     ;; where its helpers and macros resolve
+     (compile-region params body)
      (eval (list 'fn* (mapv #(with-meta % nil) params)
                  (list* 'jolt.native/native params body))))))
 
 ;; --- specialization -----------------------------------------------------------
-;; site (the generic region's symbol) -> {[value ...] variant-fn-or-:failed}
+;; site (the generic region's symbol) -> {variant-key {:vals [value ...] :f variant-fn-or-:failed}}
 (def ^:private variants (atom {}))
 (def ^:private variants-lock (Object.))
+
+(defn- specialized-types [params]
+  (into {} (map (fn [p] [(with-meta p nil) (str (:tag (meta p)))]) params)))
+
+(defn- cast-specialized
+  "The values of the specialized params cast as the region casts its arguments
+  (jolt-native-arg-long, -double, -bool), so a variant sees what the region
+  would have."
+  [types names vals]
+  (mapv (fn [n v]
+          (case (types n)
+            "long" (long v)
+            "double" (double v)
+            "boolean" (if (boolean? v) v
+                          (throw (ClassCastException.
+                                  (str "native region: a ^boolean parameter got " (class v)))))))
+        names vals))
+
+(defn- variant-key
+  "The cache key of cast values: a double by its bits, since = treats 0.0 and
+  -0.0 as one value but a variant with either constant can answer differently
+  ((* k x) is -0.0 for one and 0.0 for the other)."
+  [vals]
+  (mapv #(if (double? %) [::bits (Double/doubleToRawLongBits %)] %) vals))
 
 (defn specialized-body
   "The body of the variant of a region specialized on names (its params) at
   vals: body with each name bound to its value, the value cast as the region
-  casts the argument. Answers [params-left body]."
+  casts the argument. Answers [params-left body]; params-left keeps the
+  region's other options (^:hold-gc)."
   [params body names vals]
-  (let [types (into {} (map (fn [p] [(with-meta p nil) (:tag (meta p))]) params))
-        cast (fn [n v]
-               (case (str (types n))
-                 "long" (long v)
-                 "double" (double v)
-                 "boolean" (if (boolean? v) v
-                               (throw (ClassCastException.
-                                       (str "native region: a ^boolean parameter got " (class v)))))))
-        keep (vec (remove (comp (set names) #(with-meta % nil)) params))]
-    [keep (list (list* 'let (vec (mapcat (fn [n v] [n (cast n v)]) names vals)) body))]))
+  (let [cast (cast-specialized (specialized-types params) names vals)
+        keep (with-meta (vec (remove (comp (set names) #(with-meta % nil)) params))
+               (dissoc (meta params) :specialize :max-variants))]
+    [keep (list (list* 'let (vec (interleave names cast)) body))]))
 
 (defn specialized-variant
   "The variant of the region site, specialized on names at vals: compiled by
   the JIT on the first call with these values, while the site has fewer than
   max of them; nil (run the region as written) past that, without a JIT, or
-  when the variant failed to compile."
+  when the variant failed to compile, or for an argument the region's cast
+  refuses (so the region raises its own error). Values are keyed after the
+  region's casts, so 2 and 2.0 for a ^double share one variant."
   [site params body names max ns vals]
-  (let [hit (get-in @variants [site vals])]
+  (let [cast (try (cast-specialized (specialized-types params) names vals)
+                  (catch Throwable _ nil))
+        k (variant-key cast)
+        hit (:f (get-in @variants [site k]))]
     (cond
+      ;; an argument the region's own cast refuses: the region raises its error
+      (nil? cast) nil
       (fn? hit) hit
       (= :failed hit) nil
       :else
       (locking variants-lock
         (let [known (get @variants site)
-              hit (get known vals)]
+              hit (:f (get known k))]
           (cond
             (fn? hit) hit
             (= :failed hit) nil
-            (or (>= (count known) max) (not (jit? ))) nil
+            (or (>= (count known) max) (not (jit?))) nil
             :else
-            (let [f (try (let [[keep b] (specialized-body params body names vals)]
+            (let [f (try (let [[keep b] (specialized-body params body names cast)]
                            (native-fn keep b ns))
-                         (catch ClassCastException e (throw e))
                          (catch Throwable _ :failed))]
-              (swap! variants assoc-in [site vals] f)
+              (swap! variants assoc-in [site k] {:vals cast :f f})
               (when (fn? f) f))))))))
 
 (defn specializations
   "Each specialized region site that has compiled a variant, as a map of its
   symbol to the value vectors it has variants for."
   []
-  (into {} (map (fn [[site m]] [site (vec (keys (filter (comp fn? val) m)))])) @variants))
+  (into {} (map (fn [[site m]] [site (vec (keep #(when (fn? (:f %)) (:vals %)) (vals m)))])) @variants))
 
 (defn linked-regions
   "Each native region whose call site has loaded in this process, as a map of

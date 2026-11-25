@@ -227,7 +227,7 @@ JOLT_MIR_EXPORT const char *jolt_mir_error(void) { return jolt_mir_msg; }
 JOLT_MIR_EXPORT void *jolt_mir_compile(const char *src, void *(*resolve)(const char *)) {
   jmp_buf here;
   MIR_module_t module = NULL;
-  FILE *messages = NULL;
+  FILE *volatile messages = NULL; /* assigned after setjmp, read on its longjmp path */
   jolt_mir_msg[0] = 0;
   jolt_mir_resolver = resolve;
   jolt_mir_jmp = &here;
