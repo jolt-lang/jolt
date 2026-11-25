@@ -1141,6 +1141,22 @@
 (check-eq "a long argument to a specialized ^double is cast as the region casts it"
           (some #{[2.0 true]} (mapcat val (jolt.native/specializations))) [2.0 true])
 
+;; The key is the cast value, not the argument: an unhinted caller passing 2 and
+;; 2.0 gets one variant. A double is keyed by its bits, since 0.0 = -0.0 but a
+;; variant with k = 0.0 would answer 0.0 where the region answers -0.0.
+(defn spec-k [k ^doubles xs]
+  (jolt.native/native ^{:specialize [k]} [^double k ^doubles xs] (* k (aget xs 0))))
+(defn plain-k [k ^doubles xs] (* (double k) (aget xs 0)))
+(check-eq "0.0 and -0.0 get their own variants, each answering as the region does"
+          (mapv #(str (spec-k % (double-array [1.0]))) [0.0 -0.0 2 2.0])
+          (mapv #(str (plain-k % (double-array [1.0]))) [0.0 -0.0 2 2.0]))
+(check-eq "2 and 2.0 for a ^double share a variant"
+          (some (fn [[_ v]] (when (some #{[-0.0]} v) (count v))) (jolt.native/specializations))
+          3)
+(check-eq "an argument the region's cast refuses raises the region's own error"
+          (outcome (fn [_] (spec-k "x" (double-array [1.0]))) nil)
+          (outcome (fn [_] (jolt.native/native [^double k] k)) nil))
+
 (doseq [[label params msg] [["an array" '^{:specialize [xs]} [^doubles xs] #"is an array"]
                             ["a non-parameter" '^{:specialize [q]} [^long n] #"not a parameter"]
                             ["not a vector" '^{:specialize n} [^long n] #"vector of parameter names"]]]
