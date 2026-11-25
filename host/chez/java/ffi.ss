@@ -802,7 +802,17 @@
 ;; foreign-callable, and these accessors. jolt TRUTHINESS decides the byte, so
 ;; nil and false send 0 and every other value sends 1 — a C predicate reads back
 ;; as true/false rather than as the truthy number 0.
-(define (jolt-ffi-bool->c v) (if (or (jolt-nil? v) (eq? v #f)) 0 1))
+;;
+;; A number is the exception, and it is rejected. 0 is truthy, so a C-style
+;; `(if on? 1 0)` or a literal 0 for false would otherwise send true with no
+;; error, the same silent wrong value that `false` in a :string position is.
+(define (jolt-ffi-bool->c v)
+  (cond ((or (jolt-nil? v) (eq? v #f)) 0)
+        ((jolt-number? v)
+         (throw-jvm 'IllegalArgumentException
+                    (string-append "jolt.ffi: :bool got the number " (jolt-pr-str v)
+                                   ", and 0 is truthy, so pass true or false")))
+        (else 1)))
 (define (jolt-ffi-c->bool raw) (not (eqv? (jnum->exact raw) 0)))
 ;; --- :float/:double <- a java.lang.Float -------------------------------------
 ;; (float x) answers a java.lang.Float, a jfloat record, and a Chez float or

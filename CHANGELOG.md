@@ -58,6 +58,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `:header` in the system include directories and any `JOLT_MIR_INCLUDE`
   lists; a header MIR's C compiler cannot parse (Android's bionic ones) makes
   that region raise outside a build.
+- **A number in a `jolt.ffi` `:bool` position throws `IllegalArgumentException`.**
+  `:bool` follows jolt truthiness, and 0 is truthy, so a C-style `0` for false
+  or `(if on? 1 0)` used to send true without any error. Pass `true` or `false`,
+  or the value itself. This covers call arguments, `write` and layout fields,
+  and a foreign-callable whose fn returns a number for a `:bool` result. Code
+  that passed `1` for true has to change too.
 
 ## [0.8.30] - 2026-11-24
 
