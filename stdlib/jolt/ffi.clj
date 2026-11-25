@@ -412,15 +412,19 @@
   library-scoped search raises on Windows, where jolt holds no handle."]
          ['dlsym-native '([sym])
           "The address of sym in the declared native libraries loaded so far,
-  searched in declaration order, or false when none defines it. The
+  searched in declaration order, or false when none resolves it. A lookup
+  through a library's handle also reaches what that library links against,
+  so once one is loaded a libc name can answer too. With none loaded the
   process's own symbols aren't searched. find-symbol searches both."]
          ['defining-libraries '([sym])
-          "A vector with one declared native library path for each distinct
-  definition of the C symbol sym, in declaration order. One entry is the
-  normal answer, however many libraries use the symbol. Two mean two copies
-  of its code, usually a library linked against another's static archive,
-  and are worth checking for when a native call answers something
-  impossible and nothing raises."]
+          "A vector with one entry for each distinct definition (address) of
+  the C symbol sym among the declared native libraries, in declaration
+  order. Each entry is the path of the first library whose handle resolves
+  that definition, which can be one that only links against the library
+  defining it. One entry is the normal answer, however many libraries use
+  the symbol. Two mean two copies of its code, usually a library linked
+  against another's static archive, and are worth checking for when a
+  native call answers something impossible and nothing raises."]
          ['free-callable '([ptr])
           "Release a callback that foreign-callable made, so it can be
   collected. C must not call ptr after this. A pointer that isn't a live
