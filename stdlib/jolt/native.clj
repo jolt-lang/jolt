@@ -217,6 +217,11 @@
   this process has loaded. Outside a region, name calls the same function
   through jolt.ffi, copying arrays in and back out.
 
+  Outside a build the JIT reads a :header itself, with MIR's C compiler,
+  which cannot parse every system's headers (Android's bionic ones among
+  them); a region whose header it cannot read raises there. A header that
+  only declares the function can be swapped for the hinted prototype.
+
   The C name is the symbol's with each character C does not allow as _
   (fast-erf is fast_erf), unless :c names it. Without a :header the
   prototype comes from the hints, so a function libc already declares

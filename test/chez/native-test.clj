@@ -159,14 +159,18 @@
 
 (defn compile-region
   "params + body -> {:call f :live f :bad f :peak f :jit {...the same, JIT'd}
-  :region r :c src}."
-  [params body]
+  :region r :c src}. With cc-only, no :jit."
+  [params body & {:keys [cc-only]}]
   (let [r (mem/check-region (ast/analyze-region params body))
         sym (str "jn_t" (swap! counter inc))
         src (str (tracker sym) (emit/emit-region r sym))
         cc (caller r sym (cc-compile sym src))
-        jit (caller r sym (jit-compile sym src))]
+        jit (when-not cc-only (caller r sym (jit-compile sym src)))]
     (assoc cc :jit jit :region r :c src)))
+
+;; Android/Termux, by ffi.ss's rule (as jolt-locale-probe-test.clj has it):
+;; c2mir cannot read bionic's system headers
+(def android? (boolean (or (System/getenv "TERMUX_VERSION") (System/getenv "ANDROID_ROOT"))))
 
 ;; the backend runs each argument through the host check for its kind before
 ;; the call; the harness does the same
@@ -245,8 +249,8 @@
 (defn check-run
   "Run one program as cc's C and as the JIT's on each arg vector; compare them
   with each other, with the body as plain Clojure (:raw) and with golden.edn."
-  [label params body arg-vecs & {:keys [raw]}]
-  (let [compiled (try (compile-region params body)
+  [label params body arg-vecs & {:keys [raw cc-only]}]
+  (let [compiled (try (compile-region params body :cc-only cc-only)
                       (catch Throwable e (fail! (str label ": compile failed: " (.getMessage e))) nil))]
     (when compiled
       (let [r (:region compiled)
@@ -255,19 +259,20 @@
             occ (get (swap! golden-occ update label (fnil inc -1)) label)]
         (doseq [[gi args] (map-indexed vector arg-vecs)]
           (let [ca (copy-args args) ja (copy-args args) ra (copy-args args)
-                c (outcome #(apply (checked r (:call compiled)) %) ca)
-                j (outcome #(apply (checked r (:call jit)) %) ja)]
-            (when-not (same-outcome? c j)
-              (fail! (str label " " (pr-str args) ": cc " (pr-str c) " vs JIT " (pr-str j))))
-            (when-not (every? true? (map same? ca ja))
-              (fail! (str label " " (pr-str args) ": inputs after cc and JIT differ")))
+                c (outcome #(apply (checked r (:call compiled)) %) ca)]
+            (when jit
+              (let [j (outcome #(apply (checked r (:call jit)) %) ja)]
+                (when-not (same-outcome? c j)
+                  (fail! (str label " " (pr-str args) ": cc " (pr-str c) " vs JIT " (pr-str j))))
+                (when-not (every? true? (map same? ca ja))
+                  (fail! (str label " " (pr-str args) ": inputs after cc and JIT differ")))))
             (check-golden label [label occ gi] c ca)
             (when raw-f
               (let [rr (outcome #(apply raw-f %) ra)]
                 (when-not (same-outcome? rr c)
                   (fail! (str label " " (pr-str args) ": region " (pr-str c)
                               " vs body as plain Clojure " (pr-str rr))))))
-            (doseq [[how h] [["cc" compiled] ["JIT" jit]]]
+            (doseq [[how h] (cond-> [["cc" compiled]] jit (conj ["JIT" jit]))]
               (let [live ((:live h)) bad ((:bad h))]
                 (when-not (zero? live) (fail! (str label " " (pr-str args) ": " how " leaked " live " block(s)")))
                 (when-not (zero? bad) (fail! (str label " " (pr-str args) ": " how " bad free")))))))
@@ -893,7 +898,8 @@
           (let [src (c-of '[^double x] '((ext-cbrt x)))]
             [(boolean (re-find #"#include <math.h>\n" src)) (boolean (re-find #"double cbrt\(double\);" src))])
           [true false])
-(check-run "a libm function through its header" '[^double x] '((ext-cbrt x)) [[27.0] [-8.0] [2.0]])
+(check-run "a libm function through its header" '[^double x] '((ext-cbrt x)) [[27.0] [-8.0] [2.0]]
+           :cc-only android?)
 
 ;; array arguments: a pointer to the elements and their count
 
