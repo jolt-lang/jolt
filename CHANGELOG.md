@@ -13,9 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   macro of each feature the machine has (`__AVX2__`, `__FMA__`, `__ARM_NEON`
   ...), so a `defnative` with `(on "defined(__AVX2__)" ...)` and
   `(on :default ...)` bodies runs the SIMD one where the CPU has it, and the
-  portable one elsewhere. `jolt build` still compiles for the build machine's
-  baseline. `jolt.native/cpu-features` lists what the JIT targets;
-  `JOLT_MIR_CPU=baseline` makes it compile as a build does.
+  portable one elsewhere. `jolt build` still compiles for its C compiler's
+  default target, usually the baseline. `jolt.native/cpu-features` lists what
+  the JIT targets; `JOLT_MIR_CPU=baseline` makes it target the baseline.
 
 - Native regions specialize on runtime values: `(native ^{:specialize [n]}
   [^long n ^doubles m] ...)` compiles a variant of the region, with the JIT,
