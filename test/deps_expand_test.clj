@@ -594,12 +594,18 @@
 (let [root (str (System/getProperty "java.io.tmpdir") "/configure-" (System/currentTimeMillis))
       lib (str root "/lib")]
   (jolt.host/mkdirs! lib)
-  (spit (str lib "/libjoltfake.so.3") "")
-  (spit (str lib "/libjoltfake.so.3.1.0") "")
-  (is= "a :search directory is looked in, relative to the declaring deps.edn"
-       {:path (str lib "/libjoltfake.so.3") :via :search}
+  ;; named the way the running platform names a shared library: the soname
+  ;; is preferred over the fuller version it links to
+  (let [[want other] (case (jolt.configure/platform)
+                       :darwin  ["libjoltfake.3.dylib" "libjoltfake.3.1.0.dylib"]
+                       :windows ["libjoltfake-3.dll" nil]
+                       ["libjoltfake.so.3" "libjoltfake.so.3.1.0"])]
+    (spit (str lib "/" want) "")
+    (when other (spit (str lib "/" other) ""))
+    (is= "a :search directory is looked in, relative to the declaring deps.edn"
+       {:path (str lib "/" want) :via :search}
        (jolt.configure/find-library {:name "joltfake" :search ["lib"] :jolt.deps/root root}
-                                    {:verify? false}))
+                                    {:verify? false})))
   ;; locate opens what it returns, so it needs a real library under the name:
   ;; a copy of the zlib the runtime already links, where one is on disk.
   (when-let [z (first (filter #(.isFile (java.io.File. ^String %))
