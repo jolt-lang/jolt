@@ -82,7 +82,22 @@
            "double jn_ext_sum(double *xs, int64_t n) { double s = 0; for (int64_t i = 0; i < n; i++) s += xs[i]; return s; }\n"
            "void jn_ext_scale(double *xs, int64_t n, double k) { for (int64_t i = 0; i < n; i++) xs[i] *= k; }\n"
            "void jn_ext_fill(int64_t *xs, int64_t n, int64_t v) { for (int64_t i = 0; i < n; i++) xs[i] = v + i; }\n"
-           "int64_t jn_ext_lsum(int64_t *xs, int64_t n) { int64_t s = 0; for (int64_t i = 0; i < n; i++) s += xs[i]; return s; }\n"))
+           "int64_t jn_ext_lsum(int64_t *xs, int64_t n) { int64_t s = 0; for (int64_t i = 0; i < n; i++) s += xs[i]; return s; }\n"
+           ;; a SIMD kernel a region's (on \"defined(__AVX2__)\" ...) body calls:
+           ;; AVX2 code by its own target attribute on x86-64, a plain loop elsewhere
+           "static int64_t jn_ext_dots;\n"
+           "int64_t jn_ext_dot_calls(void) { return jn_ext_dots; }\n"
+           "#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))\n"
+           "#include <immintrin.h>\n"
+           "__attribute__((target(\"avx2\"))) double jn_ext_dot_avx2(double *xs, int64_t n, double *ys, int64_t m) {\n"
+           "  jn_ext_dots++; __m256d acc = _mm256_setzero_pd(); int64_t i = 0;\n"
+           "  for (; i + 4 <= n; i += 4) acc = _mm256_add_pd(acc, _mm256_mul_pd(_mm256_loadu_pd(xs + i), _mm256_loadu_pd(ys + i)));\n"
+           "  double l[4]; _mm256_storeu_pd(l, acc); double s = l[0] + l[1] + l[2] + l[3];\n"
+           "  for (; i < n; i++) s += xs[i] * ys[i]; (void)m; return s; }\n"
+           "#else\n"
+           "double jn_ext_dot_avx2(double *xs, int64_t n, double *ys, int64_t m) {\n"
+           "  jn_ext_dots++; double s = 0; for (int64_t i = 0; i < n; i++) s += xs[i] * ys[i]; (void)m; return s; }\n"
+           "#endif\n"))
 (let [p (.start (ProcessBuilder. ^java.util.List ["cc" "-O2" "-shared" "-fPIC" "-o" ext-so (str work-dir "/jn_ext.c")]))]
   (when-not (zero? (.waitFor p)) (throw (ex-info "cc failed for jn_ext" {}))))
 (scm/call "load-shared-object" ext-so)
@@ -1183,6 +1198,40 @@
             (try (macroexpand (list 'jolt.native/native params 1)) :expanded
                  (catch Throwable e (boolean (re-find msg (.getMessage e)))))
             true))
+
+;; --- the machine the JIT compiles for: (on ...) bodies chosen per CPU ------------
+;; jolt build (cc here) compiles for whatever its compiler targets, the
+;; baseline unless it was configured otherwise; the JIT defines the macro of
+;; each feature this CPU has (jolt.native/cpu-features), so its guard picks
+;; the body the running machine can run.
+
+(def feats (jolt.native/cpu-features))
+(defnative which-cpu [] (on "defined(__AVX2__)" 2) (on "defined(__SSE2__)" 1) (on :default 0))
+(def cc-which ((:call (compile-region '[] '((which-cpu))))))
+(let [c (compile-region '[] '((which-cpu)))
+      sse2 (if (= 2 cc-which) 1 cc-which)]
+  (check-eq "the JIT picks the body for this CPU's features"
+            ((:call (:jit c))) (if (:avx2 feats) 2 sse2)))
+(check-eq "cpu-features answers keywords" (every? keyword? feats) true)
+
+(defextern ^double ext-dot-avx2 [^doubles xs ^doubles ys] {:c "jn_ext_dot_avx2"})
+(defextern ^long ext-dot-calls [] {:c "jn_ext_dot_calls"})
+(defnative cpu-dot [xs ys]
+  (on "defined(__AVX2__)" (ext-dot-avx2 xs ys))
+  (on :default (loop [i 0 s 0.0] (if (< i (alength xs)) (recur (inc i) (+ s (* (aget xs i) (aget ys i)))) s))))
+;; whole numbers, so the SIMD kernel's other summation order rounds alike
+(let [c (compile-region '[^doubles xs ^doubles ys] '((cpu-dot xs ys)))
+      xs (double-array (range 1 12)) ys (double-array (range 12 1 -1))
+      want (reduce + (map * (range 1 12) (range 12 1 -1)))
+      before (ext-dot-calls)
+      cc-r ((:call c) xs ys)
+      mid (ext-dot-calls)
+      jit-r ((:call (:jit c)) xs ys)
+      after (ext-dot-calls)]
+  (check-eq "cc's body, the one its compiler's macros pick"
+            [cc-r (- mid before)] [(double want) (if (= 2 cc-which) 1 0)])
+  (check-eq "the JIT runs the SIMD body where the CPU has AVX2, with the same answer"
+            [jit-r (- after mid)] [(double want) (if (:avx2 feats) 1 0)]))
 
 ;; --- random programs ----------------------------------------------------------
 ;; A generator builds well-typed region programs and tracks ownership with its
