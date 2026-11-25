@@ -1958,18 +1958,14 @@
 ;; A region not linked into this process (the REPL, jolt run, the build process
 ;; itself) is compiled here by MIR's C compiler (host/chez/stub/jolt_mir.c), from
 ;; the same C a build links, the first time its call site loads. The release
-;; jolt links MIR in; a source checkout loads target/mir/libjoltmir (make mirlib),
-;; or the object JOLT_MIR_LIB names. A binary jolt build makes carries no MIR:
-;; every region its program loads is linked into it.
+;; jolt links MIR in; anything else loads the object JOLT_MIR_LIB names, which
+;; bin/jolt points at the checkout's target/mir/libjoltmir (make mirlib). There
+;; is no default path: one relative to the working directory would let a binary
+;; jolt build made (which carries no MIR, every region its program loads being
+;; linked into it) load whatever library sits under target/mir where it runs.
 (define (jolt-mir-object-path)
   (let ((env (getenv "JOLT_MIR_LIB")))
-    (if (and env (not (string=? env "")))
-        env
-        (string-append "target/mir/libjoltmir"
-                       (case (sa-os-family)
-                         ((macos) ".dylib")
-                         ((windows) ".dll")
-                         (else ".so"))))))
+    (and env (not (string=? env "")) env)))
 
 ;; #(compile lookup error resolver-entry) once MIR is found, 'none when it is not
 (define jolt-mir-procs #f)
@@ -1977,7 +1973,7 @@
 (define (jolt-mir-find!)
   (unless (sa-foreign-entry? "jolt_mir_compile")
     (let ((path (jolt-mir-object-path)))
-      (when (file-exists? path)
+      (when (and path (file-exists? path))
         (guard (e (#t #f)) (sa-load-shared-object path)))))
   (if (sa-foreign-entry? "jolt_mir_compile")
       ;; by address, not by name: a named foreign reference is a load-time
@@ -2012,7 +2008,10 @@
   (unless jolt-mir-procs (set! jolt-mir-procs (jolt-mir-find!)))
   (if (eq? jolt-mir-procs 'none)
       (string-append "it is not linked into this binary, and this process has no JIT"
-                     " (MIR: " (jolt-mir-object-path) " not found)")
+                     (let ((path (jolt-mir-object-path)))
+                       (if path
+                           (string-append " (MIR: " path " not found)")
+                           " (no MIR linked in, and JOLT_MIR_LIB is unset)")))
       ;; interrupts off across the call: the resolver re-enters Scheme with C
       ;; frames on the stack, where no fiber may switch out
       (let ((m (begin (disable-interrupts)

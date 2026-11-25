@@ -11,8 +11,9 @@
 ;; exceptions, and the rest Jolt's own arithmetic does differently).
 ;; Rejected programs must fail to compile with the expected message.
 ;; Needs cc and the JIT (make mirlib). Run: bin/jolt run test/chez/native-test.clj
-;; NATIVE_GOLDEN=write rewrites golden.edn from the cc runs: only for new rows,
-;; after checking what they answer.
+;; NATIVE_GOLDEN=write adds the cc answers of rows golden.edn lacks (after
+;; checking what they answer) and drops entries no row produces; the entries
+;; it keeps are still checked, never re-recorded.
 (ns native-test
   (:require [clojure.string :as str]
             [clojure.edn :as edn]
@@ -210,9 +211,12 @@
 ;; as tagged vectors.
 (def golden-path "test/native/golden.edn")
 (def golden-write? (= "write" (System/getenv "NATIVE_GOLDEN")))
-(def golden (if golden-write? (atom {}) (atom (edn/read-string (slurp golden-path)))))
+(def golden (atom (edn/read-string (slurp golden-path))))
 (def golden-occ (atom {}))
 (def golden-checked (atom 0))
+;; every key a row produced this run: a golden entry no row produces (a renamed,
+;; reordered or deleted row) fails the run rather than going unchecked
+(def golden-seen (atom #{}))
 
 (defn gnorm [v]
   (cond
@@ -239,13 +243,14 @@
     :else (= want got)))
 
 (defn- check-golden [label k c ca]
-  (let [got {:out (gnorm c) :inputs (mapv gnorm ca)}]
-    (if golden-write?
-      (swap! golden assoc k got)
-      (when-let [want (get @golden k)]
-        (swap! golden-checked inc)
-        (when-not (golden= want got)
-          (fail! (str label " " (pr-str (peek k)) ": want " (pr-str want) " (golden.edn) got " (pr-str got))))))))
+  (let [got {:out (gnorm c) :inputs (mapv gnorm ca)}
+        want (get @golden k)]
+    (swap! golden-seen conj k)
+    (cond
+      want (do (swap! golden-checked inc)
+               (when-not (golden= want got)
+                 (fail! (str label " " (pr-str (peek k)) ": want " (pr-str want) " (golden.edn) got " (pr-str got)))))
+      golden-write? (swap! golden assoc k got))))
 
 (defn check-run
   "Run one program as cc's C and as the JIT's on each arg vector; compare them
@@ -1018,6 +1023,16 @@
       fast (fast-copy src)]
   (check-eq "a masked index is proven in bounds" (boolean (and fast (str/includes? fast ".len > 3LL"))) true))
 
+;; an unsigned shift by 1 can still answer 2^63 - 1: its range must not drop the
+;; bounds check or the overflow check after it
+(check-run "an unsigned shift by 1 keeps the index checked" '[^longs xs ^long i]
+           '((aget xs (unsigned-bit-shift-right i 1)))
+           [[(long-array [1 2 3 4]) 6] [(long-array [1 2 3 4]) -1] [(long-array [1 2 3 4]) -2]] :raw true)
+(defn ushr1-inc [^long i] (jolt.native/native [^long i] (inc (unsigned-bit-shift-right i 1))))
+(check-eq "an unsigned shift by 1 keeps the overflow check (the JVM's inc throws)"
+          [(outcome (fn [_] (ushr1-inc 6)) nil) (outcome (fn [_] (ushr1-inc -1)) nil)]
+          [{:value 4} {:throw "java.lang.ArithmeticException" :msg "integer overflow"}])
+
 ;; --- native-fn: regions compiled at runtime from data ------------------------------
 ;; through eval, the backend and the JIT, as a call site in the REPL is
 
@@ -1032,6 +1047,10 @@
           true)
 (check-eq "native-fn resolves helpers in the namespace it is given"
           ((jolt.native/native-fn '[^bytes bs] '((byte-at bs 1)) 'native-test) (ba 3 -4)) -4)
+(check-eq "native-fn checks the region in the namespace it is given, not the caller's"
+          (binding [*ns* (the-ns 'clojure.core)]
+            ((jolt.native/native-fn '[^bytes bs] '((byte-at bs 0)) 'native-test) (ba 3 -4)))
+          3)
 (check-eq "native-fn runs as JIT'd code" (some #{:jit} (vals (jolt.native/linked-regions))) :jit)
 
 ;; --- jolt.native.layout: a record layout lowered into a parser and a scan ---------
@@ -1460,8 +1479,13 @@
 (fuzz!)
 
 
+(def golden-unseen
+  ;; only meaningful for the default fuzz run, which is what golden.edn records
+  (when-not (some #(System/getenv %) ["NATIVE_FUZZ_SEED" "NATIVE_FUZZ_N" "NATIVE_FUZZ_SKIP"])
+    (remove @golden-seen (keys @golden))))
 (if golden-write?
-  (do (spit golden-path
+  (do (swap! golden #(apply dissoc % golden-unseen))
+      (spit golden-path
             (with-out-str
               (println ";; test/chez/native-test.clj's golden oracle: what each row answered when")
               (println ";; regions had a Jolt fallback. Regenerate only with NATIVE_GOLDEN=write.")
@@ -1469,7 +1493,10 @@
               (doseq [[k v] (sort-by key @golden)] (println (pr-str k) (pr-str v)))
               (println "}")))
       (println "native-test: wrote" (count @golden) "golden outcomes"))
-  (println "native-test:" @golden-checked "outcomes matched golden.edn"))
+  (do (when (seq golden-unseen)
+        (fail! (str (count golden-unseen) " golden.edn entries no row produced (renamed, reordered or"
+                    " deleted rows?), e.g. " (pr-str (take 3 golden-unseen)))))
+      (println "native-test:" @golden-checked "outcomes matched golden.edn")))
 (if (seq @failures)
   (do (println (count @failures) "native-test failure(s)") (System/exit 1))
   (println "NATIVE OK"))
