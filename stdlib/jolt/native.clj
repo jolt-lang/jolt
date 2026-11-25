@@ -195,7 +195,7 @@
 
       (defextern ^double dot-avx2 [^doubles xs ^doubles ys])  ; cc -mavx2, in a :jolt/native lib
       (defnative dot [xs ys]
-        (on \"defined(__AVX2__)\" (dot-avx2 (aclone xs) (aclone ys)))
+        (on \"defined(__AVX2__)\" (dot-avx2 xs ys))
         (on :default (loop [i 0 s 0.0] ...)))
 
   MIR's C compiler has no SIMD intrinsics, so a SIMD body calls C that has
