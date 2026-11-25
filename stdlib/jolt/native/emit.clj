@@ -445,7 +445,7 @@
 #include <stddef.h>
 #ifndef JN_MIRC_DECLS
 #define JN_MIRC_DECLS
-#define __attribute__(x)
+#define JN_UNUSED
 void *calloc(size_t, size_t); void *malloc(size_t); void free(void *);
 void *memcpy(void *, const void *, size_t);
 double sqrt(double); double sin(double); double cos(double); double tan(double);
@@ -453,9 +453,9 @@ double exp(double); double log(double); double floor(double); double ceil(double
 double pow(double, double); double atan2(double, double); double fabs(double);
 static const union { uint64_t u; double d; } jn_nan_bits = {0x7ff8000000000000ULL};
 static const union { uint64_t u; double d; } jn_inf_bits = {0x7ff0000000000000ULL};
-#define NAN (jn_nan_bits.d)
-#define isnan(x) ((x) != (x))
-#define isinf(x) (fabs(x) == jn_inf_bits.d)
+#define JN_NAN (jn_nan_bits.d)
+#define JN_ISNAN(x) ((x) != (x))
+#define JN_ISINF(x) (fabs(x) == jn_inf_bits.d)
 #endif
 #else
 #include <stdlib.h>
@@ -463,6 +463,10 @@ static const union { uint64_t u; double d; } jn_inf_bits = {0x7ff0000000000000UL
 #include <math.h>
 /* (== x x) on a double is how NaN is tested; the comparison is meant */
 #pragma GCC diagnostic ignored \"-Wtautological-compare\"
+#define JN_UNUSED __attribute__((unused))
+#define JN_NAN NAN
+#define JN_ISNAN(x) isnan(x)
+#define JN_ISINF(x) isinf(x)
 #endif
 #if UINTPTR_MAX != 0xffffffffffffffffu
 #error \"jolt native regions need a 64-bit target\"
@@ -551,8 +555,8 @@ __attribute__((unused)) static inline uintptr_t jn_stack_limit(void) {
 #define JN_FLV_DATA(x) ((double *)((uintptr_t)(x) + 9))
 /* Math.pow is Java's, not C's: a NaN exponent, or a base of magnitude 1 to an
    infinite power, is NaN where C's pow answers 1 */
-static inline __attribute__((unused)) double jn_pow(double x, double y) {
-  if (isnan(y) || (isinf(y) && fabs(x) == 1.0)) return NAN;
+static inline JN_UNUSED double jn_pow(double x, double y) {
+  if (JN_ISNAN(y) || (JN_ISINF(y) && fabs(x) == 1.0)) return JN_NAN;
   return pow(x, y);
 }
 #endif

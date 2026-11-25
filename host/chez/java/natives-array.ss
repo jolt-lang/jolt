@@ -1998,23 +1998,33 @@
           m))))
 
 (define (jolt-mir-compile base)
-  (unless jolt-mir-procs (set! jolt-mir-procs (jolt-mir-find!)))
   (let ((src (jolt-native-source base)))
-    (cond
-      ((not src) "its C source was never registered")
-      ((eq? jolt-mir-procs 'none)
-       (string-append "it is not linked into this binary, and this process has no JIT"
-                      " (MIR: " (jolt-mir-object-path) " not found)"))
-      (else
-       ;; interrupts off across the call: the resolver re-enters Scheme with C
-       ;; frames on the stack, where no fiber may switch out
-       (let ((m (begin (disable-interrupts)
-                       (let ((m ((vector-ref jolt-mir-procs 0) src (vector-ref jolt-mir-procs 3))))
-                         (enable-interrupts)
-                         m))))
-         (if (eqv? m 0)
-             (string-append "the JIT could not compile it: " ((vector-ref jolt-mir-procs 2)))
-             m))))))
+    (if src
+        (jolt-mir-compile-source src)
+        "its C source was never registered")))
+
+;; SRC, C, compiled by MIR: the module, whose functions jolt-mir-lookup finds,
+;; or a string, why there is none. Called under jolt-mir-mutex; the native gate
+;; (test/chez/native-test.clj) calls it directly, from one thread.
+(define (jolt-mir-compile-source src)
+  (unless jolt-mir-procs (set! jolt-mir-procs (jolt-mir-find!)))
+  (if (eq? jolt-mir-procs 'none)
+      (string-append "it is not linked into this binary, and this process has no JIT"
+                     " (MIR: " (jolt-mir-object-path) " not found)")
+      ;; interrupts off across the call: the resolver re-enters Scheme with C
+      ;; frames on the stack, where no fiber may switch out
+      (let ((m (begin (disable-interrupts)
+                      (let ((m ((vector-ref jolt-mir-procs 0) src (vector-ref jolt-mir-procs 3))))
+                        (enable-interrupts)
+                        m))))
+        (if (eqv? m 0)
+            (string-append "the JIT could not compile it: " ((vector-ref jolt-mir-procs 2)))
+            m))))
+
+;; The address of the function NAME in MODULE, or #f.
+(define (jolt-mir-lookup m name)
+  (let ((p ((vector-ref jolt-mir-procs 1) m name)))
+    (and (not (eqv? p 0)) p)))
 
 ;; The C entry's address: linked into this process (a jolt build binary), else
 ;; JIT-compiled, else #f, when the call site raises jolt-native-unavailable.
@@ -2025,9 +2035,7 @@
     ((< (string-length sym) 19) #f)
     (else
      (let ((m (jolt-mir-module (substring sym 0 19))))
-       (and (not (string? m))
-            (let ((p ((vector-ref jolt-mir-procs 1) m sym)))
-              (and (not (eqv? p 0)) p)))))))
+       (and (not (string? m)) (jolt-mir-lookup m sym))))))
 
 ;; A region call whose entry did not resolve.
 (define (jolt-native-unavailable sym)
