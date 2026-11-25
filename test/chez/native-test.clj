@@ -562,6 +562,28 @@
 (check-run "a recursive helper's result type is inferred" '[^long n] '((fib-nohint n)) [[0] [1] [15]] :raw true)
 (defnative spins [n] (spins n))
 (check-reject "a helper that never returns" '[^long n] '((spins n)) #"never returns")
+
+;; A local shadows a builtin, helper or macro of its name as it does in
+;; Clojure, where the call would invoke the local's value; a region has no
+;; function values, so it refuses the call rather than run the builtin.
+(check-reject "a local named like a builtin is not the builtin" '[^doubles xs]
+              '((let [aget 1] (aget xs 0))) #"aget is a local")
+(check-reject "a parameter named like a builtin is not the builtin" '[^long inc]
+              '((inc 1)) #"inc is a local")
+(check-reject "a local named like a macro is not the macro" '[^long when]
+              '((when true 1)) #"when is a local")
+(check-run "a special form stays one under a local of its name" '[^long n]
+           '((let [if 2] (if (pos? n) if 0)))
+           [[1] [-1]] :raw true)
+
+;; The region registry is keyed by a hash of the C: a second region that
+;; arrives with the name and different C raises instead of running the first.
+(check-eq "a region name registered with other C raises"
+          [(do (scm/call "jolt-native-register!" "jn_collide_t" "int jn_a;")
+               (scm/call "jolt-native-register!" "jn_collide_t" "int jn_a;")
+               :same-ok)
+           (:throw (outcome (fn [_] (scm/call "jolt-native-register!" "jn_collide_t" "int jn_b;")) nil))]
+          [:same-ok "java.lang.IllegalStateException"])
 (defnative ^double halve-to [x lim] (if (< x lim) x (halve-to (/ x 2.0) lim)))
 (declare odd-steps)
 (defnative even-steps [n] (if (zero? n) 0 (odd-steps (dec n))))
@@ -1252,6 +1274,20 @@
 ;; baseline unless it was configured otherwise; the JIT defines the macro of
 ;; each feature this CPU has (jolt.native/cpu-features), so its guard picks
 ;; the body the running machine can run.
+
+;; A region naming a C function this process does not have fails to link. The
+;; JIT checks its imports before linking, so the failure leaves its context
+;; (and the code of every region compiled in it) in use, not abandoned.
+(def mir-contexts
+  (try (scm/eval-string "(foreign-procedure \"jolt_mir_contexts\" () integer-64)")
+       (catch Throwable _ (constantly :none))))
+(let [before (mir-contexts)
+      bad (scm/call "jolt-mir-compile-source"
+                    "long jn_nope_zz(long); long jn_link_t(long x) { return jn_nope_zz(x); }")
+      ok (scm/call "jolt-mir-compile-source" "long jn_link_ok(long x) { return x + 1; }")]
+  (check-eq "a region that fails to link names the symbol and keeps the JIT's context"
+            [(boolean (re-find #"undefined symbol jn_nope_zz" (str bad))) (string? ok) (and (pos-int? before) (= before (mir-contexts)))]
+            [true false true]))
 
 (def feats (jolt.native/cpu-features))
 (defnative which-cpu [] (on "defined(__AVX2__)" 2) (on "defined(__SSE2__)" 1) (on :default 0))

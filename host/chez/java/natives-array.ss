@@ -1949,11 +1949,23 @@
 (define jolt-native-regions '())
 (define jolt-native-region-table (make-hashtable string-hash string=?))
 (define jolt-native-regions-mutex (make-mutex))
+;; A name is a hash of the C, so the same name with other C is a collision:
+;; raised, since the second region would otherwise run the first one's code.
 (define (jolt-native-register! sym src)
-  (jolt-with-mutex jolt-native-regions-mutex
-    (unless (hashtable-contains? jolt-native-region-table sym)
-      (hashtable-set! jolt-native-region-table sym src)
-      (set! jolt-native-regions (cons (cons sym src) jolt-native-regions)))))
+  (let ((clash
+         (jolt-with-mutex jolt-native-regions-mutex
+           (let ((had (hashtable-ref jolt-native-region-table sym #f)))
+             (cond
+               ((not had)
+                (hashtable-set! jolt-native-region-table sym src)
+                (set! jolt-native-regions (cons (cons sym src) jolt-native-regions))
+                #f)
+               (else (not (string=? had src))))))))
+    (when clash
+      (throw-jvm 'IllegalStateException
+                 (string-append "native region " sym
+                                ": another region's C has the same name (a hash collision);"
+                                " change either region")))))
 (define (jolt-native-registered)
   (jolt-with-mutex jolt-native-regions-mutex (reverse jolt-native-regions)))
 (define (jolt-native-source sym)

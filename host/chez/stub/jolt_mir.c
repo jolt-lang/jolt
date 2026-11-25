@@ -89,12 +89,16 @@ JOLT_MIR_EXPORT uintptr_t jolt_mir_stack_limit(uintptr_t headroom) {
 
 /* --- the compiler ----------------------------------------------------------
    One MIR context for the process, used under the caller's lock (Chez holds a
-   mutex around every call here). A failure MIR reports through its error
-   function (an unresolved name at link, an internal error) longjmps back to
+   mutex around every call here). A name the region's C uses and this process
+   lacks (a defextern's function in no loaded library) is found before the
+   module is loaded or linked, so that failure leaves the context as it was:
+   the module stays in it, unloaded, and nothing else changes. Any failure MIR
+   reports through its error function (an internal error) longjmps back to
    jolt_mir_compile, which then abandons the context: the code it generated
-   for earlier regions stays where it is, and the next compile starts a fresh
-   one. */
+   for earlier regions stays where it is (leaked, as it must stay callable),
+   and the next compile starts a fresh one. */
 static MIR_context_t jolt_mir_ctx;
+static int64_t jolt_mir_ctx_count;
 static long jolt_mir_modules;
 static jmp_buf *jolt_mir_jmp;
 static char jolt_mir_msg[4096];
@@ -217,6 +221,10 @@ static int jolt_mir_getc(void *data) {
   return c;
 }
 
+/* How many MIR contexts this process has made: one, unless a compile failed
+   inside MIR and abandoned one (the native gate checks a link failure does not). */
+JOLT_MIR_EXPORT int64_t jolt_mir_contexts(void) { return jolt_mir_ctx_count; }
+
 /* What the last failed compile reported. */
 JOLT_MIR_EXPORT const char *jolt_mir_error(void) { return jolt_mir_msg; }
 
@@ -241,6 +249,7 @@ JOLT_MIR_EXPORT void *jolt_mir_compile(const char *src, void *(*resolve)(const c
   }
   if (jolt_mir_ctx == NULL) {
     jolt_mir_ctx = MIR_init();
+    jolt_mir_ctx_count++;
     MIR_set_error_func(jolt_mir_ctx, jolt_mir_on_error);
     c2mir_init(jolt_mir_ctx);
     MIR_gen_init(jolt_mir_ctx);
@@ -288,6 +297,20 @@ JOLT_MIR_EXPORT void *jolt_mir_compile(const char *src, void *(*resolve)(const c
   if (messages) fclose(messages);
   messages = NULL;
   module = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(jolt_mir_ctx));
+  /* every name it imports must resolve before anything is loaded: MIR's link
+     reports a missing one through the error function, after which the context
+     cannot be trusted. The names MIR's generator adds itself (mir.*) come
+     later, during the link. A region imports nothing from another region, so
+     the resolver answers for every name, as it does at the link. */
+  for (MIR_item_t it = DLIST_HEAD(MIR_item_t, module->items); it != NULL;
+       it = DLIST_NEXT(MIR_item_t, it)) {
+    if (it->item_type != MIR_import_item) continue;
+    const char *name = it->u.import_id;
+    if (jolt_mir_resolver && jolt_mir_resolver(name) != NULL) continue;
+    snprintf(jolt_mir_msg, sizeof jolt_mir_msg, "undefined symbol %s", name);
+    jolt_mir_jmp = NULL;
+    return NULL;
+  }
   MIR_load_module(jolt_mir_ctx, module);
   MIR_link(jolt_mir_ctx, MIR_set_gen_interface, jolt_mir_resolve);
   jolt_mir_jmp = NULL;
