@@ -84,6 +84,9 @@ export JOLT_VERSION="${JOLT_VERSION:-$("$root/tools/version.sh")}"
 # volatile here (a "dev" version tag wouldn't invalidate the cache across edits),
 # and devboot already covers startup. A built jolt binary defaults the cache ON.
 export JOLT_AOT_CACHE="${JOLT_AOT_CACHE:-0}"
+# The native-region JIT for source mode (make mirlib); a release jolt links it in.
+case "$(uname -s)" in Darwin) mir_ext=dylib ;; *) mir_ext=so ;; esac
+export JOLT_MIR_LIB="${JOLT_MIR_LIB:-$root/target/mir/libjoltmir.$mir_ext}"
 cd "$root" || exit 1
 
 # Dev boot cache: precompiled target/dev/flat.so loads the runtime ~10x faster

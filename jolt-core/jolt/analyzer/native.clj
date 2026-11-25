@@ -1,7 +1,7 @@
 (ns jolt.analyzer.native
   "The jolt.native/__region special form: a native region call site, validated
   into the :native-region node the back end lowers to a call to the region's C
-  entry with a Jolt fallback."
+  entry, linked into the binary or compiled by the host's JIT."
   (:require [jolt.host :refer [form-sym? form-sym-name form-sym-ns form-vec?
                                form-vec-items form-keyword?]]
             [jolt.analyzer.diagnostics :refer [analysis-error]]))
@@ -9,16 +9,16 @@
 ;; jolt.native/__region — a native region call site, what the jolt.native/native
 ;; macro expands to:
 ;;   (jolt.native/__region "jn_<16 hex>" "<C source>" [:doubles :long ...] :result
-;;                         [arg ...] fallback-fn raise-fn :pinned|:hold-gc)
-;; The kinds and result are literals read here; the args, the fallback fn and the
-;; raise fn are child expressions. The back end derives the Chez foreign types
+;;                         [arg ...] raise-fn :pinned|:hold-gc)
+;; The kinds and result are literals read here; the args and the raise fn are
+;; child expressions. The back end derives the Chez foreign types
 ;; from the kinds rather than taking them from the form, so a ^doubles slot is
 ;; always scheme-object fed by the arg check that guarantees an flvector.
 (defn native-form? [head]
   (and (form-sym? head) (= "jolt.native" (form-sym-ns head))
        (= "__region" (form-sym-name head))))
 
-(def ^:private native-param-kinds #{"doubles" "longs" "long" "double" "bool"})
+(def ^:private native-param-kinds #{"doubles" "longs" "bytes" "long" "double" "bool"})
 (def ^:private native-result-kinds #{"doubles" "longs" "long" "double" "bool" "unit"})
 
 (defn- native-region-sym? [s]
@@ -36,10 +36,10 @@
 (defn analyze-native-region
   "ANALYZE is the analyzer's own entry, passed in: this namespace loads before it."
   [analyze ctx items env]
-  (when-not (= 9 (count items))
+  (when-not (= 8 (count items))
     (analysis-error :analyze/invalid-native-region
                     (str "jolt.native/__region expects (__region sym src [kinds] result [args] "
-                         "fallback raise mode); use the jolt.native/native macro")))
+                         "raise mode); use the jolt.native/native macro")))
   (let [sym (nth items 1) src (nth items 2) kinds-form (nth items 3)
         args-form (nth items 5)]
     (when-not (native-region-sym? sym)
@@ -61,7 +61,6 @@
        :kinds kinds
        :result (native-kind (nth items 4) native-result-kinds "result")
        :args (mapv #(analyze ctx % env) args)
-       :fallback (analyze ctx (nth items 6) env)
-       :raise (analyze ctx (nth items 7) env)
+       :raise (analyze ctx (nth items 6) env)
        ;; :pinned (lock + collect-safe call) or :hold-gc (plain call, holds the GC)
-       :mode (native-kind (nth items 8) #{"pinned" "hold-gc"} "mode")})))
+       :mode (native-kind (nth items 7) #{"pinned" "hold-gc"} "mode")})))

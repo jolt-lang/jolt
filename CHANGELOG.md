@@ -7,8 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The JIT compiles a native region for the CPU it runs on: it defines the C
+  macro of each feature the machine has (`__AVX2__`, `__FMA__`, `__ARM_NEON`
+  ...), so a `defnative` with `(on "defined(__AVX2__)" ...)` and
+  `(on :default ...)` bodies runs the SIMD one where the CPU has it, and the
+  portable one elsewhere. `jolt build` still compiles for its C compiler's
+  default target, usually the baseline. `jolt.native/cpu-features` lists what
+  the JIT targets; `JOLT_MIR_CPU=baseline` makes it target the baseline.
+
+- Native regions specialize on runtime values: `(native ^{:specialize [n]}
+  [^long n ^doubles m] ...)` compiles a variant of the region, with the JIT,
+  for each distinct `n` the call site sees (up to `:max-variants`, 8 by
+  default), with the value as a constant, so the range analysis drops checks it
+  could not for an unknown `n`: a 512x512 matrix sum runs about 1.7 times
+  faster. Other values, and a `jolt build` binary, run the region as written;
+  the answers are the same. `jolt.native/specializations` lists the variants.
+
+- `jolt.native/native-fn`: compile a native region at runtime from data (a
+  params vector and body forms), with the JIT, and get back a fn that runs it
+  as native code. A program can generate a region from what it only learns at
+  runtime; `jolt.native/jit?` says whether this process can.
+- `jolt.native.layout`: a binary record layout (`[[:magic :u32] [:pad 1]
+  [:count :u16] ...]`, little- or big-endian) lowered into a region:
+  `parser` reads one record, `column` scans a field across every record in a
+  byte-array, with the offsets, widths and sign extension as constants in C.
+- Native regions take `^bytes` parameters (read in place, each element a
+  signed byte as a long; a region never writes one) and the bit operations
+  `bit-and`, `bit-or`, `bit-xor`, `bit-not`, `bit-shift-left`,
+  `bit-shift-right` and `unsigned-bit-shift-right`, with the JVM's masked
+  shift counts. A mask by a non-negative constant bounds an index for the
+  range analysis, so `(aget xs (bit-and i 3))` drops its bounds check.
+
 ### Changed
 
+- `jolt.native` regions always run as native code. Outside a `jolt build`
+  binary (the REPL, `jolt run`) a region is now compiled in process by MIR's C
+  compiler (github.com/vnmakarov/mir, vendored at `vendor/mir` and linked into
+  jolt) the first time its call site loads, from the same C a build links, so a
+  hot loop runs at native speed while you tune it. The Jolt fallback a region
+  used to run there is gone, along with the code that generated it. Where there
+  is no native path (the gambit target, a machine MIR has no code generator
+  for) calling a region raises `UnsupportedOperationException`.
+- `jolt.native/linked-regions` answers `:linked`, `:jit` or `nil` per region
+  instead of a boolean.
+- A source checkout gets the JIT from `make mirlib`
+  (`target/mir/libjoltmir`); `JOLT_MIR_LIB` names another build of it, and
+  `JOLT_NO_MIR=1` builds a jolt without it. The JIT finds a `defextern`
+  `:header` in the system include directories and any `JOLT_MIR_INCLUDE`
+  lists; a header MIR's C compiler cannot parse (Android's bionic ones) makes
+  that region raise outside a build.
 - **A number in a `jolt.ffi` `:bool` position throws `IllegalArgumentException`.**
   `:bool` follows jolt truthiness, and 0 is truthy, so a C-style `0` for false
   or `(if on? 1 0)` used to send true without any error. Pass `true` or `false`,

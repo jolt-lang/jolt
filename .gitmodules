@@ -19,3 +19,6 @@
 [submodule "vendor/cli"]
 	path = vendor/cli
 	url = https://github.com/babashka/cli.git
+[submodule "vendor/mir"]
+	path = vendor/mir
+	url = https://github.com/vnmakarov/mir.git
