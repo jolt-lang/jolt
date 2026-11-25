@@ -350,6 +350,8 @@
 ;; -- docs for the host's public vars ------------------------------------------
 ;; The host defines these without metadata, so `doc` and editors would show
 ;; nothing. A host without the FFI layer has none of them and skips the entry.
+;; The lookup is jolt.host/find-var: clojure.core/find-var is a tree-shake bail
+;; ref, and this runs at load, so it would keep the compiler in every ffi app.
 (doseq [[sym arglists doc]
         [['null nil
           "The NULL pointer, the number 0. It's a value rather than a function:
@@ -442,7 +444,7 @@
   compiler). A Chez 10.4.1 without jolt's patches answers false, and then a
   call with more arguments than registers can pass the wrong values. The
   probe runs once per process."]]]
-  (when-let [v (find-var (symbol "jolt.ffi" (name sym)))]
+  (when-let [v (jolt.host/find-var "jolt.ffi" (name sym))]
     (alter-meta! v assoc :doc doc :arglists arglists)))
 
 ;; -- layouts ------------------------------------------------------------------
