@@ -1033,14 +1033,15 @@
      (let ((dir (string-append jb-build "/mir")))
        (bld-system (string-append "mkdir -p '" dir "'"))
        (map (lambda (src)
-              (let* ((base (path-root (path-last src)))
+              (let* ((file (path-last src))
+                     (base (substring file 0 (- (string-length file) 2)))
                      (o (string-append dir "/" base ".o")))
                 (unless (and (file-exists? o)
                              (time<=? (file-modification-time src) (file-modification-time o)))
                   (display (string-append "build-jolt: compiling " src "\n"))
                   (bld-system (string-append
                                (bld-cc) " " (bld-arch-flag)
-                               " -O2 -DNDEBUG -std=gnu11 -fsigned-char -w -Ivendor/mir -c '"
+                               " -O2 -DNDEBUG -std=gnu11 -fsigned-char -w -Wno-psabi -Ivendor/mir -c '"
                                src "' -o '" o "'")))
                 o))
             jb-mir-sources)))))
