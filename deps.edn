@@ -1119,7 +1119,8 @@ done"
 
   ;; Every accepted program compiled with a tracking allocator and run as C and
   ;; as its Jolt fallback; the rejected programs must fail to compile. Needs cc.
-  native {:doc "Native regions: C and the Jolt fallback agree on result, exception and mutation, no leaks"
+  native {:doc "Native regions: cc and the JIT agree on result, exception and mutation, no leaks"
+          :depends [mirlib]
           :task (sh "bin/jolt run test/chez/native-test.clj")}
 
   nativebuild {:doc "Native regions are C in a jolt build binary and the fallback under jolt run, same output"
