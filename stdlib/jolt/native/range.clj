@@ -4,10 +4,25 @@
   emitter can leave those checks out of a fast copy of the function.
 
   The facts hold under assumptions about the function's array parameters (each
-  no longer than Integer/MAX_VALUE, and longer than the largest index proven
-  for it). The emitter turns those into one guard at the function's entry: when
-  it holds, the fast copy runs; when not, the fully checked body runs, as
-  before. So a fact never changes what a program does, only which checks run.
+  no longer than Integer/MAX_VALUE, longer than the largest index proven for
+  it, and longer than each symbolic bound an index was proven under: a long
+  parameter or another array parameter's length, plus a constant). The emitter
+  turns those into one guard at the function's entry: when it holds, the fast
+  copy runs; when not, the fully checked body runs, as before. So a fact never
+  changes what a program does, only which checks run.
+
+  Besides intervals, a long local carries symbolic upper bounds, [base k] for
+  local <= base + k, base being [:len a] (array a's length) or [:p p] (a long
+  parameter, which nothing rebinds). (< i (dec n)) with n bound to (alength
+  xs) gives i the bound [[:len xs] -2], so (aget xs (inc i)) is in bounds;
+  (< i m) gives [[:p m] -1], and the guard m < xs.len covers (aget xs i). The
+  idea is scriptc's affine loop versions (bytes-loop-versions.ts), hoisted to
+  the function's entry because a parameter cannot change.
+
+  An accumulator that every recur advances by a bounded step, in a loop with a
+  counter that every recur increments, stays within init + trips * step, where
+  trips is what the counter's range allows; so a sum of bytes cannot overflow
+  (scriptc's lanes.ts reasons the same way about exact partial sums).
 
   Intervals are over exact integers (+' and *'): [lo hi], or nil for a value
   that is not a long. Loop variables reach a fixpoint, widened to the long
@@ -43,10 +58,20 @@
 (def ^:dynamic *needs* nil)
 ;; array parameter ids, whose lengths the guard bounds
 (def ^:dynamic *params* nil)
+;; long parameter ids: a symbolic bound may name one
+(def ^:dynamic *scalars* nil)
+;; #{[array-id base k]}: base + k must be below the array's length
+(def ^:dynamic *rels* nil)
+;; loop-id -> [binding-id]: the variables a recur rebinds
+(def ^:dynamic *loopvars* nil)
+
+;; a symbolic bound's constant stays small, so base + k never leaves the long
+;; range in the guard's C
+(def max-offset 1048576)
 
 (defn- fact! [id f] (swap! *facts* assoc id f))
 
-;; env: {:r {local-id interval} :lt {local-id #{array-local-id}}
+;; env: {:r {local-id interval} :ub {local-id #{[base k]}}
 ;;       :len-of {local-id array-local-id} :alen {array-local-id interval}}
 
 (defn- local-id [node] (when (= :local (:op node)) (:binding node)))
@@ -128,6 +153,18 @@
     :const (when (= :long (:type node)) [(:val node) (:val node)])
     :local (when (= :long (:type node)) (get-in env [:r (:binding node)] full))
     :alength (alen env (:arr node))
+    :prim (when (= :long (:type node))
+            (let [[x y] (:args node)
+                  c (fn [n] (when (and (= :const (:op n)) (= :long (:type n))) (:val n)))]
+              (case (:prim node)
+                :inc (some-> (simple-rng env x) (r-add [1 1]) clamp)
+                :dec (some-> (simple-rng env x) (r-sub [1 1]) clamp)
+                :+ (when (= 2 (count (:args node)))
+                     (cond (c y) (some-> (simple-rng env x) (r-add [(c y) (c y)]) clamp)
+                           (c x) (some-> (simple-rng env y) (r-add [(c x) (c x)]) clamp)))
+                :- (when (and (= 2 (count (:args node))) (c y))
+                     (some-> (simple-rng env x) (r-sub [(c y) (c y)]) clamp))
+                nil)))
     nil))
 
 (defn- len-of
@@ -137,6 +174,34 @@
     :alength (local-id (:arr node))
     :local (get-in env [:len-of (:binding node)])
     nil))
+
+(defn- shift [ubs d]
+  (set (keep (fn [[b k]] (let [k (+ k d)] (when (<= (- max-offset) k max-offset) [b k]))) ubs)))
+
+(defn- ubs
+  "The symbolic upper bounds of a long expression: #{[base k]}, each meaning
+  value <= base + k."
+  [env node]
+  (case (:op node)
+    :alength (if-let [a (local-id (:arr node))] #{[[:len a] 0]} #{})
+    :local (let [id (:binding node)]
+             (cond-> (get-in env [:ub id] #{})
+               (contains? *scalars* id) (conj [[:p id] 0])
+               (get-in env [:len-of id]) (conj [[:len (get-in env [:len-of id])] 0])))
+    :prim (if-not (= :long (:type node))
+            #{}
+            (let [[x y] (:args node)
+                  c (fn [n] (when (and (= :const (:op n)) (= :long (:type n))) (:val n)))
+                  two (= 2 (count (:args node)))]
+              (case (:prim node)
+                :inc (shift (ubs env x) 1)
+                :dec (shift (ubs env x) -1)
+                :+ (cond (and two (c y)) (shift (ubs env x) (c y))
+                         (and two (c x)) (shift (ubs env y) (c x))
+                         :else #{})
+                :- (if (and two (c y)) (shift (ubs env x) (- (c y))) #{})
+                #{})))
+    #{}))
 
 (defn- relate
   "Narrow env by x < y (strict) or x <= y."
@@ -148,8 +213,8 @@
         env (if (and rx ry (local-id y))
               (assoc-in env [:r (local-id y)] [(max (ry 0) (+ (rx 0) k)) (ry 1)])
               env)]
-    (if-let [a (and strict (local-id x) (len-of env y))]
-      (update-in env [:lt (local-id x)] (fnil conj #{}) a)
+    (if-let [xid (local-id x)]
+      (update-in env [:ub xid] (fnil into #{}) (shift (ubs env y) (- k)))
       env)))
 
 (defn- narrow
@@ -195,20 +260,31 @@
     :local (alen env node)
     int-len))
 
+(defn- guardable?
+  "Whether the guard at the function's entry can read base."
+  [[kind id]]
+  (case kind :p (contains? *scalars* id) :len (contains? *params* id) false))
+
 (defn- index-facts!
   "Facts for aget/aset: the index fits an int, and the access is in bounds,
-  statically or under the guard on an array parameter's length."
+  statically, under the guard on an array parameter's length, or under the
+  guard that a symbolic bound of the index is below that length."
   [node env ri]
   (let [arr (local-id (:arr node))
-        idx (local-id (:idx node))
+        bounds (sort (ubs env (:idx node)))
         nonneg (and ri (>= (ri 0) 0))
         static (and nonneg
-                    (or (and arr idx (contains? (get-in env [:lt idx]) arr))
+                    (or (and arr (some (fn [[b k]] (and (= b [:len arr]) (neg? k))) bounds))
                         (< (ri 1) ((alen env (:arr node)) 0))))
-        guarded (and nonneg (not static) arr (contains? *params* arr) (< (ri 1) imax))]
+        guarded (and nonneg (not static) arr (contains? *params* arr) (< (ri 1) imax))
+        rel (when (and nonneg (not static) (not guarded) arr (contains? *params* arr))
+              (first (filter (fn [[b _]] (and (guardable? b) (not= b [:len arr]))) bounds)))
+        in-bounds (boolean (or static guarded rel))]
     (when guarded (swap! *needs* update arr (fnil max -1) (ri 1)))
-    (fact! (:id node) {:idx-int (boolean (and ri (fits? ri [imin imax])))
-                       :in-bounds (boolean (or static guarded))})))
+    (when rel (swap! *rels* conj (into [arr] rel)))
+    ;; an index in bounds is in 0..len-1, and every length fits an int
+    (fact! (:id node) {:idx-int (boolean (or in-bounds (and ri (fits? ri [imin imax]))))
+                       :in-bounds in-bounds})))
 
 (defn- elem-rng [node]
   (when (= :long (:type node))
@@ -221,7 +297,7 @@
   [env id init r]
   (let [env (-> env
                 (update :r assoc id r)
-                (update :lt dissoc id)
+                (assoc-in [:ub id] (if (= :long (:type init)) (ubs env init) #{}))
                 (update :len-of dissoc id)
                 (update :alen dissoc id))
         env (if-let [a (len-of env init)] (assoc-in env [:len-of id] a) env)]
@@ -233,6 +309,54 @@
   (let [env (reduce (fn [env {:keys [id init]}] (bind env id init (rng init env)))
                     env (:bindings node))]
     (rng (:body node) env)))
+
+(defn- step
+  "What a recur's argument adds to loop variable id: an interval, when the
+  argument is id itself, (inc id), (dec id), (+ id e), (+ e id) or (- id e)
+  for a long e; nil otherwise."
+  [env arg id]
+  (let [self? (fn [n] (= id (local-id n)))
+        [x y :as args] (:args arg)]
+    (cond
+      (self? arg) [0 0]
+      (not (and (= :prim (:op arg)) (= :long (:type arg)))) nil
+      :else (case (:prim arg)
+              :inc (when (self? x) [1 1])
+              :dec (when (self? x) [-1 -1])
+              :+ (when (= 2 (count args))
+                   (cond (self? x) (rng y env) (self? y) (rng x env)))
+              :- (when (and (= 2 (count args)) (self? x))
+                   (when-let [[a b] (rng y env)] [(-' b) (-' a)]))
+              nil))))
+
+(defn- trip-bounds
+  "Intervals for the loop variables an iteration advances by a bounded step,
+  from how many iterations the loop can run: a counter that every recur
+  increments, starting at or above lo and at most hi where it recurs, recurs at
+  most hi - lo + 1 times, and each recur adds at most one step to the others.
+  {j interval}, for the variables whose interval that bounds."
+  [inits seen]
+  (when (seq seen)
+    (let [n (count inits)
+          counter? (fn [j] (and (inits j) (every? #(= [1 1] (nth (:step %) j)) seen)))
+          trips (->> (range n)
+                     (keep (fn [j]
+                             (let [at (map #(nth (:at %) j) seen)]
+                               (when (and (counter? j) (every? some? at))
+                                 (max 0 (inc (-' (apply max (map second at)) ((inits j) 0))))))))
+                     seq)]
+      (when trips
+        (let [t (apply min trips)]
+          (into {}
+                (keep (fn [j]
+                        (let [ss (map #(nth (:step %) j) seen)]
+                          ;; not a counter: its trips come from its own range,
+                          ;; which must widen first
+                          (when (and (inits j) (not (counter? j)) (every? some? ss))
+                            (let [[a b] (reduce join ss)
+                                  r [(+' ((inits j) 0) (*' t (min a 0))) (+' ((inits j) 1) (*' t (max b 0)))]]
+                              (when (fits? r full) [j r]))))))
+                (range n)))))))
 
 (defn- widen [round cur new]
   (if (or (< round 3) (nil? cur) (nil? new))
@@ -258,19 +382,25 @@
                               (when-not (contains? ids a) a)))
                     bs)
         lid (:loop-id node)]
+    (swap! *loopvars* assoc lid (mapv :id bs))
     (loop [round 0 cur inits lens lens0]
       (swap! *recurs* assoc lid [])
       (let [env' (reduce (fn [e [b r a]]
-                           (-> e (assoc-in [:r (:id b)] r) (update :alen dissoc (:id b))
+                           (-> e (assoc-in [:r (:id b)] r) (assoc-in [:ub (:id b)] #{})
+                               (update :alen dissoc (:id b))
                                (update :len-of #(if a (assoc % (:id b) a) (dissoc % (:id b))))))
                          env (map vector bs cur lens))
             out (rng (:body node) env')
             seen (get @*recurs* lid)
+            ;; a trip bound can depend on a step that depends on the bound;
+            ;; after a few rounds the plain widening decides, which ends
+            tb (when (< round 8) (trip-bounds inits seen))
             new (vec (map-indexed
                       (fn [j b]
                         (when (long? b)
-                          (widen round (cur j)
-                                 (reduce join (inits j) (map #(nth (:r %) j) seen)))))
+                          (or (get tb j)
+                              (widen round (cur j)
+                                     (reduce join (inits j) (map #(nth (:r %) j) seen))))))
                       bs))
             lens' (vec (map-indexed
                         (fn [j a] (when (and a (every? #(= a (nth (:len %) j)) seen)) a))
@@ -292,10 +422,13 @@
           (when (= :long (:type node))
             (join (when-not (= :never (:type then)) rt) (when-not (= :never (:type else)) re))))
     :loop (loop-rng node env)
-    :recur (do (swap! *recurs* update (:loop-id node) conj
-                      {:r (mapv #(rng % env) (:args node))
-                       :len (mapv #(len-of env %) (:args node))})
-               nil)
+    :recur (let [ids (get @*loopvars* (:loop-id node))]
+             (swap! *recurs* update (:loop-id node) conj
+                    {:r (mapv #(rng % env) (:args node))
+                     :len (mapv #(len-of env %) (:args node))
+                     :step (mapv #(step env %1 %2) (:args node) ids)
+                     :at (mapv #(get-in env [:r %]) ids)})
+             nil)
     :prim (prim-rng node env)
     :math (do (run! #(rng % env) (:args node)) nil)
     :extern (do (run! #(rng % env) (:args node)) (when (= :long (:type node)) full))
@@ -316,13 +449,17 @@
 (defn analyze-fn
   "Facts for one function (the region's entry or a helper instance) with these
   parameters: {:facts {node-id fact} :needs {param-id max-index}
-  :arrays [param-id]}, needs being the indexes the guard must cover."
+  :rels #{[array-id base k]} :arrays [param-id]}, needs being the indexes the
+  guard must cover and rels the symbolic bounds base + k it must keep below an
+  array's length."
   [params body]
   (let [arrays (mapv :id (filter #(ast/array-type? (:type %)) params))]
-    (binding [*facts* (atom {}) *recurs* (atom {}) *needs* (atom {})
-              *params* (set arrays)]
-      (rng body {:r {} :lt {} :len-of {} :alen {}})
-      {:facts @*facts* :needs @*needs* :arrays arrays})))
+    (binding [*facts* (atom {}) *recurs* (atom {}) *needs* (atom {}) *rels* (atom #{})
+              *loopvars* (atom {})
+              *params* (set arrays)
+              *scalars* (set (map :id (filter #(= :long (:type %)) params)))]
+      (rng body {:r {} :ub {} :len-of {} :alen {}})
+      {:facts @*facts* :needs @*needs* :rels @*rels* :arrays arrays})))
 
 (defn analyze-region
   "Facts for a checked region: {:entry analysis, iid analysis ...}."

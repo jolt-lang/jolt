@@ -74,6 +74,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a foreign-callable whose fn returns a number for a `:bool` result. Code
   that passed `1` for true has to change too.
 
+### Performance
+
+- A native region's fast copy drops the bounds check on an index bounded by a
+  long parameter (`(< i m)`, guarded once at entry by `m` against the array's
+  length), by another array parameter's length, or by a length minus a
+  constant (`(< i (dec n))` reading `(aget xs (inc i))`, which needs no guard).
+  An accumulator that adds a bounded step once per counted iteration keeps no
+  overflow check, so a sum over a `^bytes` array runs unchecked. A pure
+  expression a block repeats, such as `(inc i)` in both a `recur` and an
+  index, is computed once.
+- On x86-64 glibc, `jolt build` compiles each region function that has a loop
+  twice, for AVX2 and the baseline, and the loader picks one for the CPU it
+  runs on (gcc, or clang 18 and later). `-DJN_NO_CPU_CLONES` turns it off.
+
 ### Fixed
 
 - `Math/log10` and `clojure.math/log10` give the JDK's digits: they are
@@ -85,6 +99,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Character/digit` reads non-ASCII decimal digits and fullwidth letters, and
   answers `-1` for a radix outside 2..36. `Character/getNumericValue` and
   `Character/forDigit` exist.
+- Under the JIT on macOS arm64, a small array a native region kept on the stack
+  started out with garbage instead of zeros: the JIT's prelude did not declare
+  `memset`, and an undeclared call there passes its arguments where `memset`
+  does not read them. The native gate now refuses any call the JIT's prelude
+  leaves undeclared.
+- A native region's `:specialize` no longer runs another site's variant: two
+  sites with the same params and body shared their variants even when they
+  specialized different params.
+- A native region's `^doubles`/`^longs` argument is read once, after its
+  check, so a store on another thread that widens the array's backing cannot
+  reach C. An owned array result is copied out before interrupts come back on.
+- A `defextern` called outside a region frees the buffers it made for earlier
+  array arguments when a later one fails to copy.
+- Inside a native region, a call whose head is a local (`(let [aget 1] (aget
+  xs 0))`) is refused rather than compiled as the builtin of that name, and a
+  region name registered again with different C raises.
+- The JIT checks a region's imports before linking it, so an undefined symbol
+  no longer abandons the JIT's context and leaks every region compiled in it.
+- The JIT resolves the C functions a region calls (`calloc`, `free`, ...) in
+  the process's global scope first, where a linked region's calls bind. It
+  answered by whichever shared object was loaded last, so with an allocator
+  interposed (an `LD_PRELOAD`ed ASan or jemalloc) regions compiled at
+  different times could pair one allocator's `calloc` with the other's `free`
+  and crash.
 
 ## [0.8.30] - 2026-11-24
 

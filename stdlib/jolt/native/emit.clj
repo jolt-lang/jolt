@@ -37,7 +37,7 @@
 
 (def err-codes
   {:oob 1 :overflow 2 :div-zero 3 :neg-size 4 :long-range 5 :oom 6 :fixnum-store 7 :stack-overflow 8
-   :mod-zero 9})
+   :mod-zero 9 :fact 10})
 
 ;; A borrowed long-array is a Chez fxvector: each slot a fixnum, the value times
 ;; 8 (scheme.h Sfixnum/Sfixnum_value). jolt widens the backing once a value
@@ -65,12 +65,27 @@
 ;; the helper instances that can call themselves (directly or through others),
 ;; whose C checks the stack on entry against the limit the region's entry read
 (def ^:dynamic *recursive* #{})
+;; pure arithmetic already computed where the code being emitted runs: {[prim
+;; type operand-atoms] atom}. A branch or a loop body adds to its own copy, so
+;; an entry is only reused where the code that computed it has run. An
+;; operand atom is a temp (assigned once) or a binding's variable, which only
+;; recur reassigns, as the last thing before its continue.
+(def ^:dynamic *cse* nil)
+
+(defn- scoped
+  "Run f with the CSE entries it adds dropped afterwards."
+  [f]
+  (if-let [c *cse*]
+    (let [saved @c] (try (f) (finally (reset! c saved))))
+    (f)))
+
 ;; how the current function reaches the thread's status: the entry names the
 ;; thread-local, a helper the pointer to it the entry passed down (jn_st), so
 ;; a helper call costs no thread-local lookup
 (def ^:dynamic *st* "jn_tls.")
 
 (defn- proven? [node k] (and *fast* (get-in *fast* [(:id node) k])))
+
 
 (defn- line! [& parts] (let [l (apply str parts)] (when-not (str/blank? l) (swap! *lines* conj l))))
 
@@ -121,6 +136,13 @@
        (when d (str " " *st* "d = " d ";"))
        " return " (ret-zero) "; }"))
 
+(defn- verify!
+  "Where a range fact drops a check, the check under JN_VERIFY_FACTS (0 unless
+  the sanitizer lane of the native gate defines it, so the compiler drops the
+  line): a fact that does not hold raises instead of reading past an array."
+  [node bad]
+  (line! "if (JN_VERIFY_FACTS && (" bad ")) " (raise! node :fact)))
+
 (declare emit fresh-copy! as-double-if emit-entry emit-stack-array emit-heap-array emit-aclone
          scalar-site elem-local)
 
@@ -143,7 +165,8 @@
           builtin (case op :+ "__builtin_add_overflow" :- "__builtin_sub_overflow"
                           :* "__builtin_mul_overflow")]
       (if safe
-        (line! r " = " a " " (case op :+ "+" :- "-" :* "*") " " b ";")
+        (do (verify! node (str builtin "(" a ", " b ", &" r ")"))
+            (line! r " = " a " " (case op :+ "+" :- "-" :* "*") " " b ";"))
         (line! "if (" builtin "(" a ", " b ", &" r ")) " (raise! node :overflow)))
       [r :long])
     (let [r (fresh! :double)
@@ -151,9 +174,21 @@
       (line! r " = " (as-double a at) " " cop " " (as-double b bt) ";")
       [r :double])))
 
-(defn- emit-prim [node]
+(declare emit-prim*)
+
+(defn- emit-prim
+  "A prim's atom; + - * inc dec and neg computed once per block (*cse*)."
+  [node]
   (let [args (mapv (fn [a] [(emit a) (:type a)]) (:args node))
         p (:prim node)
+        k (when (and *cse* (#{:+ :- :* :inc :dec :neg} p)) [p (:type node) args])]
+    (or (when k (get @*cse* k))
+        (let [v (emit-prim* node args)]
+          (when k (swap! *cse* assoc k v))
+          v))))
+
+(defn- emit-prim* [node args]
+  (let [p (:prim node)
         t (:type node)
         one (first args)]
     (case p
@@ -164,7 +199,8 @@
                           (if (= 1 (count args)) (cons ["1.0" :double] args) args)))
       :neg (if (= t :long)
              (let [r (fresh! :long)]
-               (when-not (first (proven? node :no-ov))
+               (if (first (proven? node :no-ov))
+                 (verify! node (str (first one) " == INT64_MIN"))
                  (line! "if (" (first one) " == INT64_MIN) " (raise! node :overflow)))
                (line! r " = -(" (first one) ");")
                r)
@@ -173,7 +209,9 @@
       (:inc :dec) (if (= t :long)
                     (let [r (fresh! :long)]
                       (if (first (proven? node :no-ov))
-                        (line! r " = " (first one) (if (= p :inc) " + 1;" " - 1;"))
+                        (do (verify! node (str (if (= p :inc) "__builtin_add_overflow" "__builtin_sub_overflow")
+                                               "(" (first one) ", 1, &" r ")"))
+                            (line! r " = " (first one) (if (= p :inc) " + 1;" " - 1;")))
                         (line! "if (" (if (= p :inc) "__builtin_add_overflow" "__builtin_sub_overflow")
                                "(" (first one) ", 1, &" r ")) " (raise! node :overflow)))
                       r)
@@ -241,14 +279,18 @@
   its side effects never happen when the index overflows. An array kept in
   locals is only ever indexed by constants in range (jolt.native.stack)."
   [node idx]
-  (when-not (or (proven? node :idx-int) (scalar-site (:arr node)))
-    (line! "if (" idx " < INT32_MIN || " idx " > INT32_MAX) " (raise! node :overflow))))
+  (when-not (scalar-site (:arr node))
+    (if (proven? node :idx-int)
+      (verify! node (str idx " < INT32_MIN || " idx " > INT32_MAX"))
+      (line! "if (" idx " < INT32_MIN || " idx " > INT32_MAX) " (raise! node :overflow)))))
 
 (defn- emit-array-index
   "The bounds check, inside the store or load: after every argument ran."
   [node arr idx]
-  (when-not (or (proven? node :in-bounds) (scalar-site (:arr node)))
-    (line! "if (" idx " < 0 || " idx " >= " arr ".len) " (raise! node :oob :a idx :b (str arr ".len")))))
+  (when-not (scalar-site (:arr node))
+    (if (proven? node :in-bounds)
+      (verify! node (str idx " < 0 || " idx " >= " arr ".len"))
+      (line! "if (" idx " < 0 || " idx " >= " arr ".len) " (raise! node :oob :a idx :b (str arr ".len"))))))
 
 (defn- bind!
   "Bind id to atom. A name for an array kept in locals has nothing to copy:
@@ -263,10 +305,11 @@
     (doseq [b (:bindings node)]
       (bind! (:id b) (:type (:init b)) (emit (:init b))))
     (line! "for (;;) {")
-    (let [v (emit (:body node))]
-      (when-not (= :never (:type (:body node)))
-        (when result (line! result " = " v ";"))
-        (line! "break;")))
+    (scoped
+     #(let [v (emit (:body node))]
+        (when-not (= :never (:type (:body node)))
+          (when result (line! result " = " v ";"))
+          (line! "break;"))))
     (line! "}")
     (line! (frees (:delete node)))
     (or result "0")))
@@ -324,9 +367,9 @@
                                                     (str "(double)" v) v) ";"))
                            (line! (frees dels)))))]
           (line! "if (" c ") {")
-          (branch (:then node) (:delete-then node))
+          (scoped #(branch (:then node) (:delete-then node)))
           (line! "} else {")
-          (branch (:else node) (:delete-else node))
+          (scoped #(branch (:else node) (:delete-else node)))
           (line! "}")
           (or r "0"))
     :loop (do (swap! *region* assoc-in [:loops (:loop-id node)] node)
@@ -483,6 +526,33 @@ static const union { uint64_t u; double d; } jn_inf_bits = {0x7ff0000000000000UL
 #endif
 #ifndef JN_PRELUDE
 #define JN_PRELUDE
+/* A function with a loop is compiled twice on x86-64 glibc, for AVX2 and the
+   baseline, and the loader picks one by the running CPU (an ifunc), as
+   scriptc's --cpu-dispatch does: the fast copy of a loop has no checks left,
+   so the vectorizer can widen it to 256 bits. Not under the JIT, which
+   compiles for the CPU it runs on, nor musl or bionic, which have no ifunc.
+   JN_NO_CPU_CLONES turns it off. */
+#if !defined(__MIRC__) && !defined(JN_NO_CPU_CLONES) && defined(__x86_64__) && defined(__ELF__)
+#if defined(__GLIBC__) && defined(__has_attribute)
+#if defined(__clang__)
+/* clang before 18 names the dispatcher sym.ifunc and defines no sym, so a
+   caller by name does not link */
+#if __has_attribute(target_clones) && __clang_major__ >= 18
+#define JN_CPU_CLONES __attribute__((target_clones(\"avx2\", \"default\")))
+#endif
+#elif __has_attribute(target_clones)
+/* gcc's -O2 vectorizer takes only loops that need no runtime test (its very
+   cheap cost model): the clones get the cost model -O3 uses */
+#define JN_CPU_CLONES __attribute__((target_clones(\"avx2\", \"default\"), optimize(\"vect-cost-model=dynamic\")))
+#endif
+#endif
+#endif
+#ifndef JN_CPU_CLONES
+#define JN_CPU_CLONES
+#endif
+#ifndef JN_VERIFY_FACTS
+#define JN_VERIFY_FACTS 0
+#endif
 typedef struct { int64_t len; double *data; } jn_arr_d;
 typedef struct { int64_t len; int64_t *data; } jn_arr_l;
 typedef struct { int64_t len; int8_t *data; } jn_arr_b;
@@ -586,9 +656,18 @@ static inline JN_UNUSED double jn_pow(double x, double y) {
   (let [t (:type p)]
     (if (ast/borrowed? t) (str "void *p" (:id p)) (str (ctype t) " " (var-name (:id p))))))
 
+(defn- loops?
+  "Whether a body has a loop: its C function gets CPU clones (JN_CPU_CLONES)."
+  [body]
+  (boolean (some #(and (map? %) (= :loop (:op %)))
+                 (tree-seq #(or (map? %) (sequential? %))
+                           #(if (map? %) (vals %) (seq %))
+                           body))))
+
 (defn- helper-sig [inst]
   (let [t (:ret inst)]
-    (str "static " (if (#{:unit :never} t) "int64_t" (ctype t)) " " (helper-name (:iid inst)) "("
+    (str (when (some loops? (cons (:body inst) (map :body (:variants inst)))) "JN_CPU_CLONES ")
+         "static " (if (#{:unit :never} t) "int64_t" (ctype t)) " " (helper-name (:iid inst)) "("
          (str/join ", " (conj (mapv (fn [p] (str (ctype (:type p)) " " (var-name (:id p)))) (:params inst))
                               "jn_out *jn_st"))
          ")")))
@@ -629,10 +708,18 @@ static inline JN_UNUSED double jn_pow(double x, double y) {
 
 (defn- version-guard
   "The condition the fast copy's facts assume: each array parameter no longer
-  than Integer/MAX_VALUE, and longer than the largest index proven for it."
-  [{:keys [needs arrays]}]
+  than Integer/MAX_VALUE, longer than the largest index proven for it, and
+  longer than base + k for each symbolic bound an index was proven under. Its
+  side of the comparison is len - k: a length is at most 2^31 - 1 and |k| at
+  most jolt.native.range/max-offset, so that cannot overflow."
+  [{:keys [needs rels arrays]}]
   (str/join " && " (concat (map #(str (var-name %) ".len <= INT32_MAX") arrays)
-                           (map (fn [[p hi]] (str (var-name p) ".len > " hi "LL")) (sort needs)))))
+                           (map (fn [[p hi]] (str (var-name p) ".len > " hi "LL")) (sort needs))
+                           (map (fn [[a [kind id] k]]
+                                  (str (var-name id) (when (= kind :len) ".len") " < "
+                                       (var-name a) ".len" (cond (pos? k) (str " - " k "LL")
+                                                                 (neg? k) (str " + " (- k) "LL"))))
+                                (sort rels)))))
 
 (defn- emit-versioned
   "A function body, twice when its range facts drop any check: a fast copy
@@ -640,14 +727,14 @@ static inline JN_UNUSED double jn_pow(double x, double y) {
   otherwise. Answers the atom holding the body's value."
   [body analysis]
   (if-not (useful? (:facts analysis))
-    (emit body)
+    (binding [*cse* (atom {})] (emit body))
     (let [t (:type body)
           res (when-not (#{:unit :never} t)
                 (swap! *decls* assoc "jn_res"
                        (str (ctype t) " jn_res = " (if (ast/array-type? t) "{0, 0}" "0") ";"))
                 "jn_res")
           copy (fn [facts]
-                 (binding [*lines* (atom []) *fast* facts]
+                 (binding [*lines* (atom []) *fast* facts *cse* (atom {})]
                    (let [v (emit body)]
                      (when res (line! res " = " v ";"))
                      @*lines*)))
@@ -775,7 +862,7 @@ static inline JN_UNUSED double jn_pow(double x, double y) {
                    :else [(str (ctype t) " result = " v ";")
                           (frees (:delete region))
                           "return result;"])]
-      (str ret-c " " sym "(" (if (seq (:params region)) (str/join ", " (map param-c (:params region))) "void") ") {\n"
+      (str (when (loops? (:body region)) "JN_CPU_CLONES ") ret-c " " sym "(" (if (seq (:params region)) (str/join ", " (map param-c (:params region))) "void") ") {\n"
            (str/join "\n" (map #(str "  " %) (concat ["jn_tls.code = 0;"] decls body result)))
            "\n}\n"
            "int64_t " sym "_status(void) { return jn_tls.code; }\n"
