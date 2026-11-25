@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `Throwable.addSuppressed` and `getSuppressed` on every throwable, as in JDK 21.
+  `getSuppressed` returns a fresh `Throwable[]` in the order they were added, adding
+  `nil` throws `NullPointerException` ("Cannot suppress a null exception.") and adding
+  a throwable to itself throws `IllegalArgumentException` ("Self-suppression not
+  permitted") with that throwable as its cause. `printStackTrace` prints each
+  suppressed throwable after the frames, as a `Suppressed:` line one tab in with its
+  own frames and suppressed beneath it. `CompletableFuture.whenComplete` now adds a
+  throwable from its action to the failure it was handed, so that known divergence
+  is gone.
+
 ## [0.8.30] - 2026-11-24
 
 `jolt.native` regions: blocks of hinted numeric code that `jolt build` compiles
