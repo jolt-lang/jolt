@@ -1165,17 +1165,18 @@
             true))
 
 ;; --- the machine the JIT compiles for: (on ...) bodies chosen per CPU ------------
-;; jolt build (cc here) compiles for the baseline; the JIT defines the macro of
+;; jolt build (cc here) compiles for whatever its compiler targets, the
+;; baseline unless it was configured otherwise; the JIT defines the macro of
 ;; each feature this CPU has (jolt.native/cpu-features), so its guard picks
 ;; the body the running machine can run.
 
 (def feats (jolt.native/cpu-features))
 (defnative which-cpu [] (on "defined(__AVX2__)" 2) (on "defined(__SSE2__)" 1) (on :default 0))
+(def cc-which ((:call (compile-region '[] '((which-cpu))))))
 (let [c (compile-region '[] '((which-cpu)))
-      baseline ((:call c))]
-  (check-eq "cc compiles for the baseline: no AVX2" (contains? #{0 1} baseline) true)
+      sse2 (if (= 2 cc-which) 1 cc-which)]
   (check-eq "the JIT picks the body for this CPU's features"
-            ((:call (:jit c))) (if (:avx2 feats) 2 baseline)))
+            ((:call (:jit c))) (if (:avx2 feats) 2 sse2)))
 (check-eq "cpu-features answers keywords" (every? keyword? feats) true)
 
 (defextern ^double ext-dot-avx2 [^doubles xs ^doubles ys] {:c "jn_ext_dot_avx2"})
@@ -1192,7 +1193,8 @@
       mid (ext-dot-calls)
       jit-r ((:call (:jit c)) xs ys)
       after (ext-dot-calls)]
-  (check-eq "the portable body, as cc compiles it" [cc-r (- mid before)] [(double want) 0])
+  (check-eq "cc's body, the one its compiler's macros pick"
+            [cc-r (- mid before)] [(double want) (if (= 2 cc-which) 1 0)])
   (check-eq "the JIT runs the SIMD body where the CPU has AVX2, with the same answer"
             [jit-r (- after mid)] [(double want) (if (:avx2 feats) 1 0)]))
 
