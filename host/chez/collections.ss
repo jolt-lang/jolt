@@ -14,14 +14,17 @@
 ;; ============================================================================
 ;; No copy here is a checked Scheme loop: the runtime compiles at
 ;; optimize-level 2, where such a loop pays a type and bounds check per element
-;; (a 64-slot copy measured 390ns). Whole vectors and computed ranges (a node
-;; update, vec-copy-range) are the target's block copy INTO A FRESH
-;; vector (sa-vector-copy / sa-subvector): no initializing fill and no write
-;; barrier per slot, 19ns for 32 slots against 82 for the unchecked loop below
-;; and 86 for Chez's vector-copy!, which is that same barriered loop. What still
-;; copies into a vector made first (the HAMT node edits, the array-map's append/remove)
-;; runs the unchecked loop or the checked bulk move. Never a bare vector-copy:
-;; the vendored irregex redefines that name at top level as a one-argument loop.
+;; (a 64-slot copy measured 390ns). Whole vectors, computed ranges, and appends
+;; (a node update, vec-copy-range, vec-append2) are the target's block copy
+;; INTO A FRESH vector (sa-vector-copy / sa-subvector / sa-vector-append): no
+;; initializing fill and no write barrier per slot, 19ns for 32 slots against
+;; 82 for the unchecked loop below and 86 for Chez's vector-copy!, which is
+;; that same barriered loop. vec-remove2 block-copies the longer surviving side
+;; with sa-subvector and fills only the shorter side (at most half the slots,
+;; none at the ends); what still copies into a vector made first (the HAMT node
+;; edits) runs the unchecked loop or the checked bulk move. Never a bare
+;; vector-copy: the vendored irregex redefines that name at top level as a
+;; one-argument loop.
 (define (vec-copy-range v start end) (sa-subvector v start end))
 ;; slots 0..n-1 of v into out, unchecked: out was just made at least n long
 (define (vec-fill-prefix! out v n)
@@ -37,21 +40,65 @@
   (let ((out (sa-vector-copy v)))
     (vector-set! out i x)
     out))
-;; the two below serve the array-mode map's k/v slot vector
+;; the two below serve the array-mode map's k/v slot vector (and vec-remove2
+;; also drops entries from HAMT nodes)
 (define (vec-append2 v k x)           ; copy of v with k and x appended
-  (let* ((n (vector-length v)) (out (make-vector (fx+ n 2))))
-    (vec-fill-prefix! out v n)
-    (vector-set! out n k) (vector-set! out (fx+ n 1) x)
-    out))
+  (if (fx=? (vector-length v) 0)
+      (vector k x)
+      (sa-vector-append v (vector k x))))
 (define (vec-remove2 v i)             ; copy of v with slots i and i+1 dropped
-  (let* ((n (vector-length v)) (out (make-vector (fx- n 2))))
-    (vec-fill-prefix! out v i)
-    ;; the tail, shifted down two: j runs i+2..n-1 into i..n-3
-    (let loop ((j (fx+ i 2)))
-      (when (sa-ufx<? j n)
-        (sa-uvector-set! out (sa-ufx- j 2) (sa-uvector-ref v j))
-        (loop (sa-ufx+ j 1))))
-    out))
+  (let* ((n (vector-length v)) (m (fx- n 2)))
+    (if (fx<=? (fx+ i i) m)
+        (let ((out (sa-subvector v 2 n)))
+          (when (fx>? i 0) (vec-fill-prefix! out v i))
+          out)
+        (let ((out (sa-subvector v 0 m)))
+          (let loop ((j (fx+ i 2)))
+            (when (sa-ufx<? j n)
+              (sa-uvector-set! out (sa-ufx- j 2) (sa-uvector-ref v j))
+              (loop (sa-ufx+ j 1))))
+          out))))
+(define (vec-copy-shift! out dst src start end)
+  (let loop ((s start) (d dst))
+    (when (sa-ufx<? s end)
+      (sa-uvector-set! out d (sa-uvector-ref src s))
+      (loop (sa-ufx+ s 1) (sa-ufx+ d 1)))))
+;; copy of v with distinct slot pairs (lo, lo+1) and (hi, hi+1) dropped (lo < hi,
+;; n >= 6). Block-copies the largest surviving segment via sa-subvector and fills
+;; only the two shorter segments unchecked.
+(define (vec-remove4 v lo hi)
+  (let* ((n (vector-length v))
+         (m (fx- n 4))
+         (len-b (fx- (fx- hi lo) 2))
+         (len-c (fx- (fx- n hi) 2)))
+    (cond
+      ((and (fx>=? len-c lo) (fx>=? len-c len-b))
+       (let ((out (sa-subvector v 4 n)))
+         (when (fx>? lo 0) (vec-fill-prefix! out v lo))
+         (when (fx>? len-b 0) (vec-copy-shift! out lo v (fx+ lo 2) hi))
+         out))
+      ((fx>=? lo len-b)
+       (let ((out (sa-subvector v 0 m)))
+         (when (fx>? len-b 0) (vec-copy-shift! out lo v (fx+ lo 2) hi))
+         (when (fx>? len-c 0) (vec-copy-shift! out (fx- hi 2) v (fx+ hi 2) n))
+         out))
+      (else
+       (let ((out (sa-subvector v 2 (fx- n 2))))
+         (when (fx>? lo 0) (vec-fill-prefix! out v lo))
+         (when (fx>? len-c 0) (vec-copy-shift! out (fx- hi 2) v (fx+ hi 2) n))
+         out)))))
+;; copy of v with slot pair (di, di+1) dropped and (ak, av) placed at the end.
+;; Single allocation via sa-vector-copy (prefix 0..di-1 is already in place),
+;; then unchecked shift of the suffix di+2..n-1 left by 2.
+(define (vec-remove2-append2 v di ak av)
+  (let ((n (vector-length v)))
+    (if (fx=? n 2)
+        (vector ak av)
+        (let ((out (sa-vector-copy v)))
+          (vec-copy-shift! out di v (sa-ufx+ di 2) n)
+          (sa-uvector-set! out (sa-ufx- n 2) ak)
+          (sa-uvector-set! out (sa-ufx- n 1) av)
+          out))))
 
 ;; ============================================================================
 ;; persistent vector — 32-way trie + tail (Clojure's PersistentVector)
@@ -2022,15 +2069,48 @@
                       (((caar as) coll) ((cdar as) coll x))
                       (else (loop (cdr as))))))))
 ;; (conj) -> []; (conj nil a b ...) builds a list (conj prepending -> (b a)).
-(define (jolt-conj . args)
-  (if (null? args)
-      (jolt-vector)
-      (let ((coll (car args)) (xs (cdr args)))
-        (cond
-          ;; 1-arity returns the coll untouched — (conj nil) is nil
-          ((null? xs) coll)
-          ((jolt-nil? coll) (fold-left jolt-conj1 jolt-empty-list xs))
-          (else (meta-carry-conj coll (fold-left jolt-conj1 coll xs)))))))
+;; Multi-arg conj (2 and 3 elements, covering 89.8% of corpus multi-arg sites)
+;; takes a single-copy fast path on persistent vectors when the tail has room,
+;; using sa-vector-append (block copy, no zero-fill or barriered loop) and
+;; preserving pv-derived-ent (MapEntry decays to plain vector, SubVector stays
+;; subvec) and pvec-meta directly. Also ships a 1-element clause for
+;; value-position callers (swap!/update). Non-vector receivers and tail-full
+;; vectors fall back through chained jolt-conj1 / pvec-conj with a single
+;; meta-carry-conj (identical to the variadic fold-left).
+(define jolt-conj
+  (case-lambda
+    ((coll a b)
+     (if (pvec? coll)
+         (let* ((tail (pvec-tail coll)) (tl (vector-length tail)))
+           (if (fx<=? tl 30)
+               (%mk-pvec (fx+ (pvec-cnt coll) 2) (pvec-shift coll) (pvec-root coll)
+                         (if (fx=? tl 0) (vector a b) (sa-vector-append tail (vector a b)))
+                         (pv-derived-ent coll) 0 (pvec-meta coll))
+               (meta-carry-conj coll (pvec-conj (pvec-conj coll a) b))))
+         (if (jolt-nil? coll)
+             (jolt-conj1 (jolt-conj1 jolt-empty-list a) b)
+             (meta-carry-conj coll (jolt-conj1 (jolt-conj1 coll a) b)))))
+    ((coll x)
+     (if (jolt-nil? coll)
+         (jolt-conj1 jolt-empty-list x)
+         (meta-carry-conj coll (jolt-conj1 coll x))))
+    ((coll a b c)
+     (if (pvec? coll)
+         (let* ((tail (pvec-tail coll)) (tl (vector-length tail)))
+           (if (fx<=? tl 29)
+               (%mk-pvec (fx+ (pvec-cnt coll) 3) (pvec-shift coll) (pvec-root coll)
+                         (if (fx=? tl 0) (vector a b c) (sa-vector-append tail (vector a b c)))
+                         (pv-derived-ent coll) 0 (pvec-meta coll))
+               (meta-carry-conj coll (pvec-conj (pvec-conj (pvec-conj coll a) b) c))))
+         (if (jolt-nil? coll)
+             (jolt-conj1 (jolt-conj1 (jolt-conj1 jolt-empty-list a) b) c)
+             (meta-carry-conj coll (jolt-conj1 (jolt-conj1 (jolt-conj1 coll a) b) c)))))
+    ((coll) coll)
+    (() (jolt-vector))
+    ((coll . xs)
+     (if (jolt-nil? coll)
+         (fold-left jolt-conj1 jolt-empty-list xs)
+         (meta-carry-conj coll (fold-left jolt-conj1 coll xs))))))
 (define jolt-conj2 (lambda (coll x)
   (if (jolt-nil? coll)
       (jolt-conj1 jolt-empty-list x)
@@ -2314,26 +2394,342 @@
         (else (jolt-throw (jolt-host-throwable "java.lang.ClassCastException"
                            (string-append "class " (guard (e (#t "?")) (jolt-class-name coll))
                                           " cannot be cast to class clojure.lang.Associative"))))))
-(define (jolt-assoc coll . kvs)
+;; Inline guards matching stable-hamt-key? and pmap-array-keep? without
+;; top-level call overhead on the multi-pair assoc fast path.
+(define-syntax amap-stable-key?
+  (syntax-rules ()
+    ((_ k) (let ((x k)) (or (keyword-t? x) (fixnum? x) (char? x))))))
+(define-syntax amap-keep?
+  (syntax-rules ()
+    ((_ cnt k)
+     (let ((c cnt))
+       (or (fx<? c array-map-limit)
+           (and (keyword-t? k) (fx<? c array-map-limit-kw)))))))
+
+(define (jolt-assoc-fb2 coll k1 v1 k2 v2)
+  (meta-carry coll (jolt-assoc1 (jolt-assoc1 coll k1 v1) k2 v2)))
+(define (jolt-assoc-fb3 coll k1 v1 k2 v2 k3 v3)
+  (meta-carry coll (jolt-assoc1 (jolt-assoc1 (jolt-assoc1 coll k1 v1) k2 v2) k3 v3)))
+(define (jolt-assoc-fb4 coll k1 v1 k2 v2 k3 v3 k4 v4)
   (meta-carry coll
-    (let loop ((coll coll) (kvs kvs))
-      (cond ((null? kvs) coll)
-            ((null? (cdr kvs)) (throw-jvm (quote IllegalArgumentException) "assoc expects an even number of key/vals"))
-            (else (loop (jolt-assoc1 coll (car kvs) (cadr kvs)) (cddr kvs)))))))
+    (jolt-assoc1 (jolt-assoc1 (jolt-assoc1 (jolt-assoc1 coll k1 v1) k2 v2) k3 v3) k4 v4)))
+
+;; Multi-pair assoc (2..4 pairs) takes a single-allocation fast path on
+;; non-promoting array-mode maps with callback-free keys (keyword, fixnum,
+;; char), and builds directly for nil with those same keys. Ordered by
+;; call-site frequency: 2-pair, 3-pair, 4-pair, 1-pair (value position such
+;; as swap!/update; direct 1-pair calls already emit jolt-assoc3), variadic.
+(define-syntax amap-put!
+  (syntax-rules ()
+    ((_ out p i k v)
+     (if (fx>=? i 0)
+         (begin (sa-uvector-set! out (sa-ufx+ i 1) v) p)
+         (begin (sa-uvector-set! out p k)
+                (sa-uvector-set! out (sa-ufx+ p 1) v)
+                (sa-ufx+ p 2))))))
+
+(define jolt-assoc
+  (case-lambda
+    ((coll k1 v1 k2 v2)
+     (cond
+       ((pmap? coll)
+        (let ((root (pmap-root coll)))
+          (if (and (not (hnode? root))
+                   (amap-stable-key? k1)
+                   (amap-stable-key? k2))
+              (let ((n (vector-length root)) (cnt (pmap-cnt coll)))
+                (let lp ((i 0) (i1 -1) (i2 -1))
+                  (if (sa-ufx<? i n)
+                      (let ((rk (sa-uvector-ref root i)))
+                        (lp (sa-ufx+ i 2)
+                            (if (eq? rk k1) i i1)
+                            (if (eq? rk k2) i i2)))
+                      (cond
+                        ((and (fx>=? i1 0) (fx>=? i2 0))
+                         (if (and (eq? (sa-uvector-ref root (sa-ufx+ i1 1)) v1)
+                                  (eq? (sa-uvector-ref root (sa-ufx+ i2 1)) v2))
+                             coll
+                             (let ((out (sa-vector-copy root)))
+                               (sa-uvector-set! out (sa-ufx+ i1 1) v1)
+                               (sa-uvector-set! out (sa-ufx+ i2 1) v2)
+                               (%mk-pmap out cnt 0 (pmap-meta coll)))))
+                        ((fx>=? i1 0)
+                         (if (amap-keep? cnt k2)
+                             (let ((out (vec-append2 root k2 v2)))
+                               (sa-uvector-set! out (sa-ufx+ i1 1) v1)
+                               (%mk-pmap out (fx+ cnt 1) 0 (pmap-meta coll)))
+                             (jolt-assoc-fb2 coll k1 v1 k2 v2)))
+                        ((fx>=? i2 0)
+                         (if (amap-keep? cnt k1)
+                             (let ((out (vec-append2 root k1 v1)))
+                               (sa-uvector-set! out (sa-ufx+ i2 1) v2)
+                               (%mk-pmap out (fx+ cnt 1) 0 (pmap-meta coll)))
+                             (jolt-assoc-fb2 coll k1 v1 k2 v2)))
+                        ((eq? k1 k2)
+                         (if (amap-keep? cnt k1)
+                             (%mk-pmap (vec-append2 root k1 v2) (fx+ cnt 1) 0 (pmap-meta coll))
+                             (jolt-assoc-fb2 coll k1 v1 k2 v2)))
+                        ((and (amap-keep? cnt k1) (amap-keep? (fx+ cnt 1) k2))
+                         (%mk-pmap (if (fx=? n 0)
+                                       (vector k1 v1 k2 v2)
+                                       (sa-vector-append root (vector k1 v1 k2 v2)))
+                                   (fx+ cnt 2) 0 (pmap-meta coll)))
+                        (else (jolt-assoc-fb2 coll k1 v1 k2 v2))))))
+              (jolt-assoc-fb2 coll k1 v1 k2 v2))))
+       ((and (jolt-nil? coll) (amap-stable-key? k1) (amap-stable-key? k2))
+        (if (eq? k1 k2)
+            (make-pmap (vector k1 v2) 1)
+            (make-pmap (vector k1 v1 k2 v2) 2)))
+       (else (jolt-assoc-fb2 coll k1 v1 k2 v2))))
+    ((coll k1 v1 k2 v2 k3 v3)
+     (let ((m (cond ((pmap? coll) coll)
+                    ((jolt-nil? coll) empty-pmap)
+                    (else #f))))
+       (if m
+           (let ((root (pmap-root m)))
+             (if (and (not (hnode? root))
+                      (amap-stable-key? k1)
+                      (amap-stable-key? k2)
+                      (amap-stable-key? k3))
+                 (let ((n (vector-length root)) (cnt (pmap-cnt m)))
+                   (let lp ((i 0) (i1 -1) (i2 -1) (i3 -1))
+                     (if (sa-ufx<? i n)
+                         (let ((rk (sa-uvector-ref root i)))
+                           (lp (sa-ufx+ i 2)
+                               (if (eq? rk k1) i i1)
+                               (if (eq? rk k2) i i2)
+                               (if (eq? rk k3) i i3)))
+                         (if (and (fx>=? i1 0) (fx>=? i2 0) (fx>=? i3 0))
+                             (if (and (eq? (sa-uvector-ref root (sa-ufx+ i1 1)) v1)
+                                      (eq? (sa-uvector-ref root (sa-ufx+ i2 1)) v2)
+                                      (eq? (sa-uvector-ref root (sa-ufx+ i3 1)) v3))
+                                 m
+                                 (let ((out (sa-vector-copy root)))
+                                   (sa-uvector-set! out (sa-ufx+ i1 1) v1)
+                                   (sa-uvector-set! out (sa-ufx+ i2 1) v2)
+                                   (sa-uvector-set! out (sa-ufx+ i3 1) v3)
+                                   (%mk-pmap out cnt 0 (pmap-meta m))))
+                             (let* ((c1 (if (fx<? i1 0) (and (amap-keep? cnt k1) (fx+ cnt 1)) cnt))
+                                    (c2 (and c1 (if (fx<? i2 0) (and (not (eq? k2 k1)) (amap-keep? c1 k2) (fx+ c1 1)) c1)))
+                                    (c3 (and c2 (if (fx<? i3 0) (and (not (eq? k3 k1)) (not (eq? k3 k2)) (amap-keep? c2 k3) (fx+ c2 1)) c2))))
+                               (if (not c3)
+                                   (jolt-assoc-fb3 coll k1 v1 k2 v2 k3 v3)
+                                   (let* ((g (fx* 2 (fx- c3 cnt)))
+                                          (out (if (fx=? n 0) (make-vector g) (sa-vector-append root (make-vector g))))
+                                          (p n)
+                                          (p (amap-put! out p i1 k1 v1))
+                                          (p (amap-put! out p i2 k2 v2))
+                                          (p (amap-put! out p i3 k3 v3)))
+                                     (%mk-pmap out c3 0 (pmap-meta m)))))))))
+                 (jolt-assoc-fb3 coll k1 v1 k2 v2 k3 v3)))
+           (jolt-assoc-fb3 coll k1 v1 k2 v2 k3 v3))))
+    ((coll k1 v1 k2 v2 k3 v3 k4 v4)
+     (let ((m (cond ((pmap? coll) coll)
+                    ((jolt-nil? coll) empty-pmap)
+                    (else #f))))
+       (if m
+           (let ((root (pmap-root m)))
+             (if (and (not (hnode? root))
+                      (amap-stable-key? k1)
+                      (amap-stable-key? k2)
+                      (amap-stable-key? k3)
+                      (amap-stable-key? k4))
+                 (let ((n (vector-length root)) (cnt (pmap-cnt m)))
+                   (let lp ((i 0) (i1 -1) (i2 -1) (i3 -1) (i4 -1))
+                     (if (sa-ufx<? i n)
+                         (let ((rk (sa-uvector-ref root i)))
+                           (lp (sa-ufx+ i 2)
+                               (if (eq? rk k1) i i1)
+                               (if (eq? rk k2) i i2)
+                               (if (eq? rk k3) i i3)
+                               (if (eq? rk k4) i i4)))
+                         (if (and (fx>=? i1 0) (fx>=? i2 0) (fx>=? i3 0) (fx>=? i4 0))
+                             (if (and (eq? (sa-uvector-ref root (sa-ufx+ i1 1)) v1)
+                                      (eq? (sa-uvector-ref root (sa-ufx+ i2 1)) v2)
+                                      (eq? (sa-uvector-ref root (sa-ufx+ i3 1)) v3)
+                                      (eq? (sa-uvector-ref root (sa-ufx+ i4 1)) v4))
+                                 m
+                                 (let ((out (sa-vector-copy root)))
+                                   (sa-uvector-set! out (sa-ufx+ i1 1) v1)
+                                   (sa-uvector-set! out (sa-ufx+ i2 1) v2)
+                                   (sa-uvector-set! out (sa-ufx+ i3 1) v3)
+                                   (sa-uvector-set! out (sa-ufx+ i4 1) v4)
+                                   (%mk-pmap out cnt 0 (pmap-meta m))))
+                             (let* ((c1 (if (fx<? i1 0) (and (amap-keep? cnt k1) (fx+ cnt 1)) cnt))
+                                    (c2 (and c1 (if (fx<? i2 0) (and (not (eq? k2 k1)) (amap-keep? c1 k2) (fx+ c1 1)) c1)))
+                                    (c3 (and c2 (if (fx<? i3 0) (and (not (eq? k3 k1)) (not (eq? k3 k2)) (amap-keep? c2 k3) (fx+ c2 1)) c2)))
+                                    (c4 (and c3 (if (fx<? i4 0) (and (not (eq? k4 k1)) (not (eq? k4 k2)) (not (eq? k4 k3)) (amap-keep? c3 k4) (fx+ c3 1)) c3))))
+                               (if (not c4)
+                                   (jolt-assoc-fb4 coll k1 v1 k2 v2 k3 v3 k4 v4)
+                                   (let* ((g (fx* 2 (fx- c4 cnt)))
+                                          (out (if (fx=? n 0) (make-vector g) (sa-vector-append root (make-vector g))))
+                                          (p n)
+                                          (p (amap-put! out p i1 k1 v1))
+                                          (p (amap-put! out p i2 k2 v2))
+                                          (p (amap-put! out p i3 k3 v3))
+                                          (p (amap-put! out p i4 k4 v4)))
+                                     (%mk-pmap out c4 0 (pmap-meta m)))))))))
+                 (jolt-assoc-fb4 coll k1 v1 k2 v2 k3 v3 k4 v4)))
+           (jolt-assoc-fb4 coll k1 v1 k2 v2 k3 v3 k4 v4))))
+    ((coll k v) (meta-carry coll (jolt-assoc1 coll k v)))
+    ((coll . kvs)
+     (meta-carry coll
+       (let loop ((coll coll) (kvs kvs))
+         (cond ((null? kvs) coll)
+               ((null? (cdr kvs)) (throw-jvm (quote IllegalArgumentException) "assoc expects an even number of key/vals"))
+               (else (loop (jolt-assoc1 coll (car kvs) (cadr kvs)) (cddr kvs)))))))))
 (define jolt-assoc3 (lambda (coll k v) (meta-carry coll (jolt-assoc1 coll k v))))
 
-(define (jolt-dissoc coll . ks)
-  (cond ((jolt-nil? coll) jolt-nil)
-        ((pmap? coll) (meta-carry coll (fold-left pmap-dissoc coll ks)))
-        (else (jolt-throw (jolt-host-throwable "java.lang.ClassCastException"
-                           (string-append "class " (guard (e (#t "?")) (jolt-class-name coll))
-                                          " cannot be cast to class clojure.lang.IPersistentMap"))))))
+(define (jolt-dissoc-throw coll)
+  (jolt-throw (jolt-host-throwable "java.lang.ClassCastException"
+                (string-append "class " (guard (e (#t "?")) (jolt-class-name coll))
+                               " cannot be cast to class clojure.lang.IPersistentMap"))))
+;; Multi-key dissoc (2..4 keys, covering 87.3% of corpus multi-key sites) takes
+;; a single-allocation order-preserving block-copy fast path on array-mode pmaps
+;; with callback-free keys (keyword, fixnum, char). Duplicate keys in a batch
+;; are handled without extra cases because every slot in root is distinct.
+;; Returns the identical? receiver when no key is present and a fresh empty
+;; pmap carrying metadata when all entries are removed. Non-stable keys and
+;; hash-mode pmaps fall back through chained pmap-dissoc with one meta-carry.
+;; Records, custom map deftypes, and sorted maps are intercepted ahead of this
+;; binding by matching fixed-arity clauses in records-coll.ss and host-table.ss.
+;; 3- and 4-key body: one scan counts the hit slots, then the prefix up to the
+;; first hit is block-copied and the rest compacted. FALLBACK is the chained
+;; pmap-dissoc for hash-mode maps and non-stable keys.
+(define-syntax amap-dissoc-keys
+  (syntax-rules ()
+    ((_ coll (k ...) fallback)
+       (cond
+         ((pmap? coll)
+          (let ((root (pmap-root coll)))
+            (if (and (not (hnode? root))
+                     (amap-stable-key? k) ...)
+                (let ((n (vector-length root)) (cnt (pmap-cnt coll)))
+                  (let lp ((i 0) (hits 0) (first -1))
+                    (if (sa-ufx<? i n)
+                        (let ((rk (sa-uvector-ref root i)))
+                          (if (or (eq? rk k) ...)
+                              (lp (sa-ufx+ i 2) (sa-ufx+ hits 1) (if (fx<? first 0) i first))
+                              (lp (sa-ufx+ i 2) hits first)))
+                        (cond
+                          ((fx=? hits 0) coll)
+                          ((fx=? hits cnt) (%mk-pmap amap-no-slots 0 0 (pmap-meta coll)))
+                          ((fx=? hits 1) (%mk-pmap (vec-remove2 root first) (fx- cnt 1) 0 (pmap-meta coll)))
+                          (else
+                           (let ((out (sa-subvector root 0 (fx- n (fx* 2 hits)))))
+                             (let cp ((s (sa-ufx+ first 2)) (d first))
+                               (when (sa-ufx<? s n)
+                                 (let ((rk (sa-uvector-ref root s)))
+                                   (if (or (eq? rk k) ...)
+                                       (cp (sa-ufx+ s 2) d)
+                                       (begin
+                                         (sa-uvector-set! out d rk)
+                                         (sa-uvector-set! out (sa-ufx+ d 1) (sa-uvector-ref root (sa-ufx+ s 1)))
+                                         (cp (sa-ufx+ s 2) (sa-ufx+ d 2)))))))
+                             (%mk-pmap out (fx- cnt hits) 0 (pmap-meta coll))))))))
+                (meta-carry coll fallback))))
+         ((jolt-nil? coll) jolt-nil)
+         (else (jolt-dissoc-throw coll))))))
+(define jolt-dissoc
+  (case-lambda
+    ((coll k1 k2)
+     (cond
+       ((pmap? coll)
+        (let ((root (pmap-root coll)))
+          (if (and (not (hnode? root))
+                   (amap-stable-key? k1)
+                   (amap-stable-key? k2))
+              (let ((n (vector-length root)) (cnt (pmap-cnt coll)))
+                (let lp ((i 0) (h1 -1) (h2 -1))
+                  (if (sa-ufx<? i n)
+                      (let ((rk (sa-uvector-ref root i)))
+                        (if (or (eq? rk k1) (eq? rk k2))
+                            (if (fx<? h1 0)
+                                (lp (sa-ufx+ i 2) i h2)
+                                (lp (sa-ufx+ i 2) h1 i))
+                            (lp (sa-ufx+ i 2) h1 h2)))
+                      (cond
+                        ((fx<? h1 0) coll)
+                        ((fx<? h2 0)
+                         (if (fx=? cnt 1)
+                             (%mk-pmap amap-no-slots 0 0 (pmap-meta coll))
+                             (%mk-pmap (vec-remove2 root h1) (fx- cnt 1) 0 (pmap-meta coll))))
+                        ((fx=? cnt 2)
+                         (%mk-pmap amap-no-slots 0 0 (pmap-meta coll)))
+                        (else
+                         (%mk-pmap (vec-remove4 root h1 h2) (fx- cnt 2) 0 (pmap-meta coll)))))))
+              (meta-carry coll (pmap-dissoc (pmap-dissoc coll k1) k2)))))
+       ((jolt-nil? coll) jolt-nil)
+       (else (jolt-dissoc-throw coll))))
+    ((coll k1 k2 k3)
+     (amap-dissoc-keys coll (k1 k2 k3) (pmap-dissoc (pmap-dissoc (pmap-dissoc coll k1) k2) k3)))
+    ((coll k1 k2 k3 k4)
+     (amap-dissoc-keys coll (k1 k2 k3 k4)
+       (pmap-dissoc (pmap-dissoc (pmap-dissoc (pmap-dissoc coll k1) k2) k3) k4)))
+    ((coll k)
+     (cond ((pmap? coll) (meta-carry coll (pmap-dissoc coll k)))
+           ((jolt-nil? coll) jolt-nil)
+           (else (jolt-dissoc-throw coll))))
+    ((coll)
+     (cond ((pmap? coll) coll)
+           ((jolt-nil? coll) jolt-nil)
+           (else (jolt-dissoc-throw coll))))
+    ((coll . ks)
+     (cond ((jolt-nil? coll) jolt-nil)
+           ((pmap? coll) (meta-carry coll (fold-left pmap-dissoc coll ks)))
+           (else (jolt-dissoc-throw coll))))))
 (define jolt-dissoc2 (lambda (coll k)
   (cond ((jolt-nil? coll) jolt-nil)
         ((pmap? coll) (meta-carry coll (pmap-dissoc coll k)))
-        (else (jolt-throw (jolt-host-throwable "java.lang.ClassCastException"
-                           (string-append "class " (guard (e (#t "?")) (jolt-class-name coll))
-                                          " cannot be cast to class clojure.lang.IPersistentMap")))))))
+        (else (jolt-dissoc-throw coll)))))
+
+;; Fused adjacent single-key dissoc / single-pair assoc, in either order:
+;; (assoc (dissoc m dk) ak av) and (dissoc (assoc m ak av) dk). One scan and one
+;; output slot vector on an array-mode pmap whose two keys are callback-free
+;; and where no step can promote; FALLBACK (the original nested live calls)
+;; otherwise. DA? is a literal: #t for dissoc-then-assoc, #f for assoc-then-
+;; dissoc. The orders differ in two places only. Promotion is tested against
+;; the count the assoc sees: after the delete for dissoc-then-assoc, before it
+;; for assoc-then-dissoc. And one key used for both steps is remove-then-append
+;; (it moves to the end) in the first order, a plain removal in the second.
+;; A no-op returns the identical? receiver; emptying returns a fresh empty pmap.
+(define-syntax amap-edit-pair
+  (syntax-rules ()
+    ((_ m dk ak av da? fallback)
+     (if (pmap? m)
+         (let ((root (pmap-root m)))
+           (if (and (not (hnode? root)) (amap-stable-key? dk) (amap-stable-key? ak))
+               (let ((n (vector-length root)) (cnt (pmap-cnt m)))
+                 (let lp ((i 0) (di -1) (ai -1))
+                   (if (sa-ufx<? i n)
+                       (let ((rk (sa-uvector-ref root i)))
+                         (lp (sa-ufx+ i 2) (if (eq? rk dk) i di) (if (eq? rk ak) i ai)))
+                       (cond
+                         ;; ak is another resident key: its value is replaced in place
+                         ((and (fx>=? ai 0) (not (fx=? ai di)))
+                          (cond ((fx>=? di 0)
+                                 (let ((out (vec-remove2 root di)))
+                                   (sa-uvector-set! out (if (fx<? ai di) (sa-ufx+ ai 1) (sa-ufx- ai 1)) av)
+                                   (%mk-pmap out (fx- cnt 1) 0 (pmap-meta m))))
+                                ((eq? (sa-uvector-ref root (sa-ufx+ ai 1)) av) m)
+                                (else (let ((out (sa-vector-copy root)))
+                                        (sa-uvector-set! out (sa-ufx+ ai 1) av)
+                                        (%mk-pmap out cnt 0 (pmap-meta m))))))
+                         ;; assoc then dissoc of one key: the key ends up absent
+                         ((and (not da?) (eq? ak dk))
+                          (cond ((fx<? di 0) (if (amap-keep? cnt ak) m fallback))
+                                ((fx=? cnt 1) (%mk-pmap amap-no-slots 0 0 (pmap-meta m)))
+                                (else (%mk-pmap (vec-remove2 root di) (fx- cnt 1) 0 (pmap-meta m)))))
+                         ;; ak is appended
+                         ((not (amap-keep? (if (and da? (fx>=? di 0)) (fx- cnt 1) cnt) ak)) fallback)
+                         ((fx<? di 0) (%mk-pmap (vec-append2 root ak av) (fx+ cnt 1) 0 (pmap-meta m)))
+                         (else (%mk-pmap (vec-remove2-append2 root di ak av) cnt 0 (pmap-meta m)))))))
+               fallback))
+         fallback))))
+(define (jolt-dissoc1-assoc1 m dk ak av)
+  (amap-edit-pair m dk ak av #t (jolt-assoc3 (jolt-dissoc2 m dk) ak av)))
+(define (jolt-assoc1-dissoc1 m ak av dk)
+  (amap-edit-pair m dk ak av #f (jolt-dissoc2 (jolt-assoc3 m ak av) dk)))
 
 (define (jolt-contains? coll k)
   (cond ((pmap? coll) (pmap-contains? coll k))

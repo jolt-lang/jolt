@@ -619,22 +619,38 @@
 (define %r-jolt-dissoc2 jolt-dissoc2)
 (define (jrec-dissoc1 coll k)
   (if (not (jrec? coll))
-      (%r-jolt-dissoc coll k)            ; an earlier declared-field dissoc downgraded it
+      (%r-jolt-dissoc2 coll k)            ; an earlier declared-field dissoc downgraded it
       (let ((i (and (keyword? k) (jrec-field-index coll k))))
         (if i (jrec->map-without coll k)
             (let ((ext (jrec-ext coll)))
               (if (jolt-nil? ext) coll
-                  (let ((ne (%r-jolt-dissoc ext k)))
+                  (let ((ne (%r-jolt-dissoc2 ext k)))
                     (make-jrec-from-existing coll #f #f
                                 (if (= 0 (jolt-count ne)) jolt-nil ne)))))))))
-;; The record's metadata stays on what dissoc answers — the record, or the map a
-;; field's removal downgrades it to — as defrecord's without does on the JVM.
-(set! jolt-dissoc (lambda (coll . ks)
+(define (jrec-dissoc-many coll ks)
   (cond ((jrec-plain? coll) (meta-carry coll (fold-left jrec-dissoc1 coll ks)))
         ((jrec-cl coll "without")
          => (lambda (m) (fold-left (lambda (c k) (jolt-invoke m c k)) coll ks)))
-        ((jrec? coll) (meta-carry coll (fold-left jrec-dissoc1 coll ks)))
-        (else (apply %r-jolt-dissoc coll ks)))))
+        (else (meta-carry coll (fold-left jrec-dissoc1 coll ks)))))
+;; The record's metadata stays on what dissoc answers — the record, or the map a
+;; field's removal downgrades it to — as defrecord's without does on the JVM.
+;; Fixed clauses match collections.ss's jolt-dissoc so a non-record receiver
+;; reaches the array-map fast path without apply or rest-list consing; a record
+;; (not the fast path) folds its keys through jrec-dissoc-many.
+(set! jolt-dissoc
+  (case-lambda
+    ((coll k1 k2)
+     (if (jrec? coll) (jrec-dissoc-many coll (list k1 k2)) (%r-jolt-dissoc coll k1 k2)))
+    ((coll k1 k2 k3)
+     (if (jrec? coll) (jrec-dissoc-many coll (list k1 k2 k3)) (%r-jolt-dissoc coll k1 k2 k3)))
+    ((coll k1 k2 k3 k4)
+     (if (jrec? coll) (jrec-dissoc-many coll (list k1 k2 k3 k4)) (%r-jolt-dissoc coll k1 k2 k3 k4)))
+    ((coll k)
+     (if (jrec? coll) (jrec-dissoc-many coll (list k)) (%r-jolt-dissoc coll k)))
+    ((coll)
+     (if (jrec? coll) coll (%r-jolt-dissoc coll)))
+    ((coll . ks)
+     (if (jrec? coll) (jrec-dissoc-many coll ks) (apply %r-jolt-dissoc coll ks)))))
 (set! jolt-dissoc2
   (lambda (coll k)
     (cond ((jrec-plain? coll) (meta-carry coll (jrec-dissoc1 coll k)))

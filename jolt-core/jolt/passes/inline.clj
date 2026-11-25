@@ -770,6 +770,13 @@
       (= op :host) (contains? pure-fns (get f :name))
       :else false)))
 
+(defn pure-call-head?
+  "True when invoke node calls a compiler-known pure op at an admitted arity."
+  [node]
+  (and (= :invoke (get node :op))
+       (pure-fn? (get node :fn))
+       (invoke-arity-ok? node)))
+
 ;; forward ref: a record ctor (allocating an immutable struct from its args) is
 ;; side-effect-free, so pure? treats (->Rec pure-args..) as pure — which lets a
 ;; nested record (a Ray holding a Vec3) fold bottom-up.
@@ -785,8 +792,7 @@
     (cond
       ;; :invoke is pure only for a known-pure fn / record ctor, and only its ARGS
       ;; are folded (not the :fn position) — so it can't go through the uniform fold.
-      (= op :invoke) (and (or (pure-fn? (get node :fn)) (ctor-shape node))
-                          (invoke-arity-ok? node)
+      (= op :invoke) (and (or (pure-call-head? node) (ctor-shape node))
                           (every? pure? (get node :args)))
       ;; leaves (:const/:local/:var/:host/:the-var/:quote) fold to true; :if/:do/
       ;; :let/:vector/:set/:map AND their children's purity. :throw is safe-op? (an
