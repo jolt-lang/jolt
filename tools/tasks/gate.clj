@@ -48,7 +48,7 @@
     certify gambitcheck gambitkernel gambitgencheck gambitseedcheck gambitboot gambiteval
     gambitunbound gambitvars gambitstatics gambittwins gambitprofile grenadinecheck fibers
     fiberspoll gosm asynctimer ticks interruptnest monitorescape windescape threadsafety
-    maskedacquire ioerrno cas flow native nativebuild])
+    maskedacquire ioerrno cas flow native nativesan nativebuild])
 
 ;; The full gate (dev machine): the CI gate plus the self-host byte fixpoint.
 (def test-gates '[submodules selfhost ci])

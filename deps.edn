@@ -71,7 +71,7 @@
                      if [ -f \"$so\" ] && [ -z \"$(find $srcs vendor/mir -name '*.[ch]' -newer \"$so\" -print -quit)\" ]; then echo \"mirlib: $so up to date\"; exit 0; fi; \\
                      mkdir -p target/mir; \\
                      for f in $srcs; do $cc -O2 -DNDEBUG -std=gnu11 -fsigned-char -fPIC -w -Wno-psabi -Ivendor/mir -c $f -o target/mir/$(basename $f .c).o || exit 1; done; \\
-                     $cc -shared -o \"$so\" target/mir/mir.o target/mir/mir-gen.o target/mir/c2mir.o target/mir/jolt_mir.o -lm -lpthread; \\
+                     $cc -shared -o \"$so\" target/mir/mir.o target/mir/mir-gen.o target/mir/c2mir.o target/mir/jolt_mir.o -lm -lpthread $([ \"$(uname -s)\" = Linux ] && echo -ldl); \\
                      echo \"mirlib: wrote $so\"")}
 
   ;; Not named install, because jolt runs a file named ./install before a task of
@@ -1122,6 +1122,30 @@ done"
   native {:doc "Native regions: cc and the JIT agree on result, exception and mutation, no leaks"
           :depends [mirlib]
           :task (sh "bin/jolt run test/chez/native-test.clj")}
+
+  nativesan {:doc "The native gate with cc's regions under AddressSanitizer and UBSan, and JN_VERIFY_FACTS"
+             :depends [mirlib]
+             :task (sh "if [ -n \"${TERMUX_VERSION:-}${ANDROID_ROOT:-}\" ]; then \\
+                          echo 'nativesan: skipped on bionic (no preloadable ASan runtime for a termux process)'; exit 0; fi; \\
+                        rt=''; for n in libclang_rt.asan_osx_dynamic.dylib libasan.so \\
+                          libclang_rt.asan-$(uname -m).so libclang_rt.asan.so; do \\
+                          p=$(cc -print-file-name=$n); case \"$p\" in /*) [ -f \"$p\" ] && { rt=$p; break; } ;; esac; \\
+                        done; \\
+                        [ -n \"$rt\" ] || { echo 'nativesan: cc has no ASan runtime'; exit 1; }; \\
+                        if [ \"$(uname -s)\" = Darwin ]; then pre=\"JOLT_DYLD_INSERT_LIBRARIES=$rt\"; else pre=\"LD_PRELOAD=$rt\"; fi; \\
+                        env $pre ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 NATIVE_SANITIZE=1 \\
+                          bin/jolt run test/chez/native-test.clj")}
+
+  nativeemitgate {:doc "Each native region's emitted C against BASE (another built checkout); ALLOW names regions that may differ"
+                  :depends [mirlib]
+                  :task (sh "[ -n \"${BASE:-}\" ] || { echo 'nativeemitgate: BASE=<path to the other checkout>'; exit 1; }; \\
+                             make --no-print-directory -C \"$BASE\" mirlib >/dev/null && \\
+                             rm -rf target/native-emit && mkdir -p target/native-emit && \\
+                             { NATIVE_EMIT_DUMP=\"$PWD/target/native-emit/candidate\" bin/jolt run test/chez/native-test.clj \\
+                                 > target/native-emit/candidate.log 2>&1 || true; } && \\
+                             here=$PWD && { (cd \"$BASE\" && NATIVE_EMIT_DUMP=\"$here/target/native-emit/base\" bin/jolt run \"$here/test/chez/native-test.clj\" \\
+                                 > \"$here/target/native-emit/base.log\" 2>&1) || true; } && \\
+                             bin/jolt run tools/native-emit-diff.clj target/native-emit/base target/native-emit/candidate \"${ALLOW:-}\"")}
 
   nativebuild {:doc "Native regions are C in a jolt build binary and the fallback under jolt run, same output"
                :depends [testbin]

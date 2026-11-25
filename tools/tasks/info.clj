@@ -64,7 +64,7 @@
 
    ["FFI, natives and zlib"
     '[ffi ffidupsym ffiloadfail foreignhandles statlayout errnocheck ioerrno zlibunit
-      zlibnativesmoke zlibregistersmoke native nativebuild nativeproofs]]
+      zlibnativesmoke zlibregistersmoke native nativesan nativeemitgate nativebuild nativeproofs]]
 
    ["Host runtime"
     '[systemstreams closedstdout stderrsplit filelock deleteonclose mimetypes noexecsmoke hostarity hostprops
