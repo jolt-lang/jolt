@@ -21,7 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of a boolean.
 - A source checkout gets the JIT from `make mirlib`
   (`target/mir/libjoltmir`); `JOLT_MIR_LIB` names another build of it, and
-  `JOLT_NO_MIR=1` builds a jolt without it.
+  `JOLT_NO_MIR=1` builds a jolt without it. The JIT finds a `defextern`
+  `:header` in the system include directories, Termux's on Android, and any
+  `JOLT_MIR_INCLUDE` lists.
 
 ## [0.8.30] - 2026-11-24
 

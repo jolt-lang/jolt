@@ -120,6 +120,45 @@ static void *jolt_mir_resolve(const char *name) {
   return p;
 }
 
+/* Where c2mir looks for a header a region includes (a defextern's :header)
+   beyond the system's own: each directory JOLT_MIR_INCLUDE lists, and on
+   Android Termux's $PREFIX/include, which c2mir's /usr/include misses. Read
+   once; the strings live as long as the process. */
+#if defined(_WIN32)
+#define JOLT_MIR_PATH_SEP ';'
+#else
+#define JOLT_MIR_PATH_SEP ':'
+#endif
+static const char *jolt_mir_incs[64];
+static size_t jolt_mir_incs_n = (size_t)-1;
+static void jolt_mir_add_inc(const char *dir, size_t len) {
+  if (len == 0 || jolt_mir_incs_n >= 64) return;
+  char *d = malloc(len + 1);
+  if (!d) return;
+  memcpy(d, dir, len);
+  d[len] = 0;
+  jolt_mir_incs[jolt_mir_incs_n++] = d;
+}
+static void jolt_mir_init_incs(void) {
+  if (jolt_mir_incs_n != (size_t)-1) return;
+  jolt_mir_incs_n = 0;
+  const char *env = getenv("JOLT_MIR_INCLUDE");
+  while (env && *env) {
+    const char *end = strchr(env, JOLT_MIR_PATH_SEP);
+    size_t len = end ? (size_t)(end - env) : strlen(env);
+    jolt_mir_add_inc(env, len);
+    env = end ? end + 1 : NULL;
+  }
+#if defined(__ANDROID__)
+  const char *prefix = getenv("PREFIX");
+  if (prefix && *prefix) {
+    char buf[1024];
+    int n = snprintf(buf, sizeof buf, "%s/include", prefix);
+    if (n > 0 && (size_t)n < sizeof buf) jolt_mir_add_inc(buf, (size_t)n);
+  }
+#endif
+}
+
 typedef struct { const char *s; size_t i; } jolt_mir_src;
 static int jolt_mir_getc(void *data) {
   jolt_mir_src *src = data;
@@ -163,6 +202,9 @@ JOLT_MIR_EXPORT void *jolt_mir_compile(const char *src, void *(*resolve)(const c
   messages = tmpfile();
   opts.message_file = messages;
   opts.module_num = ++jolt_mir_modules;
+  jolt_mir_init_incs();
+  opts.include_dirs = jolt_mir_incs;
+  opts.include_dirs_num = jolt_mir_incs_n;
   jolt_mir_src in = {src, 0};
   int ok = c2mir_compile(jolt_mir_ctx, &opts, jolt_mir_getc, &in, "native-region.c", NULL);
   if (!ok) {

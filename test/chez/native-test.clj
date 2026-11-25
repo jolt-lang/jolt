@@ -220,13 +220,26 @@
     (map? v) (into {} (map (fn [[k x]] [k (gnorm x)]) v))
     :else v))
 
+(defn- golden=
+  "WANT and GOT the same, a double allowed one ulp: golden.edn was recorded on
+  glibc, and another libm (bionic, macOS) rounds sin, exp and the rest a last
+  bit differently. cc and the JIT, on one machine, are compared exactly."
+  [want got]
+  (cond
+    (and (double? want) (double? got)) (or (= want got) (<= (Math/abs (- want got)) (Math/ulp want)))
+    (and (map? want) (map? got)) (and (= (set (keys want)) (set (keys got)))
+                                      (every? #(golden= (get want %) (get got %)) (keys want)))
+    (and (sequential? want) (sequential? got)) (and (= (count want) (count got))
+                                                    (every? true? (map golden= want got)))
+    :else (= want got)))
+
 (defn- check-golden [label k c ca]
   (let [got {:out (gnorm c) :inputs (mapv gnorm ca)}]
     (if golden-write?
       (swap! golden assoc k got)
       (when-let [want (get @golden k)]
         (swap! golden-checked inc)
-        (when-not (= want got)
+        (when-not (golden= want got)
           (fail! (str label " " (pr-str (peek k)) ": want " (pr-str want) " (golden.edn) got " (pr-str got))))))))
 
 (defn check-run
