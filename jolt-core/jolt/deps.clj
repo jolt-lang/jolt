@@ -765,8 +765,11 @@
 ;; deps.edn overrides the user's. The expansion's inclusion order is breadth-first,
 ;; which puts a dependent ahead of its dependencies almost always — but not when
 ;; the project names B itself ahead of A, and then B's declarations won over A's.
-;; So the selected libraries are re-ordered dependents-first (stable otherwise),
-;; and every first-wins reconciliation downstream reads closest-first.
+;; So the declarations are read from the selected libraries re-ordered
+;; dependents-first (stable otherwise), and every first-wins reconciliation of a
+;; :jolt/native or :jolt/provides downstream reads closest-first. The source
+;; roots keep the expansion's order, which is the classpath tools.deps computes:
+;; precedence between declarations is no reason to move a namespace's root.
 
 (defn- selected-children
   "lib -> the selected libraries its coordinate depends on. coord-deps re-reads
@@ -807,8 +810,10 @@
       root)))
 
 (defn- resolution
-  "resolve-deps' answer, collected from the selected libraries' INFOS."
-  [infos libmap expansion graph]
+  "resolve-deps' answer, collected from the selected libraries' INFOS (in the
+  expansion's order, the classpath's) and, for the declarations a closer library
+  overrides, DECL-INFOS (the same libraries dependents-first)."
+  [infos decl-infos libmap expansion graph]
   {:roots (vec (mapcat info-roots infos))
    ;; Each spec carries the ROOT of the deps.edn that declared it. A
    ;; :jolt/native path is written relative to its own project ("native/
@@ -822,7 +827,7 @@
    ;; dependency's natives load when the first namespace from one of those
    ;; roots is required, not at startup (jolt.main apply-project!), and a
    ;; library that is missing then names the dependency that declared it.
-   :natives (vec (mapcat info-natives infos))
+   :natives (vec (mapcat info-natives decl-infos))
    ;; The defs each dep vouches never resolve vars at runtime in a built
    ;; binary (:jolt/tree-shake {:allow-dynamic […]}). A LIBRARY is the
    ;; natural declarer — spec.alpha knows its `res` only qualifies a symbol
@@ -841,7 +846,7 @@
    ;; [install-ns lib class-name …]. A library knows which java.* classes
    ;; its shim installs; the runtime must not, or core ends up naming
    ;; specific libraries to decide what to autoload on a class miss.
-   :provides (vec (mapcat (fn [{:keys [lib edn]}] (decl/provides-entries edn lib)) infos))
+   :provides (vec (mapcat (fn [{:keys [lib edn]}] (decl/provides-entries edn lib)) decl-infos))
    ;; libs whose deps.edn declares :deps/prep-lib — jolt runs no prep
    ;; steps, so their compiled/generated assets will be missing; the
    ;; caller warns with the lib names.
@@ -897,9 +902,11 @@
                    ((requiring-resolve 'grenadine.tree/dependency-graph)
                     top libmap ext/coord-deps))
            children (selected-children libmap)
-           infos (selected-infos libmap (decl/dependents-first (:order expansion) children))]
+           infos (selected-infos libmap (:order expansion))
+           by-lib (into {} (map (juxt :lib identity)) infos)
+           decl-infos (keep by-lib (decl/dependents-first (map :lib infos) children))]
        (when outermost? (fail-unresolvable!))
-       (assoc (resolution infos libmap expansion graph)
+       (assoc (resolution infos decl-infos libmap expansion graph)
               :descendants (decl/descendants-by-lib children)))))))
 
 ;; --- resolved-roots cache (.jolt/cpcache) -----------------------------------
@@ -1327,13 +1334,19 @@
 ;; on this machine, a local checkout of a dependency, an extra alias. It is not
 ;; meant to be committed (it is what a configure task writes, see jolt.configure),
 ;; so -Srepro leaves it out with the user deps.edn. $JOLT_DEPS_LOCAL names another
-;; file instead, relative to the project; one it names must exist.
+;; file instead (relative to the project when it is not absolute); one that does
+;; not exist is warned about and skipped. Wherever the file is, the relative paths
+;; in it — :jolt/native candidates and :local/root alike — are the project's, as
+;; tools.deps resolves every path in the merged config against the project.
 ;;
 ;; Its :jolt/native specs are the CLOSEST declarations of all: a spec naming a
 ;; library the project or any dependency declares overrides the keys it states
 ;; (say just :linux ["/opt/foo/lib/libfoo.so.2"]) and keeps the rest, including
 ;; when the library loads. They are read apart from the merged map — a plain
 ;; merge would replace the project's whole :jolt/native vector with the local one.
+;; A spec that overrides nothing is warned about and dropped: the file says where
+;; a library is, not that the project needs one, and a typo'd :name there must
+;; not turn into a required library that stops every run.
 (defn local-deps-path
   "The project's local override file: $JOLT_DEPS_LOCAL (relative to PROJECT-DIR
   when it is not absolute), else PROJECT-DIR/deps.local.edn. It need not exist."
@@ -1345,22 +1358,41 @@
 
 (defn- skip-local-deps? [repro?] (boolean repro?))
 
+(defonce ^:private warned-once (atom #{}))
+
+(defn- warn-once
+  "warn, once per process for a given message: one command reads the local file
+  more than once (its tasks, then the resolution)."
+  [& xs]
+  (let [msg (apply str xs)]
+    (when-not (contains? (first (swap-vals! warned-once conj msg)) msg)
+      (warn msg))))
+
 (defn- read-local-edn [project-dir repro?]
   (when-not (skip-local-deps? repro?)
     (let [path (local-deps-path project-dir)]
       (if (file-exists? path)
         (read-deps-file path)
         (when-not (str/blank? (getenv "JOLT_DEPS_LOCAL"))
-          (warn "JOLT_DEPS_LOCAL names " path ", which does not exist"))))))
+          (warn-once "JOLT_DEPS_LOCAL names " path ", which does not exist"))))))
 
 (defn- local-natives
-  "The local file's :jolt/native specs, rooted at the directory it sits in and
+  "The local file's :jolt/native specs, rooted at the project (see above) and
   marked as local overrides (jolt.deps.declarations/overlay-native-roots)."
   [project-dir local-edn]
-  (let [path (local-deps-path project-dir)
-        dir (let [i (max (or (str/last-index-of path "/") -1) (or (str/last-index-of path "\\") -1))]
-              (if (pos? i) (subs path 0 i) project-dir))]
-    (mapv #(assoc % :jolt.deps/root dir :jolt.deps/local true) (:jolt/native local-edn))))
+  (mapv #(assoc % :jolt.deps/root project-dir :jolt.deps/local true) (:jolt/native local-edn)))
+
+(defn- drop-unmatched-local-natives
+  "NATIVES (reconciled) without the deps.local.edn specs that overrode nothing —
+  still marked local, since overlaying a declaration clears the mark — each
+  warned about by its file and :name."
+  [project-dir natives]
+  (let [{local true kept false} (group-by #(boolean (:jolt.deps/local %)) natives)]
+    (doseq [spec local]
+      (warn-once (local-deps-path project-dir) ": ignoring the :jolt/native spec "
+                 (pr-str (or (:name spec) (dissoc spec :jolt.deps/root :jolt.deps/local)))
+                 ", which names no library the project or its dependencies declare"))
+    (if (seq local) (vec kept) natives)))
 
 (defn- read-project-edns
   "The project files resolve-project reads, merged: {:edn the merged deps.edn
@@ -1474,11 +1506,13 @@
    ;; still reconcile to one load, keeping the first one's root, and each
    ;; platform key the first is silent about is filled in from the others
    ;; along with the root it was declared under.
-   :natives (decl/reconcile-natives
+   :natives (drop-unmatched-local-natives
+             project-dir
+             (decl/reconcile-natives
               (concat local-natives
                       (map #(assoc % :jolt.deps/root project-dir)
                            (:jolt/native edn))
-                      dep-natives))
+                      dep-natives)))
    ;; the project's own vouched-for defs first, then every dep's, deduped —
    ;; `jolt build --tree-shake` hands the union to the bail scan. The
    ;; project's list is where an app allows a site in a library that has
@@ -1585,14 +1619,16 @@
   "The project's :tasks map — deps.edn's and bb.edn's merged, bb.edn last —
   read from the config files alone. Naming what a project can run needs no
   dependency expansion, and a project whose deps don't resolve (offline, a
-  typo'd coordinate) should still be able to list its tasks."
-  [project-dir]
-  (let [user-edn (when-not (getenv "JOLT_NO_USER_DEPS")
+  typo'd coordinate) should still be able to list its tasks. REPRO? (-Srepro)
+  leaves the user deps.edn and deps.local.edn out, as a resolution does."
+  ([project-dir] (project-tasks project-dir false))
+  ([project-dir repro?]
+  (let [user-edn (when-not (or repro? (getenv "JOLT_NO_USER_DEPS"))
                    (try (read-deps-file (user-deps-path)) (catch :default _ nil)))]
     (not-empty (merge (:tasks user-edn)
                       (:tasks (read-deps-file (str project-dir "/deps.edn")))
-                      (:tasks (try (read-local-edn project-dir false) (catch :default _ nil)))
-                      (:tasks (read-edn (str project-dir "/bb.edn")))))))
+                      (:tasks (try (read-local-edn project-dir repro?) (catch :default _ nil)))
+                      (:tasks (read-edn (str project-dir "/bb.edn"))))))))
 
 (defn env-info
   "The files a resolution reads and the caches it fetches into, as data. One

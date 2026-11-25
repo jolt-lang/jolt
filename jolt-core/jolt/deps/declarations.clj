@@ -77,6 +77,10 @@
     ;; not WHEN it loads: overriding a dependency's library keeps it loading on
     ;; that dependency's first require, rather than making it the project's own
     ;; and opening it at startup.
+    ;; two local specs for one library are still one override, of nothing yet
+    (and (:jolt.deps/local a) (:jolt.deps/local b))
+    a
+
     (:jolt.deps/local a)
     (cond-> (dissoc a :jolt.deps/local :jolt.deps/paths)
       (lazy-native? b) (assoc :jolt.deps/paths (:jolt.deps/paths b))
