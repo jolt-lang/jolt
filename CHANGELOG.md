@@ -5,6 +5,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- `jolt.native` regions always run as native code. Outside a `jolt build`
+  binary (the REPL, `jolt run`) a region is now compiled in process by MIR's C
+  compiler (github.com/vnmakarov/mir, vendored at `vendor/mir` and linked into
+  jolt) the first time its call site loads, from the same C a build links, so a
+  hot loop runs at native speed while you tune it. The Jolt fallback a region
+  used to run there is gone, along with the code that generated it. Where there
+  is no native path (the gambit target, a machine MIR has no code generator
+  for) calling a region raises `UnsupportedOperationException`.
+- `jolt.native/linked-regions` answers `:linked`, `:jit` or `nil` per region
+  instead of a boolean.
+- A source checkout gets the JIT from `make mirlib`
+  (`target/mir/libjoltmir`); `JOLT_MIR_LIB` names another build of it, and
+  `JOLT_NO_MIR=1` builds a jolt without it.
+
 ## [0.8.30] - 2026-11-24
 
 `jolt.native` regions: blocks of hinted numeric code that `jolt build` compiles
