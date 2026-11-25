@@ -6,7 +6,9 @@
 
   Types are :long, :double, :bool, :unit, [:array e] (an array the region OWNS:
   created inside it, freed by it) and [:ref e] (an array the region BORROWS: a
-  parameter, which stays the caller's). e is :double or :long.
+  parameter, which stays the caller's). e is :double or :long, or :byte for a
+  borrowed ^bytes parameter, which a region reads (each element a signed byte,
+  as a long) and never writes, clones or creates.
 
   Typing is bottom-up with Clojure's numeric rules, not Carp's: a long and a
   double combine to a double, a literal 1 is a long and 1.0 a double, and a
@@ -36,6 +38,11 @@
 (defn array-type? [t] (or (owned? t) (borrowed? t)))
 (defn elem-type [t] (second t))
 (defn numeric? [t] (or (= t :long) (= t :double)))
+(defn byte-array-type? [t] (and (vector? t) (= :byte (second t))))
+(defn value-type
+  "The type an element of array type t reads as: a byte is a long."
+  [t]
+  (let [e (elem-type t)] (if (= :byte e) :long e)))
 
 (defn- node [op type form & {:as kvs}]
   (merge {:op op :type type :id (next-id) :form form} kvs))
@@ -44,14 +51,14 @@
 
 (def ^:private hint-types
   {'long :long 'double :double 'boolean :bool
-   'doubles [:ref :double] 'longs [:ref :long]})
+   'doubles [:ref :double] 'longs [:ref :long] 'bytes [:ref :byte]})
 
 (defn param-type [sym]
   (let [tag (:tag (meta sym))
         tag (if (string? tag) (symbol tag) tag)]
     (or (hint-types tag)
         (fail sym (str "parameter " sym " needs a type hint: one of "
-                       "^long ^double ^boolean ^doubles ^longs")))))
+                       "^long ^double ^boolean ^doubles ^longs ^bytes")))))
 
 ;; --- expressions -----------------------------------------------------------
 
@@ -156,8 +163,7 @@
                             ", which its init made " (pr-str want)
                             (when (and (= want :long) (= :double (:type a)))
                               " (initialize it with a double, e.g. 0.0)"))))))
-      (node :recur :never form :loop-id (:id lp) :args args
-            :want (mapv #(:type (:init %)) (:bindings lp))))))
+      (node :recur :never form :loop-id (:id lp) :args args))))
 
 (defn- analyze-dotimes [env [_ bv & body :as form] tail]
   (when-not (and (vector? bv) (= 2 (count bv)) (local-sym? (first bv)))
@@ -341,6 +347,17 @@
       (zero? pos? neg?) (do (when-not (= 1 n) (fail form (str f " takes one argument")))
                             (check-num form args (str f))
                             (prim :bool (keyword (str f))))
+      (bit-and bit-or bit-xor)
+      (do (when (< n 2) (fail form (str f " takes two or more longs")))
+          (doseq [a args] (long-arg form a (str f)))
+          (prim :long (keyword (str f))))
+      bit-not (do (when-not (= 1 n) (fail form "bit-not takes one long"))
+                  (long-arg form (first args) "bit-not")
+                  (prim :long :bit-not))
+      (bit-shift-left bit-shift-right unsigned-bit-shift-right)
+      (do (when-not (= 2 n) (fail form (str f " takes a long and a shift count")))
+          (doseq [a args] (long-arg form a (str f)))
+          (prim :long (keyword (str f))))
       not (do (when-not (and (= 1 n) (= :bool (:type (first args))))
                 (fail form "not takes one boolean"))
               (prim :bool :not))
@@ -352,9 +369,11 @@
                (prim :long :to-long))
       aget (do (when-not (= 2 n) (fail form "aget takes an array and an index"))
                (arr-arg form (args 0) "aget") (long-arg form (args 1) "aget index")
-               (node :aget (elem-type (:type (args 0))) form :arr (args 0) :idx (args 1)))
+               (node :aget (value-type (:type (args 0))) form :arr (args 0) :idx (args 1)))
       aset (do (when-not (= 3 n) (fail form "aset takes an array, an index and a value"))
                (arr-arg form (args 0) "aset") (long-arg form (args 1) "aset index")
+               (when (byte-array-type? (:type (args 0)))
+                 (fail form "a region reads a ^bytes parameter but cannot write it"))
                (let [et (elem-type (:type (args 0))) vt (:type (args 2))]
                  (when-not (or (= et vt) (and (= et :double) (= vt :long)) (unknown? vt))
                    (fail form (str "aset stores " (pr-str et) " into this array, got " (pr-str vt)))))
@@ -370,6 +389,8 @@
             (node :new-array [:array e] form :elem e :len (args 0))))
       aclone (do (when-not (= 1 n) (fail form "aclone takes an array"))
                  (arr-arg form (args 0) "aclone")
+                 (when (byte-array-type? (:type (args 0)))
+                   (fail form "a region cannot clone a ^bytes parameter: it only reads one"))
                  (node :aclone [:array (elem-type (:type (args 0)))] form :arr (args 0)))
       (if-let [arity (math-fns f)]
         (do (when-not (= arity n) (fail form (str f " takes " arity " argument(s)")))
@@ -405,7 +426,8 @@
 (def ^:private builtins
   "Heads analyze-call handles itself: never macroexpanded."
   '#{+ * - / quot rem mod inc dec < <= > >= == = not= zero? pos? neg? not
-     double long aget aset alength double-array long-array aclone})
+     double long aget aset alength double-array long-array aclone
+     bit-and bit-or bit-xor bit-not bit-shift-left bit-shift-right unsigned-bit-shift-right})
 
 (def ^:private special-heads
   '#{let let* if when when-not do loop loop* recur dotimes and or})

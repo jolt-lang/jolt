@@ -1,17 +1,26 @@
 ;; jolt.native gate: native regions (Carp-style owned arrays, compiled to C).
-;; Each accepted program is compiled with a tracking allocator, run as C and as
-;; its Jolt fallback on identical copies of its inputs, and must agree on the
-;; result, the exception (class and message), what it did to its input arrays,
-;; and leave no live allocation and no bad free behind, on success and on every
-;; error exit. Rejected programs must fail to compile with the expected message.
-;; Needs cc. Run: bin/jolt run test/chez/native-test.clj
+;; Each accepted program is compiled twice with a tracking allocator, by cc (as
+;; jolt build compiles it) and by the JIT (MIR, as the REPL and jolt run do),
+;; and run both ways on identical copies of its inputs. The two must agree on
+;; the result, the exception (class and message) and what they did to the input
+;; arrays, and leave no live allocation and no bad free behind, on success and
+;; on every error exit. The answer must also match an oracle that is not the
+;; region's own C: the body run as plain Clojure (rows marked :raw, where Jolt
+;; means the same thing), and test/native/golden.edn, which holds what each row
+;; answered when regions still had a Jolt fallback (overflow, the JVM's
+;; exceptions, and the rest Jolt's own arithmetic does differently).
+;; Rejected programs must fail to compile with the expected message.
+;; Needs cc and the JIT (make mirlib). Run: bin/jolt run test/chez/native-test.clj
+;; NATIVE_GOLDEN=write adds the cc answers of rows golden.edn lacks (after
+;; checking what they answer) and drops entries no row produces; the entries
+;; it keeps are still checked, never re-recorded.
 (ns native-test
   (:require [clojure.string :as str]
+            [clojure.edn :as edn]
             [jolt.scheme :as scm]
             [jolt.native.ast :as ast]
             [jolt.native.memory :as mem]
             [jolt.native.emit :as emit]
-            [jolt.native.fallback :as fallback]
             [jolt.native.rt :as rt]
             [jolt.native :refer [defnative defextern]]))
 
@@ -23,12 +32,14 @@
 
 ;; A per-library allocation tracker: every live block in a small registry, a
 ;; free of anything not in it (double free, wild pointer) raises the bad flag.
+;; No headers and no attributes before a declaration, which c2mir refuses.
 (defn tracker [sym]
-  (str "#include <stdlib.h>\n#include <stdint.h>\n"
+  (str "#include <stdint.h>\n#include <stddef.h>\n"
+       "void *calloc(size_t, size_t); void *malloc(size_t); void free(void *);\n"
        "static void *jn_live_set[65536]; static int64_t jn_live_n = 0, jn_bad = 0, jn_peak = 0;\n"
-       "__attribute__((unused)) static void *jn_track(void *p) { if (p) { if (jn_live_n < 65536) jn_live_set[jn_live_n++] = p; else jn_bad = 1;"
+       "static void *jn_track(void *p) { if (p) { if (jn_live_n < 65536) jn_live_set[jn_live_n++] = p; else jn_bad = 1;"
        " if (jn_live_n > jn_peak) jn_peak = jn_live_n; } return p; }\n"
-       "__attribute__((unused)) static void jn_untrack(void *p) { if (!p) return; for (int64_t i = 0; i < jn_live_n; i++)"
+       "static void jn_untrack(void *p) { if (!p) return; for (int64_t i = 0; i < jn_live_n; i++)"
        " if (jn_live_set[i] == p) { jn_live_set[i] = jn_live_set[--jn_live_n]; free(p); return; } jn_bad = 1; }\n"
        "#define JN_CALLOC(n, s) jn_track(calloc((n), (s)))\n"
        "#define JN_MALLOC(n) jn_track(malloc(n))\n"
@@ -39,12 +50,13 @@
 
 (def flv (scm/call "record-accessor" (scm/call "record-rtd" (double-array 1)) 0))
 
-;; One shared, plain definition of the regions' status (this harness calls
+;; One shared, plain definition of the cc regions' status (this harness calls
 ;; regions from one thread). Each region is its own shared object here, and an
 ;; object with its own _Thread_local takes a pthread key (macOS allows 512; a
 ;; run of ~510 regions aborted); an extern _Thread_local shared across dlopen'd
 ;; objects reads back stale under Android's emulated TLS. The region objects
-;; name jn_rt after their source so an --as-needed linker keeps it.
+;; name jn_rt after their source so an --as-needed linker keeps it. The JIT's
+;; regions keep their status in the JIT (jolt_mir_status).
 (def rt-so (str work-dir "/jn_rt.dylib"))
 (spit (str work-dir "/jn_rt.c")
       (str "#include <stdint.h>\n"
@@ -55,8 +67,9 @@
   (when-not (zero? (.waitFor p)) (throw (ex-info "cc failed for jn_rt" {}))))
 (scm/call "load-shared-object" rt-so)
 
-;; C functions for the defextern rows: linked into every region object like
-;; jn_rt, and loaded into the process so their jolt.ffi bindings resolve too
+;; C functions for the defextern rows: linked into every cc region object like
+;; jn_rt, and loaded into the process so their jolt.ffi bindings and the JIT
+;; resolve them too
 (def ext-so (str work-dir "/jn_ext.dylib"))
 (spit (str work-dir "/jn_ext.c")
       (str "#include <stdint.h>\n"
@@ -69,76 +82,116 @@
            "double jn_ext_sum(double *xs, int64_t n) { double s = 0; for (int64_t i = 0; i < n; i++) s += xs[i]; return s; }\n"
            "void jn_ext_scale(double *xs, int64_t n, double k) { for (int64_t i = 0; i < n; i++) xs[i] *= k; }\n"
            "void jn_ext_fill(int64_t *xs, int64_t n, int64_t v) { for (int64_t i = 0; i < n; i++) xs[i] = v + i; }\n"
-           "int64_t jn_ext_lsum(int64_t *xs, int64_t n) { int64_t s = 0; for (int64_t i = 0; i < n; i++) s += xs[i]; return s; }\n"))
+           "int64_t jn_ext_lsum(int64_t *xs, int64_t n) { int64_t s = 0; for (int64_t i = 0; i < n; i++) s += xs[i]; return s; }\n"
+           ;; a SIMD kernel a region's (on \"defined(__AVX2__)\" ...) body calls:
+           ;; AVX2 code by its own target attribute on x86-64, a plain loop elsewhere
+           "static int64_t jn_ext_dots;\n"
+           "int64_t jn_ext_dot_calls(void) { return jn_ext_dots; }\n"
+           "#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))\n"
+           "#include <immintrin.h>\n"
+           "__attribute__((target(\"avx2\"))) double jn_ext_dot_avx2(double *xs, int64_t n, double *ys, int64_t m) {\n"
+           "  jn_ext_dots++; __m256d acc = _mm256_setzero_pd(); int64_t i = 0;\n"
+           "  for (; i + 4 <= n; i += 4) acc = _mm256_add_pd(acc, _mm256_mul_pd(_mm256_loadu_pd(xs + i), _mm256_loadu_pd(ys + i)));\n"
+           "  double l[4]; _mm256_storeu_pd(l, acc); double s = l[0] + l[1] + l[2] + l[3];\n"
+           "  for (; i < n; i++) s += xs[i] * ys[i]; (void)m; return s; }\n"
+           "#else\n"
+           "double jn_ext_dot_avx2(double *xs, int64_t n, double *ys, int64_t m) {\n"
+           "  jn_ext_dots++; double s = 0; for (int64_t i = 0; i < n; i++) s += xs[i] * ys[i]; (void)m; return s; }\n"
+           "#endif\n"))
 (let [p (.start (ProcessBuilder. ^java.util.List ["cc" "-O2" "-shared" "-fPIC" "-o" ext-so (str work-dir "/jn_ext.c")]))]
   (when-not (zero? (.waitFor p)) (throw (ex-info "cc failed for jn_ext" {}))))
 (scm/call "load-shared-object" ext-so)
 (def counter (atom 0))
 
-(defn compile-region
-  "params + body -> {:call f :live f :bad f :peak f :region r :c src}."
-  [params body]
-  (let [r (mem/check-region (ast/analyze-region params body))
-        sym (str "jn_t" (swap! counter inc))
-        src (str (tracker sym) (emit/emit-region r sym))
-        c (str work-dir "/" sym ".c")
+(defn- caller
+  "The region's entry and accessors, each a foreign procedure FP makes from a C
+  name, as a fn that calls the region as the backend's call site does."
+  [r sym fp]
+  (let [[argtypes ret] (emit/foreign-types r)
+        ;; the default (safe) call: collect-safe, borrowed arrays locked around it
+        entry (fp sym (str "(" (str/join " " argtypes) ")") ret true)
+        status (fp (str sym "_status") "()" "integer-64" false)
+        err-l (fp (str sym "_err_l") "(integer-64)" "integer-64" false)
+        err-d (fp (str sym "_err_d") "()" "double" false)
+        lock (scm/proc "lock-object")
+        unlock (scm/proc "unlock-object")
+        copy-out (case (:type r)
+                   [:array :double] (fp (str sym "_copy_out") "(scheme-object uptr integer-64)" "void" false)
+                   [:array :long] (fp (str sym "_copy_out") "(scheme-object uptr integer-64)" "integer-64" false)
+                   nil)
+        elem (when (= [:array :long] (:type r)) (fp (str sym "_elem") "(uptr integer-64)" "integer-64" false))
+        free (when (= [:array :long] (:type r)) (fp (str sym "_free") "(uptr)" "void" false))
+        q (fn [n] (fp (str sym "_" n) "()" "integer-64" false))]
+    {:live (q "live") :bad (q "bad") :peak (q "peak")
+     :call (fn [& args]
+             (let [cargs (mapv (fn [p a] (if (ast/borrowed? (:type p)) (flv a) a)) (:params r) args)
+                   pinned (keep (fn [[p a]] (when (ast/borrowed? (:type p)) a)) (map vector (:params r) cargs))
+                   _ (run! lock pinned)
+                   res (try (apply entry cargs) (finally (run! unlock pinned)))
+                   code (status)]
+               (when-not (zero? code)
+                 (rt/raise! code (err-l 0) (err-l 1) (err-d)))
+               (cond
+                 (= [:array :long] (:type r))
+                 (scm/call "jolt-native-wrap-longs" (err-l 2) res copy-out elem free)
+                 (ast/owned? (:type r))
+                 (let [n (err-l 2) arr (double-array n)]
+                   (copy-out (flv arr) res n)
+                   arr)
+                 (#{:unit :never} (:type r)) nil
+                 :else res)))}))
+
+(defn- cc-compile
+  "SRC built by cc into its own shared object, loaded process-wide (like a
+  statically linked region; ffi/load-library scopes a library to its defcfns)."
+  [sym src]
+  (let [c (str work-dir "/" sym ".c")
         so (str work-dir "/" sym ".dylib")
         _ (spit c src)
         cmd ["cc" "-O2" "-ffp-contract=off" "-shared" "-fPIC" "-Wall" "-Werror" "-DJN_EXTERN_STATUS"
-             "-Wno-unused-variable" "-Wno-unused-but-set-variable" "-o" so c rt-so ext-so
+             "-Wno-unused-variable" "-Wno-unused-but-set-variable" "-Wno-unused-function" "-o" so c rt-so ext-so
              ;; bionic links no libm into a shared object unasked (atan2 went unresolved)
              "-lm"]
         p (.start (ProcessBuilder. ^java.util.List cmd))
         err (slurp (.getErrorStream p))]
     (when-not (zero? (.waitFor p))
       (throw (ex-info (str "cc failed for " sym ":\n" err) {:src src})))
-    ;; process-global, like a statically linked region; ffi/load-library scopes
-    ;; a library to its own defcfns
     (scm/call "load-shared-object" so)
-    (let [[argtypes ret] (emit/foreign-types r)
-          ;; the default (safe) call: collect-safe, borrowed arrays locked around it
-          entry (scm/eval-string (str "(foreign-procedure __collect_safe \"" sym "\" ("
-                                      (str/join " " argtypes) ") " ret ")"))
-          status (scm/eval-string (str "(foreign-procedure \"" sym "_status\" () integer-64)"))
-          err-l (scm/eval-string (str "(foreign-procedure \"" sym "_err_l\" (integer-64) integer-64)"))
-          err-d (scm/eval-string (str "(foreign-procedure \"" sym "_err_d\" () double)"))
-          lock (scm/proc "lock-object")
-          unlock (scm/proc "unlock-object")
-          fp (fn [suffix args ret]
-               (scm/eval-string (str "(foreign-procedure \"" sym suffix "\" " args " " ret ")")))
-          copy-out (case (:type r)
-                     [:array :double] (fp "_copy_out" "(scheme-object uptr integer-64)" "void")
-                     [:array :long] (fp "_copy_out" "(scheme-object uptr integer-64)" "integer-64")
-                     nil)
-          elem (when (= [:array :long] (:type r)) (fp "_elem" "(uptr integer-64)" "integer-64"))
-          free (when (= [:array :long] (:type r)) (fp "_free" "(uptr)" "void"))
-          q (fn [n] (scm/eval-string (str "(foreign-procedure \"" sym "_" n "\" () integer-64)")))]
-      {:region r :c src
-       :live (q "live") :bad (q "bad") :peak (q "peak")
-       :call (fn [& args]
-               (let [cargs (mapv (fn [p a] (if (ast/borrowed? (:type p)) (flv a) a)) (:params r) args)
-                     pinned (keep (fn [[p a]] (when (ast/borrowed? (:type p)) a)) (map vector (:params r) cargs))
-                     _ (run! lock pinned)
-                     res (try (apply entry cargs) (finally (run! unlock pinned)))
-                     code (status)]
-                 (when-not (zero? code)
-                   (rt/raise! code (err-l 0) (err-l 1) (err-d)))
-                 (cond
-                   (= [:array :long] (:type r))
-                   (scm/call "jolt-native-wrap-longs" (err-l 2) res copy-out elem free)
-                   (ast/owned? (:type r))
-                   (let [n (err-l 2) arr (double-array n)]
-                     (copy-out (flv arr) res n)
-                     arr)
-                   (#{:unit :never} (:type r)) nil
-                   :else res)))})))
+    (fn [name args ret collect-safe?]
+      (scm/eval-string (str "(foreign-procedure " (when collect-safe? "__collect_safe ")
+                            "\"" name "\" " args " " ret ")")))))
 
-(defn fallback-fn [r]
-  (eval (list 'fn (mapv :name (:params r)) (fallback/region-form r))))
+(defn- jit-compile
+  "SRC compiled by the JIT, as a region's call site compiles it outside a build."
+  [sym src]
+  (let [m (scm/call "jolt-mir-compile-source" src)]
+    (when (string? m)
+      (throw (ex-info (str "the JIT failed for " sym ": " m) {:src src})))
+    (fn [name args ret collect-safe?]
+      (let [addr (scm/call "jolt-mir-lookup" m name)]
+        (when-not addr (throw (ex-info (str "the JIT defined no " name) {})))
+        (scm/eval-string (str "(foreign-procedure " (when collect-safe? "__collect_safe ")
+                              addr " " args " " ret ")"))))))
+
+(defn compile-region
+  "params + body -> {:call f :live f :bad f :peak f :jit {...the same, JIT'd}
+  :region r :c src}. With cc-only, no :jit."
+  [params body & {:keys [cc-only]}]
+  (let [r (mem/check-region (ast/analyze-region params body))
+        sym (str "jn_t" (swap! counter inc))
+        src (str (tracker sym) (emit/emit-region r sym))
+        cc (caller r sym (cc-compile sym src))
+        jit (when-not cc-only (caller r sym (jit-compile sym src)))]
+    (assoc cc :jit jit :region r :c src)))
+
+;; Android/Termux, by ffi.ss's rule (as jolt-locale-probe-test.clj has it):
+;; c2mir cannot read bionic's system headers
+(def android? (boolean (or (System/getenv "TERMUX_VERSION") (System/getenv "ANDROID_ROOT"))))
 
 ;; the backend runs each argument through the host check for its kind before
-;; either half; the harness does the same
+;; the call; the harness does the same
 (def arg-checks {[:ref :double] "jolt-native-arg-doubles" [:ref :long] "jolt-native-arg-longs"
+                 [:ref :byte] "jolt-native-arg-bytes"
                  :long "jolt-native-arg-long" :double "jolt-native-arg-double" :bool "jolt-native-arg-bool"})
 (defn checked [r f] (fn [& args] (apply f (map (fn [p a] (scm/call (arg-checks (:type p)) a)) (:params r) args))))
 
@@ -159,37 +212,91 @@
     (and (= (alength a) (alength b)) (every? true? (map same-double? a b)))
     :else (= a b)))
 
+(defn same-outcome? [a b]
+  (if (contains? a :value)
+    (and (contains? b :value) (same? (:value a) (:value b)))
+    (= a b)))
+
 (defn copy-args [args]
   (mapv #(if (or (instance? (class (double-array 0)) %) (instance? longs-class %)) (aclone %) %) args))
 
+;; --- the golden oracle ---------------------------------------------------------
+;; [label occurrence arg-index] -> {:out outcome :inputs [args after]}, each value
+;; in a form = can compare exactly: NaN, the infinities and -0.0 as tags, arrays
+;; as tagged vectors.
+(def golden-path "test/native/golden.edn")
+(def golden-write? (= "write" (System/getenv "NATIVE_GOLDEN")))
+(def golden (atom (edn/read-string (slurp golden-path))))
+(def golden-occ (atom {}))
+(def golden-checked (atom 0))
+;; every key a row produced this run: a golden entry no row produces (a renamed,
+;; reordered or deleted row) fails the run rather than going unchecked
+(def golden-seen (atom #{}))
+
+(defn gnorm [v]
+  (cond
+    (double? v) (cond (Double/isNaN v) [:nan]
+                      (Double/isInfinite v) [:inf (if (pos? v) 1 -1)]
+                      (and (zero? v) (neg? (Math/copySign 1.0 v))) [:neg-zero]
+                      :else v)
+    (instance? (class (double-array 0)) v) {:doubles (mapv gnorm v)}
+    (instance? longs-class v) {:longs (vec v)}
+    (map? v) (into {} (map (fn [[k x]] [k (gnorm x)]) v))
+    :else v))
+
+(defn- golden=
+  "WANT and GOT the same, a double allowed one ulp: golden.edn was recorded on
+  glibc, and another libm (bionic, macOS) rounds sin, exp and the rest a last
+  bit differently. cc and the JIT, on one machine, are compared exactly."
+  [want got]
+  (cond
+    (and (double? want) (double? got)) (or (= want got) (<= (Math/abs (- want got)) (Math/ulp want)))
+    (and (map? want) (map? got)) (and (= (set (keys want)) (set (keys got)))
+                                      (every? #(golden= (get want %) (get got %)) (keys want)))
+    (and (sequential? want) (sequential? got)) (and (= (count want) (count got))
+                                                    (every? true? (map golden= want got)))
+    :else (= want got)))
+
+(defn- check-golden [label k c ca]
+  (let [got {:out (gnorm c) :inputs (mapv gnorm ca)}
+        want (get @golden k)]
+    (swap! golden-seen conj k)
+    (cond
+      want (do (swap! golden-checked inc)
+               (when-not (golden= want got)
+                 (fail! (str label " " (pr-str (peek k)) ": want " (pr-str want) " (golden.edn) got " (pr-str got)))))
+      golden-write? (swap! golden assoc k got))))
+
 (defn check-run
-  "Run one program as C and as its fallback on each arg vector; compare."
-  [label params body arg-vecs & {:keys [raw]}]
-  (let [compiled (try (compile-region params body)
+  "Run one program as cc's C and as the JIT's on each arg vector; compare them
+  with each other, with the body as plain Clojure (:raw) and with golden.edn."
+  [label params body arg-vecs & {:keys [raw cc-only]}]
+  (let [compiled (try (compile-region params body :cc-only cc-only)
                       (catch Throwable e (fail! (str label ": compile failed: " (.getMessage e))) nil))]
     (when compiled
-      (let [fb (fallback-fn (:region compiled))
-            raw-f (when raw (eval (list* 'fn (vec params) body)))]
-        (doseq [args arg-vecs]
-          (let [ca (copy-args args) fa (copy-args args) ra (copy-args args)
-                c (outcome #(apply (checked (:region compiled) (:call compiled)) %) ca)
-                f (outcome #(apply (checked (:region compiled) fb) %) fa)]
-            (when-not (if (contains? c :value)
-                        (and (contains? f :value) (same? (:value c) (:value f)))
-                        (= c f))
-              (fail! (str label " " (pr-str args) ": C " (pr-str c) " vs fallback " (pr-str f))))
-            (when-not (every? true? (map same? ca fa))
-              (fail! (str label " " (pr-str args) ": inputs after C and fallback differ")))
+      (let [r (:region compiled)
+            jit (:jit compiled)
+            raw-f (when raw (eval (list* 'fn (vec params) body)))
+            occ (get (swap! golden-occ update label (fnil inc -1)) label)]
+        (doseq [[gi args] (map-indexed vector arg-vecs)]
+          (let [ca (copy-args args) ja (copy-args args) ra (copy-args args)
+                c (outcome #(apply (checked r (:call compiled)) %) ca)]
+            (when jit
+              (let [j (outcome #(apply (checked r (:call jit)) %) ja)]
+                (when-not (same-outcome? c j)
+                  (fail! (str label " " (pr-str args) ": cc " (pr-str c) " vs JIT " (pr-str j))))
+                (when-not (every? true? (map same? ca ja))
+                  (fail! (str label " " (pr-str args) ": inputs after cc and JIT differ")))))
+            (check-golden label [label occ gi] c ca)
             (when raw-f
-              (let [r (outcome #(apply raw-f %) ra)]
-                (when-not (if (contains? r :value)
-                            (and (contains? f :value) (same? (:value r) (:value f)))
-                            (= r f))
-                  (fail! (str label " " (pr-str args) ": fallback " (pr-str f)
-                              " vs body as plain Clojure " (pr-str r))))))
-            (let [live ((:live compiled)) bad ((:bad compiled))]
-              (when-not (zero? live) (fail! (str label " " (pr-str args) ": leaked " live " block(s)")))
-              (when-not (zero? bad) (fail! (str label " " (pr-str args) ": bad free"))))))
+              (let [rr (outcome #(apply raw-f %) ra)]
+                (when-not (same-outcome? rr c)
+                  (fail! (str label " " (pr-str args) ": region " (pr-str c)
+                              " vs body as plain Clojure " (pr-str rr))))))
+            (doseq [[how h] (cond-> [["cc" compiled]] jit (conj ["JIT" jit]))]
+              (let [live ((:live h)) bad ((:bad h))]
+                (when-not (zero? live) (fail! (str label " " (pr-str args) ": " how " leaked " live " block(s)")))
+                (when-not (zero? bad) (fail! (str label " " (pr-str args) ": " how " bad free")))))))
         compiled))))
 
 (defn check-reject [label params body msg-re]
@@ -461,22 +568,24 @@
 ;; JVM does, instead of crashing the process; what was live is still freed
 (defnative ^long down [n] (if (zero? n) 0 (+ 1 (down (dec n)))))
 (defnative ^doubles eat [a n] (if (<= n 0) a (let [r (eat a (dec n))] (aset r 0 1.0) r)))
-(let [deep (compile-region '[^long n] '((down n)))
-      deep-arr (compile-region '[^long n] '((alength (eat (double-array 3) n))))
+(let [deep-c (compile-region '[^long n] '((down n)))
+      deep-arr-c (compile-region '[^long n] '((alength (eat (double-array 3) n))))
       soe {:throw "java.lang.StackOverflowError" :msg nil}]
-  (check-eq "shallow helper recursion" (outcome #(apply (:call deep) %) [1000]) {:value 1000})
-  (check-eq "deep helper recursion raises StackOverflowError"
-            (outcome #(apply (:call deep) %) [100000000]) soe)
-  (check-eq "deep helper recursion in a future raises StackOverflowError"
-            @(future (outcome #(apply (:call deep) %) [100000000])) soe)
-  (check-eq "the region still runs after a stack overflow" (outcome #(apply (:call deep) %) [10]) {:value 10})
-  (check-eq "deep recursion holding a taken array raises StackOverflowError"
-            (outcome #(apply (:call deep-arr) %) [100000000]) soe)
-  (check-eq "the taken array is freed on the overflow" ((:live deep-arr)) 0)
-  (check-eq "no bad free on the overflow" ((:bad deep-arr)) 0)
+  ;; cc's C, then the JIT's
+  (doseq [[how deep deep-arr] [["" deep-c deep-arr-c] [" (JIT)" (:jit deep-c) (:jit deep-arr-c)]]]
+    (check-eq (str "shallow helper recursion" how) (outcome #(apply (:call deep) %) [1000]) {:value 1000})
+    (check-eq (str "deep helper recursion raises StackOverflowError" how)
+              (outcome #(apply (:call deep) %) [100000000]) soe)
+    (check-eq (str "deep helper recursion in a future raises StackOverflowError" how)
+              @(future (outcome #(apply (:call deep) %) [100000000])) soe)
+    (check-eq (str "the region still runs after a stack overflow" how) (outcome #(apply (:call deep) %) [10]) {:value 10})
+    (check-eq (str "deep recursion holding a taken array raises StackOverflowError" how)
+              (outcome #(apply (:call deep-arr) %) [100000000]) soe)
+    (check-eq (str "the taken array is freed on the overflow" how) ((:live deep-arr)) 0)
+    (check-eq (str "no bad free on the overflow" how) ((:bad deep-arr)) 0))
   (check-eq "a region without recursion has no stack guard"
-            (str/includes? (:c (compile-region '[^long n] '((sum-pick (long-array 3) 0 n)))) "__builtin_frame_address") false)
-  (check-eq "a recursive helper checks the stack" (str/includes? (:c deep) "__builtin_frame_address") true))
+            (str/includes? (:c (compile-region '[^long n] '((sum-pick (long-array 3) 0 n)))) "JN_FRAME() <") false)
+  (check-eq "a recursive helper checks the stack" (str/includes? (:c deep-c) "JN_FRAME() <") true))
 
 ;; (if c x nil) is a nil-typed if, so the region answers nil in both halves
 (check-run "a when beside nil answers nil" '[^long x] '((when (> x 0) (* x 2))) [[3] [-1]])
@@ -484,13 +593,6 @@
 (defnative maybe-five [c] (when c 5))
 (check-run "a helper's when beside nil answers nil" '[^boolean c] '((maybe-five c)) [[true] [false]])
 
-;; the fallback's own local and helper names cannot capture a parameter
-(check-run "fallback locals do not capture a parameter" '[^long nr__l3]
-           '((let [y 10] (+ y nr__l3))) [[1]] :raw true)
-(doseq [k (range 1 6)]
-  (let [p (with-meta (symbol (str "nr__h" k)) {:tag 'long})]
-    (check-run (str "fallback helpers do not capture parameter " p) [p]
-               (list (list '+ (list 'fib p) p)) [[5]] :raw true)))
 (check-reject "a helper returning an array the region borrowed" '[^doubles xs] '((alength (leak-borrowed xs)))
               #"only borrowed from its caller.*pass \(aclone x\)")
 (check-reject "moving the array a helper borrows in a sibling argument" '[]
@@ -529,10 +631,6 @@
 (check-run "quot of Long/MIN_VALUE by -1 wraps" '[^long a ^long b]
            '((quot a b))
            [[Long/MIN_VALUE -1] [7 -1] [7 2] [7 0]])
-(let [r ((fallback-fn (mem/check-region (ast/analyze-region '[^long a ^long b] '((quot a b)))))
-         Long/MIN_VALUE -1)]
-  (when-not (= r Long/MIN_VALUE)
-    (fail! (str "quot of Long/MIN_VALUE by -1: want the JVM's " Long/MIN_VALUE ", got " r))))
 (check-reject "dotimes over a double count" '[^double x]
               '((dotimes [i x] nil) 0) #"dotimes takes a long count")
 
@@ -777,7 +875,8 @@
            [[3] [-4611686018427387904]])
 
 ;; --- defextern: C functions a region calls directly ---------------------------
-;; The C half calls the function; the fallback calls it through jolt.ffi.
+;; A region's C calls the function; outside a region, name calls it through
+;; jolt.ffi.
 
 (defextern ^long ext-mix [^long a ^double b] {:c "jn_ext_mix"})
 (defextern ^boolean ext-odd [^long a] {:c "jn_ext_odd"})
@@ -820,7 +919,8 @@
           (let [src (c-of '[^double x] '((ext-cbrt x)))]
             [(boolean (re-find #"#include <math.h>\n" src)) (boolean (re-find #"double cbrt\(double\);" src))])
           [true false])
-(check-run "a libm function through its header" '[^double x] '((ext-cbrt x)) [[27.0] [-8.0] [2.0]])
+(check-run "a libm function through its header" '[^double x] '((ext-cbrt x)) [[27.0] [-8.0] [2.0]]
+           :cc-only android?)
 
 ;; array arguments: a pointer to the elements and their count
 
@@ -847,7 +947,7 @@
            [[(long-array [1 2 3])] [(long-array [])]])
 (check-eq "an array passed to C stays in memory"
           (stack-arrays (c-of '[] '((let [t (double-array 3)] (aset t 0 1.0) (ext-sum t))))) 1)
-(check-eq "the fallback writes C's changes back"
+(check-eq "called outside a region, a C function's changes are written back"
           (let [a (da 1 2)] (ext-scale a 3.0) (vec a))
           [3.0 6.0])
 
@@ -856,7 +956,7 @@
 (defnative which-body [] (on "0" 10) (on "1" 20) (on :default 30))
 (let [f (:call (compile-region '[] '((which-body))))]
   (check-eq "C compiles the first body whose guard holds" (f) 20)
-  (check-eq "the fallback runs the :default body" (which-body) 30))
+  (check-eq "outside a region, name runs the :default body" (which-body) 30))
 
 (defnative no-body [] (on "0" 1) (on "defined(JN_NEVER_DEFINED)" 2))
 (check-eq "a platform no body covers is a build error"
@@ -869,7 +969,7 @@
       (loop [i 0 s 0] (if (< i (alength xs)) (recur (inc i) (+ s (aget xs i))) s)))
   (on :default
       (loop [i (dec (alength xs)) s 0] (if (>= i 0) (recur (dec i) (+ s (aget xs i))) s))))
-(check-run "equivalent platform bodies agree with the fallback" '[^longs xs]
+(check-run "equivalent platform bodies agree" '[^longs xs]
            '((vsum xs))
            [[(long-array [1 2 3 4])] [(long-array [])] [(long-array [-5 9])]])
 
@@ -891,13 +991,255 @@
 (check-run "a C function used only in a platform body is declared" '[^double x]
            '((halve-on x)) [[3.0] [-1.5]])
 
+;; --- ^bytes parameters and bit operations ---------------------------------------
+;; A region reads a byte-array in place, each element a signed byte as a long;
+;; the bit operations are the JVM's long ones, shift counts masked to 0..63.
+
+(defn ba [& xs] (byte-array xs))
+
+(check-run "sum the bytes of a ^bytes parameter, signed and unsigned" '[^bytes bs]
+           '((loop [i 0 s 0 u 0]
+               (if (< i (alength bs))
+                 (recur (inc i) (+ s (aget bs i)) (+ u (bit-and (aget bs i) 255)))
+                 (+ (* s 100000) u))))
+           [[(ba)] [(ba 1 2 3)] [(ba -1 -128 127 0)]] :raw true)
+(check-run "bit operations" '[^long a ^long b]
+           '((bit-xor (bit-and a b) (bit-shift-left (bit-or a b) 1) (bit-shift-left (bit-xor a b) 2)
+                      (bit-not a) (bit-and a b 7) (bit-or a b 1)))
+           [[0 0] [-1 12345] [Long/MAX_VALUE Long/MIN_VALUE] [6 3]] :raw true)
+(check-run "shifts mask their count as the JVM does" '[^long a ^long k]
+           '((bit-xor (bit-shift-left a k) (bit-shift-right a k) (unsigned-bit-shift-right a k)))
+           [[1 0] [1 63] [1 64] [1 65] [-1 1] [-8 2] [Long/MIN_VALUE 63] [12345 -1] [7 200]] :raw true)
+(check-run "little-endian u32 from bytes" '[^bytes bs ^long off]
+           '((bit-or (bit-and (aget bs off) 255)
+                     (bit-shift-left (bit-and (aget bs (+ off 1)) 255) 8)
+                     (bit-shift-left (bit-and (aget bs (+ off 2)) 255) 16)
+                     (bit-shift-left (bit-and (aget bs (+ off 3)) 255) 24)))
+           [[(ba 1 2 3 4 5) 0] [(ba 1 2 3 4 5) 1] [(ba -1 -1 -1 -1) 0] [(ba 1 2 3) 0] [(ba 1 2 3 4) -1]] :raw true)
+(defnative byte-at [bs i] (aget bs i))
+(check-run "a helper borrows a ^bytes parameter" '[^bytes bs]
+           '((+ (byte-at bs 0) (byte-at bs (dec (alength bs)))))
+           [[(ba 5 -7)] [(ba 9)] [(ba)]] :raw true)
+(check-reject "a region cannot write a ^bytes parameter" '[^bytes bs] '((aset bs 0 1))
+              #"cannot write it")
+(check-reject "a region cannot clone a ^bytes parameter" '[^bytes bs] '((alength (aclone bs)))
+              #"cannot clone a \^bytes")
+(check-reject "a ^bytes parameter is not a C function's array" '[^bytes bs] '((ext-sum bs))
+              #"takes \[:array :double\] here")
+(check-eq "a ^bytes parameter must be a byte-array"
+          (outcome #(apply (checked (:region (compile-region '[^bytes bs] '((alength bs))))
+                                    (fn [_] :called)) %)
+                   [(double-array 2)])
+          {:throw "java.lang.ClassCastException" :msg "native region: a ^bytes parameter got [D"})
+
+;; a mask by a non-negative constant bounds an index: the fast copy drops the
+;; bounds check once the guard has the array longer than the mask
+(let [src (c-of '[^doubles xs ^long i] '((aget xs (bit-and i 3))))
+      fast (fast-copy src)]
+  (check-eq "a masked index is proven in bounds" (boolean (and fast (str/includes? fast ".len > 3LL"))) true))
+
+;; an unsigned shift by 1 can still answer 2^63 - 1: its range must not drop the
+;; bounds check or the overflow check after it
+(check-run "an unsigned shift by 1 keeps the index checked" '[^longs xs ^long i]
+           '((aget xs (unsigned-bit-shift-right i 1)))
+           [[(long-array [1 2 3 4]) 6] [(long-array [1 2 3 4]) -1] [(long-array [1 2 3 4]) -2]] :raw true)
+(defn ushr1-inc [^long i] (jolt.native/native [^long i] (inc (unsigned-bit-shift-right i 1))))
+(check-eq "an unsigned shift by 1 keeps the overflow check (the JVM's inc throws)"
+          [(outcome (fn [_] (ushr1-inc 6)) nil) (outcome (fn [_] (ushr1-inc -1)) nil)]
+          [{:value 4} {:throw "java.lang.ArithmeticException" :msg "integer overflow"}])
+
+;; --- native-fn: regions compiled at runtime from data ------------------------------
+;; through eval, the backend and the JIT, as a call site in the REPL is
+
+(def rt-sq (jolt.native/native-fn '[^long n] '((* n n))))
+(check-eq "native-fn compiles a region from data" (rt-sq 7) 49)
+(check-eq "native-fn's region overflows as a region does"
+          (outcome (fn [_] (rt-sq 4000000000)) nil)
+          {:throw "java.lang.ArithmeticException" :msg "integer overflow"})
+(check-eq "native-fn throws the region's compile error"
+          (try (jolt.native/native-fn '[^long n] '((aget n 0))) :compiled
+               (catch Throwable e (boolean (re-find #"aget takes an array" (.getMessage e)))))
+          true)
+(check-eq "native-fn resolves helpers in the namespace it is given"
+          ((jolt.native/native-fn '[^bytes bs] '((byte-at bs 1)) 'native-test) (ba 3 -4)) -4)
+(check-eq "native-fn checks the region in the namespace it is given, not the caller's"
+          (binding [*ns* (the-ns 'clojure.core)]
+            ((jolt.native/native-fn '[^bytes bs] '((byte-at bs 0)) 'native-test) (ba 3 -4)))
+          3)
+(check-eq "native-fn runs as JIT'd code" (some #{:jit} (vals (jolt.native/linked-regions))) :jit)
+
+;; --- jolt.native.layout: a record layout lowered into a parser and a scan ---------
+
+(require '[jolt.native.layout :as layout])
+
+(defn- ref-field
+  "A field read in plain Clojure: the oracle for the layout's region."
+  [^bytes buf base {:keys [type offset]} endian]
+  (let [w ({:u8 1 :i8 1 :u16 2 :i16 2 :u32 4 :i32 4 :i64 8} type)
+        bs (map #(bit-and (aget buf (+ base offset %)) 255) (range w))
+        bs (if (= endian :big) (reverse bs) bs)
+        u (reduce (fn [acc [k b]] (bit-or acc (bit-shift-left b (* 8 k)))) 0 (map-indexed vector bs))]
+    (case type
+      :i8 (aget buf (+ base offset))
+      :i16 (if (>= u 0x8000) (- u 0x10000) u)
+      :i32 (if (>= u 0x80000000) (- u 0x100000000) u)
+      u)))
+
+(defn- ref-fields [lay]
+  (first (reduce (fn [[fs off] [n t]]
+                   (if (= :pad n) [fs (+ off t)]
+                       [(conj fs {:name n :type t :offset off})
+                        (+ off ({:u8 1 :i8 1 :u16 2 :i16 2 :u32 4 :i32 4 :i64 8} t))]))
+                 [[] 0] lay)))
+
+(def lay [[:magic :u32] [:version :u8] [:pad 1] [:count :u16] [:size :i64] [:delta :i16]
+          [:tag :i8] [:big :i32] [:small :u16]])
+(def lay-size (layout/record-size lay))
+(check-eq "a layout's size counts its padding" lay-size 25)
+(def lay-buf (let [r (java.util.Random. 20261125)]
+               (byte-array (map (fn [_] (- (.nextInt r 256) 128)) (range (+ (* 40 lay-size) 7))))))
+
+(doseq [endian [:little :big]]
+  (let [parse (layout/parser lay :endian endian)
+        fs (ref-fields lay)]
+    (doseq [base [0 lay-size (* 17 lay-size) 3]]
+      (check-eq (str "a " (name endian) "-endian layout parses as plain Clojure reads it, at " base)
+                (vec (parse lay-buf base))
+                (mapv #(ref-field lay-buf base % endian) fs)))
+    (doseq [f fs]
+      (check-eq (str "a " (name endian) "-endian column scan of " (:name f))
+                (vec ((layout/column lay (:name f) :endian endian) lay-buf))
+                (mapv #(ref-field lay-buf (* % lay-size) f endian) (range 40))))))
+(check-eq "a layout read past the end raises as aget does"
+          (outcome (fn [_] ((layout/parser lay) lay-buf (- (alength lay-buf) 3))) nil)
+          {:throw "java.lang.ArrayIndexOutOfBoundsException"
+           :msg (str "Index " (alength lay-buf) " out of bounds for length " (alength lay-buf))})
+(check-eq "a layout field names a width"
+          (try (layout/parser [[:x :u24]]) :compiled
+               (catch Throwable e (boolean (re-find #"one of :u8" (.getMessage e)))))
+          true)
+
+;; --- specialization: a variant per value of a ^{:specialize [...]} parameter -------
+;; The variant has the value as a constant, so the range analysis can prove what
+;; it could not for an unknown n; the answers must not change.
+
+(def msum-params '[^long n ^doubles m])
+(def msum-body '((loop [i 0 s 0.0]
+                   (if (< i n)
+                     (recur (inc i) (loop [j 0 s s] (if (< j n) (recur (inc j) (+ s (aget m (+ (* i n) j)))) s)))
+                     s))))
+
+(let [generic (c-of msum-params msum-body)
+      [keep b] (jolt.native/specialized-body msum-params msum-body '[n] [4])
+      fast (fast-copy (c-of keep b))]
+  (check-eq "for an unknown n, even the fast copy checks i * n + j for overflow"
+            (boolean (re-find #"__builtin_mul_overflow" (or (fast-copy generic) generic))) true)
+  (check-eq "specialized on n = 4, a fast copy guards on 16 elements"
+            (boolean (and fast (str/includes? fast ".len > 15LL"))) true)
+  (check-eq "the specialized fast copy keeps no overflow, cast or bounds check"
+            (when fast (re-find #"overflow|INT32_MIN|jn_tls\.code = 1" fast)) nil))
+
+(defn spec-msum [^long n ^doubles m]
+  (jolt.native/native ^{:specialize [n] :max-variants 3} [^long n ^doubles m]
+    (loop [i 0 s 0.0]
+      (if (< i n)
+        (recur (inc i) (loop [j 0 s s] (if (< j n) (recur (inc j) (+ s (aget m (+ (* i n) j)))) s)))
+        s))))
+(defn plain-msum [^long n ^doubles m]
+  (loop [i 0 s 0.0]
+    (if (< i n)
+      (recur (inc i) (loop [j 0 s s] (if (< j n) (recur (inc j) (+ s (aget m (+ (* i n) j)))) s)))
+      s)))
+
+(doseq [n [0 1 2 3 4 5 2 3 6]]
+  (let [m (double-array (map #(* 0.5 %) (range (* n n))))]
+    (check-eq (str "a specialized region answers as written, n = " n) (spec-msum n m) (plain-msum n m))))
+(let [site (some (fn [[k v]] (when (some #{[2]} v) k)) (jolt.native/specializations))]
+  (check-eq "a variant is compiled per value, up to :max-variants"
+            (sort (map first (get (jolt.native/specializations) site))) [0 1 2]))
+(check-eq "a value past :max-variants runs the region as written, and fails as it does"
+          (outcome (fn [_] (spec-msum 3 (double-array 4))) nil)
+          {:throw "java.lang.ArrayIndexOutOfBoundsException" :msg "Index 4 out of bounds for length 4"})
+(check-eq "a variant fails as the region does"
+          (outcome (fn [_] (spec-msum 2 (double-array 3))) nil)
+          {:throw "java.lang.ArrayIndexOutOfBoundsException" :msg "Index 3 out of bounds for length 3"})
+
+(defn spec-scale [^double k ^boolean neg ^doubles xs]
+  (jolt.native/native ^{:specialize [k neg]} [^double k ^boolean neg ^doubles xs]
+    (dotimes [i (alength xs)] (aset xs i (if neg (- (* k (aget xs i))) (* k (aget xs i)))))
+    (aget xs 0)))
+(check-eq "double and boolean parameters specialize" [(spec-scale 2.0 false (double-array [1 2]))
+                                                     (spec-scale 2 true (double-array [1 2]))
+                                                     (spec-scale 2.0 false (double-array [3]))]
+          [2.0 -2.0 6.0])
+(check-eq "a long argument to a specialized ^double is cast as the region casts it"
+          (some #{[2.0 true]} (mapcat val (jolt.native/specializations))) [2.0 true])
+
+;; The key is the cast value, not the argument: an unhinted caller passing 2 and
+;; 2.0 gets one variant. A double is keyed by its bits, since 0.0 = -0.0 but a
+;; variant with k = 0.0 would answer 0.0 where the region answers -0.0.
+(defn spec-k [k ^doubles xs]
+  (jolt.native/native ^{:specialize [k]} [^double k ^doubles xs] (* k (aget xs 0))))
+(defn plain-k [k ^doubles xs] (* (double k) (aget xs 0)))
+(check-eq "0.0 and -0.0 get their own variants, each answering as the region does"
+          (mapv #(str (spec-k % (double-array [1.0]))) [0.0 -0.0 2 2.0])
+          (mapv #(str (plain-k % (double-array [1.0]))) [0.0 -0.0 2 2.0]))
+(check-eq "2 and 2.0 for a ^double share a variant"
+          (some (fn [[_ v]] (when (some #{[-0.0]} v) (count v))) (jolt.native/specializations))
+          3)
+(check-eq "an argument the region's cast refuses raises the region's own error"
+          (outcome (fn [_] (spec-k "x" (double-array [1.0]))) nil)
+          (outcome (fn [_] (let [k "x"] (jolt.native/native [^double k] k))) nil))
+
+(doseq [[label params msg] [["an array" '^{:specialize [xs]} [^doubles xs] #"is an array"]
+                            ["a non-parameter" '^{:specialize [q]} [^long n] #"not a parameter"]
+                            ["not a vector" '^{:specialize n} [^long n] #"vector of parameter names"]]]
+  (check-eq (str ":specialize refuses " label)
+            (try (macroexpand (list 'jolt.native/native params 1)) :expanded
+                 (catch Throwable e (boolean (re-find msg (.getMessage e)))))
+            true))
+
+;; --- the machine the JIT compiles for: (on ...) bodies chosen per CPU ------------
+;; jolt build (cc here) compiles for whatever its compiler targets, the
+;; baseline unless it was configured otherwise; the JIT defines the macro of
+;; each feature this CPU has (jolt.native/cpu-features), so its guard picks
+;; the body the running machine can run.
+
+(def feats (jolt.native/cpu-features))
+(defnative which-cpu [] (on "defined(__AVX2__)" 2) (on "defined(__SSE2__)" 1) (on :default 0))
+(def cc-which ((:call (compile-region '[] '((which-cpu))))))
+(let [c (compile-region '[] '((which-cpu)))
+      sse2 (if (= 2 cc-which) 1 cc-which)]
+  (check-eq "the JIT picks the body for this CPU's features"
+            ((:call (:jit c))) (if (:avx2 feats) 2 sse2)))
+(check-eq "cpu-features answers keywords" (every? keyword? feats) true)
+
+(defextern ^double ext-dot-avx2 [^doubles xs ^doubles ys] {:c "jn_ext_dot_avx2"})
+(defextern ^long ext-dot-calls [] {:c "jn_ext_dot_calls"})
+(defnative cpu-dot [xs ys]
+  (on "defined(__AVX2__)" (ext-dot-avx2 xs ys))
+  (on :default (loop [i 0 s 0.0] (if (< i (alength xs)) (recur (inc i) (+ s (* (aget xs i) (aget ys i)))) s))))
+;; whole numbers, so the SIMD kernel's other summation order rounds alike
+(let [c (compile-region '[^doubles xs ^doubles ys] '((cpu-dot xs ys)))
+      xs (double-array (range 1 12)) ys (double-array (range 12 1 -1))
+      want (reduce + (map * (range 1 12) (range 12 1 -1)))
+      before (ext-dot-calls)
+      cc-r ((:call c) xs ys)
+      mid (ext-dot-calls)
+      jit-r ((:call (:jit c)) xs ys)
+      after (ext-dot-calls)]
+  (check-eq "cc's body, the one its compiler's macros pick"
+            [cc-r (- mid before)] [(double want) (if (= 2 cc-which) 1 0)])
+  (check-eq "the JIT runs the SIMD body where the CPU has AVX2, with the same answer"
+            [jit-r (- after mid)] [(double want) (if (:avx2 feats) 1 0)]))
+
 ;; --- random programs ----------------------------------------------------------
 ;; A generator builds well-typed region programs and tracks ownership with its
 ;; own model of the rules (moves in let bindings, returns and recur; borrows in
 ;; aget/aset/alength/aclone; no outer value moved in a continuing loop
 ;; iteration). About one program in twelve gets a planted violation: a use of a
 ;; value the model knows is gone. The checker must accept every program the
-;; model accepts (which then has to pass the C-vs-fallback run and leave no
+;; model accepts (which then has to pass the cc-vs-JIT run and leave no
 ;; leak or bad free), and reject every planted one. Two implementations of the
 ;; ownership rules, checked against each other.
 ;; NATIVE_FUZZ_SEED and NATIVE_FUZZ_N reproduce or widen a run.
@@ -1186,6 +1528,24 @@
 (fuzz!)
 
 
+(def golden-unseen
+  ;; only meaningful for the default fuzz run, which is what golden.edn records
+  (when-not (some #(System/getenv %) ["NATIVE_FUZZ_SEED" "NATIVE_FUZZ_N" "NATIVE_FUZZ_SKIP"])
+    (remove @golden-seen (keys @golden))))
+(if golden-write?
+  (do (swap! golden #(apply dissoc % golden-unseen))
+      (spit golden-path
+            (with-out-str
+              (println ";; test/chez/native-test.clj's golden oracle: what each row answered when")
+              (println ";; regions had a Jolt fallback. Regenerate only with NATIVE_GOLDEN=write.")
+              (println "{")
+              (doseq [[k v] (sort-by key @golden)] (println (pr-str k) (pr-str v)))
+              (println "}")))
+      (println "native-test: wrote" (count @golden) "golden outcomes"))
+  (do (when (seq golden-unseen)
+        (fail! (str (count golden-unseen) " golden.edn entries no row produced (renamed, reordered or"
+                    " deleted rows?), e.g. " (pr-str (take 3 golden-unseen)))))
+      (println "native-test:" @golden-checked "outcomes matched golden.edn")))
 (if (seq @failures)
   (do (println (count @failures) "native-test failure(s)") (System/exit 1))
   (println "NATIVE OK"))

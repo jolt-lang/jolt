@@ -104,6 +104,19 @@
     (:quot :rem :mod) (do (run! #(rng % env) (:args node)) (divide node env))
     :to-long (let [r (rng (first (:args node)) env)]
                (if (= :long (:type (first (:args node)))) r full))
+    ;; a mask with a known non-negative operand bounds the result by it, which
+    ;; is what lets (aget xs (bit-and i 255)) be proven in bounds
+    :bit-and (let [rs (mapv #(rng % env) (:args node))
+                   nonneg (keep (fn [r] (when (and r (>= (r 0) 0)) (r 1))) rs)]
+               (if (seq nonneg) [0 (apply min nonneg)] full))
+    :unsigned-bit-shift-right
+    (let [[_ rk] (mapv #(rng % env) (:args node))]
+      (if (and rk (= (rk 0) (rk 1)) (< 0 (rk 0) 64))
+        ;; 2^(64-k) - 1, without forming 2^63 (k = 1), which would overflow
+        [0 (bit-shift-right Long/MAX_VALUE (dec (rk 0)))]
+        full))
+    (:bit-or :bit-xor :bit-not :bit-shift-left :bit-shift-right)
+    (do (run! #(rng % env) (:args node)) full)
     (do (run! #(rng % env) (:args node)) nil)))
 
 ;; --- comparisons narrow their locals ------------------------------------------
@@ -199,7 +212,7 @@
 
 (defn- elem-rng [node]
   (when (= :long (:type node))
-    (if (= [:ref :long] (:type (:arr node))) fixnum full)))
+    (case (:type (:arr node)) [:ref :long] fixnum [:ref :byte] [-128 127] full)))
 
 ;; --- the walk -----------------------------------------------------------------
 
