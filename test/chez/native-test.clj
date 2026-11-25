@@ -16,6 +16,7 @@
 ;; it keeps are still checked, never re-recorded.
 (ns native-test
   (:require [clojure.string :as str]
+            [clojure.set :as set]
             [clojure.edn :as edn]
             [jolt.scheme :as scm]
             [jolt.native.ast :as ast]
@@ -940,6 +941,37 @@
           0)
 (check-eq "a size past the cap stays on the heap"
           (stack-arrays (c-of '[] '((let [a (double-array 300)] (aget a 0))))) 0)
+
+;; The JIT compiles with no system headers, so the prelude's __MIRC__ block
+;; declares each C library function the emitted C calls. One it misses still
+;; compiles, as a call with no prototype, which MIR passes as variadic: on
+;; Apple arm64 that puts every argument on the stack, so the callee reads its
+;; registers and a stack array's memset faulted there. Linux passes the same
+;; call in registers, so this checks the declarations on every platform.
+(def ^:private c-library
+  '#{memset memcpy memmove memcmp calloc malloc realloc free abort
+     sqrt sin cos tan exp log floor ceil pow atan2 fabs fmod})
+
+(defn- mirc-block [src] (second (re-find #"(?s)#ifdef __MIRC__(.*?)#else" src)))
+
+(defn- prototyped [block]
+  (set (map (comp symbol second)
+            (re-seq #"\b(?:void|double|int|int64_t|size_t)\s*\*?\s*([a-z_][a-z0-9_]*)\([^)]" block))))
+
+(defn- called [src]
+  (let [rest-of (str/replace src (mirc-block src) "")]
+    (set (filter #(re-find (re-pattern (str "\\b" % "\\(")) rest-of) c-library))))
+
+(let [srcs [(c-of '[^long i] '((let [a (double-array 4)] (aget a i))))
+            (c-of '[^long i] '((let [a (long-array 7)] (aset a i 5) (aget a 0))))
+            (c-of '[^long n] '((let [a (double-array n)] (aset a 0 1.0) a)))
+            (c-of '[^doubles xs] '((let [b (aclone xs)] (aget b 0))))
+            (c-of '[^double x] '((+ (Math/sqrt x) (Math/pow x 2.0) (Math/atan2 x 1.0))))]
+      calls (apply set/union (map called srcs))
+      decls (prototyped (mirc-block (first srcs)))]
+  (check-eq "the regions call memset, calloc and memcpy" (every? calls '[memset calloc memcpy]) true)
+  (check-eq "the JIT prelude prototypes every C library function the C calls"
+            (sort (remove decls calls)) ()))
 
 (check-run "a stack temporary is zeroed each time it is made" '[^long n]
            '((loop [i 0 s 0.0]
