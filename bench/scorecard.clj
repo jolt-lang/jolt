@@ -64,6 +64,7 @@
    "string-ops-unhinted" "the same string interop without type hints"
    "char-scan" "`.charAt` per code point with the `int`/`long`/`unchecked-*` casts, a `case` state machine"
    "char-scan-unhinted" "the same scan without type hints"
+   "num-casts" "double-to-integer casts: `long`/`int`/`unchecked-long`/`unchecked-int` of a double, with `long` of a fixnum as the floor"
    "printing" "`pr-str` over scalars and namespaced maps, `print` into a rebound `*out*`, `format` with numeric directives and flags"
    "mono-dispatch" "monomorphic protocol dispatch (devirt / inline cache can fire)"
    "dispatch" "megamorphic protocol dispatch"
@@ -88,6 +89,8 @@
    "transient-builds" "`(reduce conj! (transient coll) v)` from a 32k vector into a vector, a map (from pairs) and a set"
    "transient-edits" "one replacement, one removal and two replacements through `transient`/`persistent!` on a 32k-entry map"
    "string-hash" "`hash` of strings: a reused 2,048-string set, a reused 50k-string set, and strings hashed once"
+   "sorted-ops" "sorted collections op by op: `get`/`contains?`/`find`, `dissoc`/`disj`, the first/disj queue loop, `seq`/`reduce`/`rseq`, `subseq`/`rsubseq`, `java.util.TreeMap`"
+   "coll-ops" "hash map, hash set, vector and list op by op: `get`, assoc new/replace, `dissoc`, walk, `reduce-kv`, `=`/`hash`/`merge`, transient build, `nth`/`pop`/`subvec`, the cons list"
    "startup" "a built hello-world, whole process from exec to exit, best of {{startup-reps}} (JVM: `java -cp … clojure.main -m hello`)"})
 
 (def run-mode-descriptions
