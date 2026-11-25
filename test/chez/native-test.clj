@@ -1189,7 +1189,7 @@
           3)
 (check-eq "an argument the region's cast refuses raises the region's own error"
           (outcome (fn [_] (spec-k "x" (double-array [1.0]))) nil)
-          (outcome (fn [_] (jolt.native/native [^double k] k)) nil))
+          (outcome (fn [_] (let [k "x"] (jolt.native/native [^double k] k))) nil))
 
 (doseq [[label params msg] [["an array" '^{:specialize [xs]} [^doubles xs] #"is an array"]
                             ["a non-parameter" '^{:specialize [q]} [^long n] #"not a parameter"]
