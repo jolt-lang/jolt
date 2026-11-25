@@ -515,21 +515,26 @@
 (define (jolt-matcher-group m . n)
   (let ((last (matcher-t-last m)))
     (if last
-        (let ((arg (if (pair? n) (car n) 0)))
-          (if (string? arg)
-              ;; JVM .group(String) is name-only: an unknown name is an error,
-              ;; even when the string looks like a group number.
-              (let ((sym (string->symbol arg)))
-                (if (assq sym (irregex-match-names last))
-                    (let ((s (irregex-match-substring last sym)))
-                      (if s s jolt-nil))
-                    (jolt-throw (jolt-host-throwable
-                                 "java.lang.IllegalArgumentException"
-                                 (string-append "No group with name <" arg ">")))))
-              (let ((s (irregex-match-substring last (matcher-group-index last arg))))
-                (if s s jolt-nil))))
+        (let* ((arg (if (pair? n) (car n) 0))
+               (s (irregex-match-substring last (matcher-group-ref last arg))))
+          (if s s jolt-nil))
         (jolt-matcher-no-match))))
 (define (jolt-matcher-group-count m) (irregex-num-submatches (matcher-t-irx m)))
+;; The submatch index a Matcher group argument names: a String is a group NAME
+;; (name-only, as on the JVM: an unknown one is IllegalArgumentException even
+;; when it looks like a number, and nil is the NPE Objects.requireNonNull
+;; raises), anything else a group number. group/start/end all read through here.
+(define (matcher-group-ref mm arg)
+  (cond
+    ((string? arg)
+     (let ((p (assq (string->symbol arg) (irregex-match-names mm))))
+       (if p
+           (cdr p)
+           (jolt-throw (jolt-host-throwable
+                        "java.lang.IllegalArgumentException"
+                        (string-append "No group with name <" arg ">"))))))
+    ((jolt-nil? arg) (jolt-throw (jolt-host-throwable "java.lang.NullPointerException" "Group name")))
+    (else (matcher-group-index mm arg))))
 ;; A group number as the index irregex takes, or the JVM's IndexOutOfBounds
 ;; ("No group N") when it is negative or past the match's group count. Every
 ;; numbered-group read on a Matcher (group/start/end) goes through here.
@@ -545,7 +550,7 @@
 (define (jolt-matcher-bound m n end?)
   (let ((mm (matcher-t-last m)))
     (if mm
-        (let* ((i (matcher-group-index mm n))
+        (let* ((i (matcher-group-ref mm n))
                (b (if end? (irregex-match-end-index mm i) (irregex-match-start-index mm i))))
           (if b b -1))
         (jolt-matcher-no-match))))
