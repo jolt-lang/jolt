@@ -93,7 +93,7 @@
     (reset! dbl-arr (make-doubles n))
     (reset! lng-arr (make-longs))
     (dotimes [_ 2] (run (quot n 4)))                     ; warmup
-    (let [runs 5
+    (let [runs 3
           ;; the phase split, for reading by hand; `mean:` below is the row
           split (mapv (fn [[nm f]] (let [t0 (System/nanoTime)] (f n) [nm (ms-since t0)])) phases)
           times (mapv (fn [_]
