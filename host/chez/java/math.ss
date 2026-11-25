@@ -299,9 +299,72 @@
 (def-var! "clojure.math" "exp" (m1 exp))
 (def-var! "clojure.math" "expm1" (n1 jolt-math-expm1))
 (def-var! "clojure.math" "log" (m1c log))
-;; base-10 log via Chez's base-arg log — also backs java.lang.Math/log10 so the
-;; two never disagree.
-(define (jolt-math-log10 x) (real-or-nan (log x 10.0)))
+;; Math.log10 is fdlibm's e_log10 (the JDK's FdLibm.Log10), ported over the
+;; high word as cbrt is above; it also backs clojure.math/log10 so the two never
+;; disagree. ln(x)/ln(10), which (log x 10.0) is, misses exact powers of ten:
+;; log10(1000.0) came out 2.9999999999999996. fdlibm splits x into 2^k * m with
+;; m in [1,2) (or [0.5,1) when k<0) and adds k*log10(2) in two parts, so a power
+;; of ten lands on its integer.
+;; fdlibm's e_log (the JDK's FdLibm.Log) for a positive normal finite x: the
+;; natural log log10 is built on. The host libm's log is not the same function
+;; (one or two ulps apart on about 1 in 3000 doubles), so log10 over it missed
+;; the JVM's digits.
+(define (fdlibm-log x)
+  (let* ((hx0 (sa-flonum-hi32 x))
+         (k0 (- (quotient hx0 1048576) 1023))
+         (hx (bitwise-and hx0 #x000fffff))
+         (i (bitwise-and (+ hx #x95f64) #x100000))
+         (x (cbrt-with-hi x (bitwise-ior hx (bitwise-xor i #x3ff00000))))   ; x or x/2
+         (k (+ k0 (quotient i 1048576)))
+         (f (fl- x 1.0))
+         (dk (exact->inexact k))
+         (ln2-hi 6.93147180369123816490e-01)
+         (ln2-lo 1.90821492927058770002e-10))
+    (if (< (bitwise-and #x000fffff (+ 2 hx)) 3)                           ; |f| < 2^-20
+        (if (fl= f 0.0)
+            (if (= k 0) 0.0 (fl+ (fl* dk ln2-hi) (fl* dk ln2-lo)))
+            (let ((r (fl* (fl* f f) (fl- 0.5 (fl* 0.33333333333333333 f)))))
+              (if (= k 0)
+                  (fl- f r)
+                  (fl- (fl* dk ln2-hi) (fl- (fl- r (fl* dk ln2-lo)) f)))))
+        (let* ((s (fl/ f (fl+ 2.0 f)))
+               (z (fl* s s))
+               (w (fl* z z))
+               (t1 (fl* w (fl+ 3.999999999940941908e-01
+                               (fl* w (fl+ 2.222219843214978396e-01
+                                           (fl* w 1.531383769920937332e-01))))))
+               (t2 (fl* z (fl+ 6.666666666666735130e-01
+                               (fl* w (fl+ 2.857142874366239149e-01
+                                           (fl* w (fl+ 1.818357216161805012e-01
+                                                       (fl* w 1.479819860511658591e-01))))))))
+               (r (fl+ t2 t1)))
+          (if (> (bitwise-ior (- hx #x6147a) (- #x6b851 hx)) 0)
+              (let ((hfsq (fl* 0.5 (fl* f f))))
+                (if (= k 0)
+                    (fl- f (fl- hfsq (fl* s (fl+ hfsq r))))
+                    (fl- (fl* dk ln2-hi)
+                         (fl- (fl- hfsq (fl+ (fl* s (fl+ hfsq r)) (fl* dk ln2-lo))) f))))
+              (if (= k 0)
+                  (fl- f (fl* s (fl- f r)))
+                  (fl- (fl* dk ln2-hi) (fl- (fl- (fl* s (fl- f r)) (fl* dk ln2-lo)) f))))))))
+(define (jolt-math-log10 x)
+  (let ((x (exact->inexact x)))
+    (cond
+      ((nan? x) x)
+      ((fl= x 0.0) -inf.0)
+      ((fl< x 0.0) +nan.0)
+      ((infinite? x) x)
+      (else
+       (let* ((sub? (< (sa-flonum-hi32 x) #x00100000))
+              (x (if sub? (fl* x 18014398509481984.0) x))        ; 2^54
+              (hx (sa-flonum-hi32 x))
+              (k (+ (if sub? -54 0) (- (quotient hx 1048576) 1023)))
+              (i (if (< k 0) 1 0))
+              (m (cbrt-with-hi x (+ (bitwise-and hx #x000fffff) (* (- #x3ff i) 1048576))))
+              (y (exact->inexact (+ k i)))
+              (z (fl+ (fl* y 3.69423907715893078616e-13)            ; log10(2) lo
+                      (fl* 4.34294481903251816668e-01 (fdlibm-log m)))))  ; 1/ln(10)
+         (fl+ z (fl* y 3.01029995663611771306e-01)))))))           ; log10(2) hi
 (def-var! "clojure.math" "log10" (n1 jolt-math-log10))
 (def-var! "clojure.math" "log1p" (n1 jolt-math-log1p))
 (def-var! "clojure.math" "sin" (m1 sin))
