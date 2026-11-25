@@ -1268,7 +1268,9 @@
   (or (macro-value-fn ctx form r)
       (do (deny-private form r false)
           (deny-macro-value ctx form r)
-          (cond-> (var-ref (:ns r) (:name r)) (:num-ret r) (assoc :num-ret (:num-ret r))))))
+          (cond-> (var-ref (:ns r) (:name r))
+            (:num-ret r) (assoc :num-ret (:num-ret r))
+            (:jvm-long-ret r) (assoc :jvm-long-ret true)))))
 
 (defn- analyze-qualified-symbol [ctx form nm ns env]
   (cond

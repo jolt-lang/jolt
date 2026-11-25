@@ -9,6 +9,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The JIT compiles a native region for the CPU it runs on: it defines the C
+  macro of each feature the machine has (`__AVX2__`, `__FMA__`, `__ARM_NEON`
+  ...), so a `defnative` with `(on "defined(__AVX2__)" ...)` and
+  `(on :default ...)` bodies runs the SIMD one where the CPU has it, and the
+  portable one elsewhere. `jolt build` still compiles for its C compiler's
+  default target, usually the baseline. `jolt.native/cpu-features` lists what
+  the JIT targets; `JOLT_MIR_CPU=baseline` makes it target the baseline.
+
+- Native regions specialize on runtime values: `(native ^{:specialize [n]}
+  [^long n ^doubles m] ...)` compiles a variant of the region, with the JIT,
+  for each distinct `n` the call site sees (up to `:max-variants`, 8 by
+  default), with the value as a constant, so the range analysis drops checks it
+  could not for an unknown `n`: a 512x512 matrix sum runs about 1.7 times
+  faster. Other values, and a `jolt build` binary, run the region as written;
+  the answers are the same. `jolt.native/specializations` lists the variants.
+
+- `jolt.native/native-fn`: compile a native region at runtime from data (a
+  params vector and body forms), with the JIT, and get back a fn that runs it
+  as native code. A program can generate a region from what it only learns at
+  runtime; `jolt.native/jit?` says whether this process can.
+- `jolt.native.layout`: a binary record layout (`[[:magic :u32] [:pad 1]
+  [:count :u16] ...]`, little- or big-endian) lowered into a region:
+  `parser` reads one record, `column` scans a field across every record in a
+  byte-array, with the offsets, widths and sign extension as constants in C.
+- Native regions take `^bytes` parameters (read in place, each element a
+  signed byte as a long; a region never writes one) and the bit operations
+  `bit-and`, `bit-or`, `bit-xor`, `bit-not`, `bit-shift-left`,
+  `bit-shift-right` and `unsigned-bit-shift-right`, with the JVM's masked
+  shift counts. A mask by a non-negative constant bounds an index for the
+  range analysis, so `(aget xs (bit-and i 3))` drops its bounds check.
+
+### Changed
+
+- `jolt.native` regions always run as native code. Outside a `jolt build`
+  binary (the REPL, `jolt run`) a region is now compiled in process by MIR's C
+  compiler (github.com/vnmakarov/mir, vendored at `vendor/mir` and linked into
+  jolt) the first time its call site loads, from the same C a build links, so a
+  hot loop runs at native speed while you tune it. The Jolt fallback a region
+  used to run there is gone, along with the code that generated it. Where there
+  is no native path (the gambit target, a machine MIR has no code generator
+  for) calling a region raises `UnsupportedOperationException`.
+- `jolt.native/linked-regions` answers `:linked`, `:jit` or `nil` per region
+  instead of a boolean.
+- A source checkout gets the JIT from `make mirlib`
+  (`target/mir/libjoltmir`); `JOLT_MIR_LIB` names another build of it, and
+  `JOLT_NO_MIR=1` builds a jolt without it. The JIT finds a `defextern`
+  `:header` in the system include directories and any `JOLT_MIR_INCLUDE`
+  lists; a header MIR's C compiler cannot parse (Android's bionic ones) makes
+  that region raise outside a build.
+
+## [0.8.30] - 2026-11-24
+
+`jolt.native` regions: blocks of hinted numeric code that `jolt build` compiles
+to C, with an ownership checker so arrays are never used after they are given
+away, and the same program running as Jolt under `jolt run`. Also new:
+`java.util.concurrent.CyclicBarrier` and `java.io.DataInputStream` /
+`DataOutputStream`, and optimizer passes for `set/difference`, filter/map into
+vectors, fixed-key map loops, `assoc-in` chains and `reduce-kv` map builds. The
+rest is JVM parity found reviewing this window: NaN payloads survive raw bit
+reads, division by zero and calling `nil` throw the JVM's exception and message,
+`Math/pow` follows Java's special cases, and dependency fetches wait out a
+rate-limiting Maven repository.
+
+### Added
+
 - `jolt.native/native`: a block of numeric code that `jolt build` compiles to C
   and links into the binary, for hot loops. The locals it reads are hinted
   (`^long`, `^double`, `^boolean`, `^doubles`); a `^doubles` array is read and
@@ -16,7 +81,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when it is done with them, checked at compile time with an ownership pass
   ported from Carp, so using an array after giving it away, or returning one it
   only borrowed, is a compile error. Long arithmetic overflows with
-  `ArithmeticException` as on the JVM, and failures raise the JVM's exceptions.
+  `ArithmeticException` as on the JVM, and failures raise the JVM's exceptions:
+  a helper that recurses deeper than the thread's stack raises
+  `StackOverflowError`.
   Under `jolt run` and in the REPL the same checked program runs as Jolt, so
   both agree. By default other threads keep running and collecting while a
   region works, its borrowed arrays pinned in place for the call.
@@ -48,6 +115,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   platform no guard covers is a build error unless there is a `:default`,
   which is also what the Jolt fallback runs. The bodies must agree on their
   result type and on which arguments they take.
+- `java.util.concurrent.CyclicBarrier`, with the barrier action, `await` with
+  or without a timeout, `reset`, `isBroken` and `getNumberWaiting`. The last
+  party to arrive runs the action and gets index 0. A timeout, an interrupt or
+  an action that throws breaks the barrier, and the other waiters get
+  `BrokenBarrierException`. While the action runs, a new arrival, `reset` and
+  the queries wait for it, and a waiter whose timeout runs out or that is
+  interrupted still gets its index, as on the JDK. The action itself may call
+  `isBroken`, `getNumberWaiting` and `reset` on its barrier. It waits the way
+  `CountDownLatch` does, so a fiber that awaits parks and gives its carrier up.
 
 - **`java.io.DataInputStream` and `java.io.DataOutputStream`, and the
   `DataInput`/`DataOutput` methods on `RandomAccessFile`.** A
@@ -71,21 +147,101 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - A `reduce-kv` into `{}` whose callback only passes its accumulator to a final
-  `assoc` builds the result map in one pass, whatever the key and value
-  expressions are. It used to recognize only three exact callback shapes.
-  Keyword-keyed rebuilds are about 2x faster.
-- A chain of `assoc-in` edits sharing a path prefix is fused when the path is a
-  literal too, as inlining leaves it when the key is a constant argument.
+  `assoc` builds the result map in one pass in a transient, whatever the key
+  and value expressions are, and still answers a correct persistent map if a
+  var it reads is redefined part way through. Keyword-keyed rebuilds are about
+  2x faster.
+- A chain of `assoc-in` calls on sibling paths of the same map descends the
+  shared prefix once and rebuilds the common ancestors once, including when the
+  path is a literal left by inlining a constant key argument.
 - `(keyword ...)` no longer allocates an argument list on every call.
 - A loop accumulating a fixed-key map with `update` is about 12% faster.
 
+### Performance
+
+- `clojure.set/difference` of two hash sets that share structure skips the
+  subtries they have in common, when the keys are numbers, keywords or
+  characters and `disj` has not been redefined. Removing a few elements from a
+  large set and diffing it against the original no longer walks the whole set.
+- `(into [] (comp (filter p) (map f)) v)` over a vector walks the vector's
+  leaves directly and fills the result in place, with no transducer stack or
+  transient in between. It falls back to the ordinary path if `into`, `comp`,
+  `filter` or `map` has been redefined.
+- A `loop` whose accumulator is a map with a fixed set of keyword keys keeps
+  the fields in locals and builds the map only when it leaves the loop or
+  escapes, so each iteration no longer allocates a map.
+- The compiler replaces reads from a private, never-escaping map literal with
+  the values themselves, so the map is not built.
+- `into` a sorted set or map sizes a short batch from `counted?` instead of a
+  fixed list of types, and fills a batch of known size in place.
+
 ### Fixed
 
+- `setName` or `setPriority` called on a `Thread` right after `.start` could
+  be lost: the new thread copied its name and priority into the runtime's
+  tables after it published its id, so a change made between the two was
+  overwritten with the old value. The copy and the setters now run under the
+  thread object's lock.
+- `clojure.lang.PersistentTreeSet/EMPTY` and `PersistentTreeMap/EMPTY` could
+  read as `nil` on arm64 when two threads touched them first at the same time:
+  the one-shot compare-and-swap that caches them can fail spuriously there, and
+  the loser returned the unset value. It now retries (#1802).
+- On 32-bit targets, `hash` of a string or keyword could come out wrong
+  (`(hash "wii")` gave 104228450 instead of -1182153146), from a 32x32-bit
+  product that overflowed into bignums. 64-bit builds were not affected (#1830).
+- A Maven repository answering 429 (rate limited) failed dependency resolution
+  after 800 ms of retries, which is how Central treats shared CI runners. The
+  fetch now waits as long as the server's `Retry-After` asks, up to 30 seconds,
+  and without one backs off 2 and then 5 seconds on a 429.
 - `double-array`, `long-array` and the other array constructors read a numeric
   size with `Number.intValue`, as the JVM does: `(double-array 4294967296)` is
   empty and `(double-array Long/MAX_VALUE)` raises `NegativeArraySizeException`
   -1. jolt tried to allocate the whole value, which ran out of memory or leaked
   Chez's `make-flvector` error as a `ClassCastException`.
+- `Double/doubleToRawLongBits` and `Float/floatToRawIntBits` kept a NaN's
+  payload and sign, as on the JVM, instead of answering the canonical NaN:
+  `(Double/doubleToRawLongBits (Double/longBitsToDouble 0x7ff0000000000001))`
+  was 9221120237041090560 and is now 9218868437227405313.
+  `Float/intBitsToFloat` keeps a NaN payload for the raw form to read back
+  (a signaling one too, while `(double f)` widens it to the quiet NaN as the
+  JVM does), and `ByteBuffer.putDouble`/`putFloat` store the raw bits as the
+  JDK does.
+  `doubleToLongBits`, `floatToIntBits`, hashing and `DataOutputStream`'s
+  `writeDouble`/`writeFloat` still fold every NaN into the canonical one.
+- `Math/pow` and `clojure.math/pow` answered 1.0 for a NaN exponent over a
+  base of 1.0 and for a base of ±1.0 to an infinite power, which is C's pow.
+  Java's answers NaN for both, and so does jolt now, hinted or not.
+- Integer division by zero raised the JVM's message only some of the time:
+  `quot` and `rem` over `^long` operands said
+  "fxquotient: attempt to divide by zero" where the JVM says "/ by zero", and
+  `Math/floorDiv`, `Math/floorMod`, `clojure.math/floor-div` and
+  `unchecked-divide-int` said things like "/: undefined for 0". They now say
+  "/ by zero" wherever the JVM does: over literals, let-bound literals,
+  casts, `count`, interop calls answering an int, fns whose arglist is tagged
+  `^long`, and arithmetic over those, while `mod`, `/` and `quot`/`rem` over a
+  boxed value keep the JVM's "Divide by zero".
+- `Math/floorDiv`, `floorMod`, `addExact`, `subtractExact`, `multiplyExact`,
+  `incrementExact`, `decrementExact` and `negateExact` accepted any number and
+  truncated it: `(Math/floorDiv 5.5 2)` was 2. They have only int and long
+  overloads, so a double, Float, ratio, BigDecimal, char or nil argument is now
+  the JVM's `IllegalArgumentException` "No matching method floorDiv found
+  taking 2 args".
+- `DataOutputStream.writeUTF`, `writeChars` and `writeBytes` of nil, and a
+  `DataInputStream` or `DataOutputStream` built over nil, threw
+  `NullPointerException` with no message or a generic one. They now carry the
+  JDK's message, such as `Cannot invoke "String.length()" because "str" is
+  null` and `Cannot invoke "java.io.InputStream.read()" because "this.in" is
+  null`. Reading into a nil array from an `InputStream` says
+  `Cannot read the array length because "b" is null` instead of leaking a Chez
+  error, or no message from a `FileInputStream` or `PushbackInputStream` (and a
+  `DataInputStream` over one), as the JDK's do.
+- Calling nil as a fn, as in `(update {} :a nil)`, `(swap! a nil)` or
+  `(apply nil [])`, throws `NullPointerException` naming the IFn method as the
+  JVM does (`Cannot invoke "clojure.lang.IFn.invoke(Object)"`,
+  `applyTo(clojure.lang.ISeq)` for apply). jolt threw a `ClassCastException`.
+- `into` a sorted set or map, `apply sorted-set` and `bounded-count` no longer
+  call the `counted?` var, so rebinding it with `with-redefs` does not reach
+  them, as on the JVM, whose core is direct-linked.
 
 ## [0.8.29] - 2026-11-23
 

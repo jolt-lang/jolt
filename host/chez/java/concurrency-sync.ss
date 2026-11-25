@@ -1,6 +1,7 @@
-;; concurrency-sync.ss — java.util.concurrent.Semaphore and
-;; java.util.concurrent.locks.ReentrantReadWriteLock (JDK 21 Semaphore.java,
-;; ReentrantReadWriteLock.java).
+;; concurrency-sync.ss — java.util.concurrent.Semaphore,
+;; java.util.concurrent.locks.ReentrantReadWriteLock and
+;; java.util.concurrent.CyclicBarrier (JDK 21 Semaphore.java,
+;; ReentrantReadWriteLock.java, CyclicBarrier.java).
 ;;
 ;; Both are a little state under one bookkeeping mutex, waited on through
 ;; jolt-cv-wait (host/chez/locks.ss): a thread blocks on the condition, a fiber
@@ -448,13 +449,223 @@
                       "[Write locks = " (number->string w)
                       ", Read locks = " (number->string r) "]"))))))
 
+;; ============================================================================
+;; java.util.concurrent.CyclicBarrier
+;; ============================================================================
+;; State #(mu cv parties action gen count). GEN is the current generation, a
+;; fresh #(tripped? broken? tripping?) per trip or reset, so a waiter woken after
+;; its generation tripped returns normally even when a later generation has
+;; already broken. COUNT is the parties still to arrive in it.
+;;
+;; The JDK runs the barrier action with its lock held, and every other entry
+;; (await, reset, isBroken, getNumberWaiting) takes that lock first. Here the
+;; action is user code, so the last arrival marks the generation TRIPPING under mu
+;; and runs the action with mu released. While a generation is tripping:
+;;   - arrivals, reset, isBroken and getNumberWaiting wait for it to finish,
+;;     uninterruptibly, which is what blocking on lock() does;
+;;   - a waiter whose timeout runs out, or that is interrupted, waits for the
+;;     outcome instead of breaking the barrier. It returns its index (and keeps
+;;     its interrupt flag, as the JDK re-sets it) or gets BrokenBarrierException
+;;     when the action threw.
+;; The generation tripped? flag is set once the action has returned, so nobody is
+;; released before it has run. The barrier also records WHO is running the action
+;; (cb-i-tripper, a monitor-self token): the JDK's lock is reentrant, so the action
+;; itself may call isBroken, getNumberWaiting and reset, and those go straight in.
+;; The wait is on the barrier, not the generation, because a reset inside the
+;; action replaces the generation and arrivals must still wait for the action.
+;; await() from inside the action hangs on the JDK too (it waits for a trip only
+;; it could make), so it is not let in.
+(define cb-i-mu 0)
+(define cb-i-cv 1)
+(define cb-i-parties 2)
+(define cb-i-action 3)
+(define cb-i-gen 4)
+(define cb-i-count 5)
+(define cb-i-tripper 6)
+(define (cb-ref st i) (vector-ref st i))
+(define (cb-gen-tripped? g) (vector-ref g 0))
+(define (cb-gen-broken? g) (vector-ref g 1))
+(define (cb-gen-tripping? g) (vector-ref g 2))
+(define (cb-new-gen! st)
+  (vector-set! st cb-i-gen (vector #f #f #f))
+  (vector-set! st cb-i-count (cb-ref st cb-i-parties)))
+;; Break generation G, if it is still open, and wake everyone waiting in it. The
+;; barrier starts a fresh generation only on a trip or reset(), so a broken
+;; current generation stays broken until reset.
+(define (cb-break! st g)
+  (unless (or (cb-gen-tripped? g) (cb-gen-broken? g))
+    (vector-set! g 1 #t)
+    (when (eq? g (cb-ref st cb-i-gen))
+      (vector-set! st cb-i-count (cb-ref st cb-i-parties)))
+    (jolt-cv-wake! (cb-ref st cb-i-cv))))
+(define (cb-throw! name)
+  (jolt-throw (jolt-host-throwable name jolt-nil)))
+(define (cb-bbe!) (cb-throw! "java.util.concurrent.BrokenBarrierException"))
+
+;; mu NOT held (jolt-cv-wait takes it): wait, uninterruptibly, until no
+;; generation is tripping.
+(define (cb-wait-idle! st)
+  (jolt-cv-wait (cb-ref st cb-i-mu) (cb-ref st cb-i-cv) #f
+    (lambda (_) (if (cb-ref st cb-i-tripper) jolt-cv-again #t))))
+;; mu NOT held: wait, uninterruptibly, until G has tripped or broken.
+(define (cb-wait-outcome! st g)
+  (jolt-cv-wait (cb-ref st cb-i-mu) (cb-ref st cb-i-cv) #f
+    (lambda (_) (if (or (cb-gen-tripped? g) (cb-gen-broken? g)) #t jolt-cv-again))))
+;; Run (f) under mu once no action is running, the JDK's lock(). The action's
+;; own thread is let in when REENTRANT?. F must not answer 'busy.
+(define (cb-with-lock st f . reentrant?)
+  (let retry ()
+    (let ((r (jolt-with-mutex (cb-ref st cb-i-mu)
+               (let ((t (cb-ref st cb-i-tripper)))
+                 (if (and t (not (and (pair? reentrant?) (eq? t (monitor-self)))))
+                     'busy
+                     (f))))))
+      (if (eq? r 'busy)
+          (begin (cb-wait-idle! st) (retry))
+          r))))
+
+(define (cb-interrupted-exception? e)
+  (let ((v (jolt-unwrap-throw e)))
+    (and (jolt-ex-info-record? v)
+         (equal? (jolt-ex-info-record-class-name v) "java.lang.InterruptedException"))))
+
+;; A waiter of G in the middle of a trip, interrupted or timed out: wait for the
+;; outcome. FLAG? re-sets the interrupt flag, as the JDK does when it swallows the
+;; interrupt of a generation that is already decided.
+(define (cb-finish-waiter st g index flag?)
+  (cb-wait-outcome! st g)
+  (when flag? (set-box! (current-interrupt-box) #t))
+  (if (cb-gen-broken? g) 'broken index))
+
+;; await() / await(timeout, unit): the arrival index, parties-1 for the first
+;; arrival and 0 for the last.
+(define (cb-await! self ms)
+  (let* ((st (jhost-state self))
+         (mu (cb-ref st cb-i-mu))
+         (cv (cb-ref st cb-i-cv))
+         (who "CyclicBarrier.await")
+         (r (cb-with-lock st
+              (lambda ()
+                (let ((g (cb-ref st cb-i-gen)))
+                  (cond
+                    ((cb-gen-broken? g) 'broken)
+                    ((jolt-interrupt-take! (current-interrupt-box))
+                     (cb-break! st g) 'interrupted)
+                    (else
+                     (let ((index (- (cb-ref st cb-i-count) 1)))
+                       (vector-set! st cb-i-count index)
+                       (cond ((= index 0)
+                              (vector-set! g 2 #t)
+                              (vector-set! st cb-i-tripper (monitor-self))
+                              (list 'trip g))
+                             ((and ms (<= ms 0)) (cb-break! st g) 'timeout)
+                             (else (list 'wait g index)))))))))))
+    (cond
+      ((eq? r 'broken) (cb-bbe!))
+      ((eq? r 'interrupted) (jolt-interrupted-throw! who))
+      ((eq? r 'timeout) (cb-throw! "java.util.concurrent.TimeoutException"))
+      ((eq? (car r) 'trip)
+       (let ((g (cadr r))
+             (action (cb-ref st cb-i-action)))
+         (when action
+           (guard (e (#t (jolt-with-mutex mu
+                           (vector-set! g 2 #f)
+                           (vector-set! st cb-i-tripper #f)
+                           (cb-break! st g)
+                           (jolt-cv-wake! cv))
+                         (raise e)))
+             ((runnable->thunk action))))
+         (jolt-with-mutex mu
+           (vector-set! g 2 #f)
+           (vector-set! st cb-i-tripper #f)
+           ;; a reset inside the action already broke G; its waiters keep that
+           (unless (cb-gen-broken? g) (vector-set! g 0 #t))
+           (cb-new-gen! st)
+           (jolt-cv-wake! cv))
+         0))
+      (else
+       (let* ((g (cadr r))
+              (index (caddr r))
+              (res (guard (e (#t
+                              (let ((act (jolt-with-mutex mu
+                                           (cond ((cb-interrupted-exception? e)
+                                                  (if (or (cb-gen-tripping? g) (cb-gen-tripped? g)
+                                                          (cb-gen-broken? g))
+                                                      'defer
+                                                      (begin (cb-break! st g) 'raise)))
+                                                 (else
+                                                  (unless (cb-gen-tripping? g) (cb-break! st g))
+                                                  'raise)))))
+                                (if (eq? act 'defer)
+                                    (cb-finish-waiter st g index #t)
+                                    (raise e)))))
+                     (let ((r (sync-wait who mu cv ms #t
+                                (lambda (timed-out?)
+                                  (cond ((cb-gen-broken? g) 'broken)
+                                        ((cb-gen-tripped? g) index)
+                                        (timed-out?
+                                         (if (cb-gen-tripping? g)
+                                             'defer
+                                             (begin (cb-break! st g) 'timeout)))
+                                        (else jolt-cv-again))))))
+                       (if (eq? r 'defer) (cb-finish-waiter st g index #f) r)))))
+         (cond ((eq? res 'broken) (cb-bbe!))
+               ((eq? res 'timeout) (cb-throw! "java.util.concurrent.TimeoutException"))
+               (else res)))))))
+
+;; The action must be a Runnable: a fn, a reify or deftype with run (or call), a
+;; FutureTask. Anything else is the JVM's ClassCastException at construction.
+(define (cb-check-action! x)
+  (unless (or (procedure? x) (future-task? x)
+              (iface-method x "run" 1) (iface-method x "call" 1)
+              (let ((r (instance-check (jolt-symbol #f "java.lang.Runnable") x)))
+                (and r (not (jolt-nil? r)))))
+    (jolt-throw
+     (jolt-host-throwable "java.lang.ClassCastException"
+       (string-append "class " (guard (e (#t "?")) (jolt-class-name x))
+                      " cannot be cast to class java.lang.Runnable")))))
+
+;; CyclicBarrier(int parties) | CyclicBarrier(int parties, Runnable action)
+(define (cyclic-barrier-ctor . args)
+  (unless (<= 1 (length args) 2)
+    (throw-jvm 'IllegalArgumentException "No matching ctor found for class java.util.concurrent.CyclicBarrier"))
+  (let ((n (sync-int-arg (car args)))
+        (action (and (pair? (cdr args)) (not (eq? (cadr args) jolt-nil)) (cadr args))))
+    (when (<= n 0) (throw-jvm 'IllegalArgumentException jolt-nil))
+    (when action (cb-check-action! action))
+    (make-jhost "cyclic-barrier"
+                (vector (make-mutex) (jolt-make-cv) n action (vector #f #f #f) n #f))))
+(for-each (lambda (nm) (register-class-ctor! nm cyclic-barrier-ctor))
+          '("CyclicBarrier" "java.util.concurrent.CyclicBarrier"))
+(register-host-methods! "cyclic-barrier"
+  (list
+   (cons "await" (lambda (self . args) (cb-await! self (tu-args->ms args))))
+   (cons "getParties" (lambda (self) (cb-ref (jhost-state self) cb-i-parties)))
+   (cons "getNumberWaiting" (lambda (self)
+     (let ((st (jhost-state self)))
+       (cb-with-lock st (lambda () (- (cb-ref st cb-i-parties) (cb-ref st cb-i-count))) #t))))
+   (cons "isBroken" (lambda (self)
+     (let ((st (jhost-state self)))
+       (cb-with-lock st (lambda () (cb-gen-broken? (cb-ref st cb-i-gen))) #t))))
+   ;; reset: break the current generation, then start a fresh one
+   (cons "reset" (lambda (self)
+     (let ((st (jhost-state self)))
+       (cb-with-lock st (lambda ()
+         (cb-break! st (cb-ref st cb-i-gen))
+         (cb-new-gen! st)
+         #t)
+         #t))
+     jolt-nil))))
+
 ;; --- class rows ---------------------------------------------------------------
 (for-each (lambda (p) (hashtable-set! jhost-tag->fqn (car p) (cdr p)))
           '(("semaphore" . "java.util.concurrent.Semaphore")
+            ("cyclic-barrier" . "java.util.concurrent.CyclicBarrier")
             ("rw-lock" . "java.util.concurrent.locks.ReentrantReadWriteLock")
             ("rw-read-lock" . "java.util.concurrent.locks.ReentrantReadWriteLock$ReadLock")
             ("rw-write-lock" . "java.util.concurrent.locks.ReentrantReadWriteLock$WriteLock")))
 (jch-register-supers! "java.util.concurrent.Semaphore" '("java.io.Serializable"))
+(jch-register-supers! "java.util.concurrent.CyclicBarrier" '())
 (jch-register-supers! "java.util.concurrent.locks.ReentrantReadWriteLock"
                       '("java.util.concurrent.locks.ReadWriteLock" "java.io.Serializable"))
 (jch-register-supers! "java.util.concurrent.locks.ReentrantReadWriteLock$ReadLock"

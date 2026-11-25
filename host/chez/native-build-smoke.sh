@@ -1,10 +1,10 @@
 #!/bin/sh
 
 # native-build smoke: a program with jolt.native regions runs them as C in a
-# binary from jolt build and as their Jolt fallback under jolt run, and the two
+# binary from jolt build and as JIT-compiled C under jolt run, and the two
 # print the same thing — results, coerced arguments, and the exceptions a region
-# raises. The binary must also report every region linked (it took the C path),
-# and jolt run none (it took the fallback).
+# raises. The binary must report every region :linked (compiled into it), and
+# jolt run every region :jit (compiled in process by MIR).
 root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 cd "$root"
 
@@ -47,8 +47,8 @@ gc during region true"
 
 ran="$(cd "$app" && JOLT_PWD="$app" "$joltabs" run -m app.main 2>&1)"
 if [ "$ran" != "$want_results
-linked (false)" ]; then
-  echo "  FAIL: jolt run output"; echo "--- want ---"; echo "$want_results"; echo "linked (false)"
+linked (:jit)" ]; then
+  echo "  FAIL: jolt run output"; echo "--- want ---"; echo "$want_results"; echo "linked (:jit)"
   echo "--- got ----"; echo "$ran"; exit 1
 fi
 
@@ -60,8 +60,8 @@ grep -q "compiled 7 native region(s)" "$work/build.log" || {
   echo "  FAIL: the build did not compile the seven regions"; cat "$work/build.log"; exit 1; }
 got="$(cd / && "$out" 2>&1)"
 if [ "$got" != "$want_results
-linked (true)" ]; then
-  echo "  FAIL: built binary output"; echo "--- want ---"; echo "$want_results"; echo "linked (true)"
+linked (:linked)" ]; then
+  echo "  FAIL: built binary output"; echo "--- want ---"; echo "$want_results"; echo "linked (:linked)"
   echo "--- got ----"; echo "$got"; exit 1
 fi
 echo "native-build smoke: OK"

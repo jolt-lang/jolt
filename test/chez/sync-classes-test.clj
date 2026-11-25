@@ -4,7 +4,7 @@
 ;;   chez --script host/chez/cli.ss test/chez/sync-classes-test.clj
 (ns sync-classes-test
   (:require [jolt.fibers :as f])
-  (:import [java.util.concurrent Semaphore TimeUnit]
+  (:import [java.util.concurrent Semaphore CyclicBarrier TimeUnit]
            [java.util.concurrent.locks ReentrantReadWriteLock]
            [java.util.concurrent.atomic AtomicLongArray AtomicIntegerArray AtomicLong]))
 
@@ -171,6 +171,61 @@
                      (.updateAndGet b (mod (+ i n) 4) (fn [x] (+ x 2))))))
     (ok [kind "AtomicLongArray: no lost increment"] (= [1000 1000 1000 1000] (mapv #(.get a %) (range 4))))
     (ok [kind "AtomicIntegerArray: no lost update"] (= 8000 (reduce + (map #(.get b %) (range 4)))))))
+
+;; --- CyclicBarrier -----------------------------------------------------------------
+;; 24 parties is more than the carriers, so a fiber that awaits has to park and
+;; give its carrier up or the last arrivals never get to run.
+(doseq [[kind run] [[:threads run-threads] [:fibers run-fibers]]]
+  (let [trips (AtomicLong. 0)
+        idx (atom [])
+        b2 (CyclicBarrier. 24 #(.incrementAndGet trips))]
+    (run 24 (fn [_] (dotimes [_ 3] (let [i (.await b2)] (swap! idx conj i)))))
+    (ok [kind "CyclicBarrier: one action per trip"] (= 3 (.get trips)))
+    (ok [kind "CyclicBarrier: each round hands out every index once"]
+        (= (zipmap (range 24) (repeat 3)) (frequencies @idx)))
+    (ok [kind "CyclicBarrier: nobody left waiting"] (zero? (.getNumberWaiting b2)))))
+
+;; a fiber waiter whose timeout runs out during the action does not break the barrier
+(let [b (CyclicBarrier. 2 #(Thread/sleep 900))
+      w (f/spawn #(try (.await b 400 TimeUnit/MILLISECONDS) (catch Throwable e (.getName (class e)))))]
+  (loop [k 0] (when (and (< k 2000) (zero? (.getNumberWaiting b))) (Thread/sleep 1) (recur (inc k))))
+  (let [l (f/spawn #(.await b))]
+    (ok "CyclicBarrier: fiber waiter's timeout during the action" (= [1 0 false] [(f/join w) (f/join l) (.isBroken b)]))))
+
+;; The action runs with the JDK's lock held, so it may query or reset its own
+;; barrier. Each call answers under a deadline: a hang reads as :hung.
+(defn- within [ms f] (deref (future (f)) ms :hung))
+(let [bp (promise)
+      seen (atom nil)
+      b (CyclicBarrier. 1 #(reset! seen [(.isBroken @bp) (.getNumberWaiting @bp)]))]
+  (deliver bp b)
+  (ok "CyclicBarrier: action may call isBroken/getNumberWaiting"
+      (= [0 [false 1]] [(within 3000 #(.await b)) @seen])))
+(let [bp (promise)
+      b (CyclicBarrier. 2 #(.reset @bp))]
+  (deliver bp b)
+  (let [w (future (try (.await b) (catch Throwable e (.getSimpleName (class e)))))]
+    (loop [k 0] (when (and (< k 2000) (zero? (.getNumberWaiting b))) (Thread/sleep 1) (recur (inc k))))
+    (ok "CyclicBarrier: action may reset its barrier"
+        (= [0 "BrokenBarrierException" false]
+           [(within 3000 #(.await b)) (deref w 3000 :hung) (.isBroken b)]))))
+;; an arrival during an action that reset the barrier waits for the action, then
+;; counts in the generation that follows it
+(let [bp (promise)
+      first? (atom true)
+      b (CyclicBarrier. 2 #(when (compare-and-set! first? true false) (.reset @bp) (Thread/sleep 300)))]
+  (deliver bp b)
+  (let [w (future (try (.await b) (catch Throwable e :bbe)))]
+    (loop [k 0] (when (and (< k 2000) (zero? (.getNumberWaiting b))) (Thread/sleep 1) (recur (inc k))))
+    (let [tripper (future (.await b))
+          _ (Thread/sleep 100)
+          late (future (try (.await b 5 TimeUnit/SECONDS) (catch Throwable e (.getSimpleName (class e)))))]
+      (deref tripper 3000 :hung)
+      (Thread/sleep 100)
+      (ok "CyclicBarrier: arrival during a resetting action lands in the next generation"
+          (= [1 :bbe] [(.getNumberWaiting b) (deref w 3000 :hung)]))
+      (.await b)
+      (ok "CyclicBarrier: that arrival is released by the next trip" (= 1 (deref late 3000 :hung))))))
 
 (println (str "sync-classes-test: " (- @total @fails) "/" @total " passed"))
 (if (zero? @fails)

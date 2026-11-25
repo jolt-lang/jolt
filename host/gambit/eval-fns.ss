@@ -134,14 +134,20 @@
 (%eval-fn (define (jolt-l= a b) (= a b)))
 (%eval-fn (define (jolt-l-min a b) (min a b)))
 (%eval-fn (define (jolt-l-max a b) (max a b)))
-(%eval-fn (define (jolt-l-quot a b) (quotient a b)))
-(%eval-fn (define (jolt-l-rem a b) (remainder a b)))
-(%eval-fn (define (jolt-l-mod a b) (modulo a b)))
+(%eval-fn (define (jolt-l-quot a b) (if (eqv? b 0) (jolt-l-div0-throw) (quotient a b))))
+(%eval-fn (define (jolt-l-rem a b) (if (eqv? b 0) (jolt-l-div0-throw) (remainder a b))))
+(%eval-fn (define (jolt-l-mod a b) (if (eqv? b 0) (jolt-div0-throw) (modulo a b))))
+(%eval-fn (define (jolt-pquot a b) (if (eq? b 0) (jolt-l-div0-throw) (jolt-quot a b))))
+(%eval-fn (define (jolt-prem a b) (if (eq? b 0) (jolt-l-div0-throw) (jolt-rem a b))))
+(%eval-fn (define (jolt-l-floor-mod a b) (if (eqv? b 0) (jolt-l-div0-throw) (modulo a b))))
 ;; java.lang.Math over proven longs (jolt.passes.numeric math-lng-ops). Mirrors
-;; seq.ss: floorMod reuses jolt-l-mod, floorDiv needs floor semantics, abs is the
+;; seq.ss: floorMod is modulo with Java's zero message, floorDiv needs floor semantics, abs is the
 ;; generic one there too.
 (%eval-fn (define (jolt-l-abs a) (abs a)))
+(%eval-fn (define (jolt-fl-pow a b)
+            (if (or (nan? b) (and (infinite? b) (fl= (flabs a) 1.0))) +nan.0 (flexpt a b))))
 (%eval-fn (define (jolt-floor-quotient a b)
+            (when (eqv? b 0) (jolt-l-div0-throw))
             (let ((q (quotient a b)))
               (if (and (not (eqv? 0 (remainder a b)))
                        (if (negative? b) (positive? a) (negative? a)))

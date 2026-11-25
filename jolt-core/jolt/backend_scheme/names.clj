@@ -245,9 +245,9 @@
                   ;; checks, the entry lookup and registry, the out buffer and
                   ;; the owned-array result
                   "jolt-native-arg-doubles" "jolt-native-arg-long" "jolt-native-arg-double"
-                  "jolt-native-arg-bool" "jolt-native-arg-longs" "jolt-native-flv"
+                  "jolt-native-arg-bool" "jolt-native-arg-longs" "jolt-native-arg-bytes" "jolt-native-flv"
                   "jolt-native-wrap-doubles" "jolt-native-wrap-longs"
-                  "jolt-native-entry" "jolt-native-register!" "make-flvector"
+                  "jolt-native-entry" "jolt-native-register!" "jolt-native-unavailable" "make-flvector"
                   ;; a safe region's call: locks around a collect-safe call
                   "disable-interrupts" "enable-interrupts" "sa-lock-object" "sa-unlock-object"
                   ;; the call reads its status inside the no-interrupt window and

@@ -125,7 +125,7 @@ JOLT-TARGETS-NEEDING-DEPS := \
   threadsafety maskedacquire ioerrno values wp ci taskparity
 
 # Only mark PHONY targets for names that have file system conflicts:
-.PHONY: nsaudit kondocheck build install test ci bionic-ci ci-shard ci-shard-list gate-run-test gate-run-ci gate-run-bionic-ci gate-run-ci-shard gate-status hooks attributioncheck noticecheck monitormodel \
+.PHONY: nsaudit kondocheck build install test ci mirlib bionic-ci ci-shard ci-shard-list gate-run-test gate-run-ci gate-run-bionic-ci gate-run-ci-shard gate-status hooks attributioncheck noticecheck monitormodel \
         gambitcheck gambitkernel gambiteval gambitseed gambitweb gambitprofile \
         gambitgen gambitgencheck gambitseedcheck gambitunbound gambitunbound-regen \
         gambitvars gambitvars-regen gambitstatics gambitstatics-regen gambittwins grenadinecheck \
@@ -519,7 +519,7 @@ documented-record:
 # buildlibsmoke` slower with the prerequisite than without it. The staleness
 # check covers the same inputs build-jolt.ss embeds: the runtime .ss files, the
 # install roots, and the launcher stub. JOLT_FORCE_TESTBIN=1 rebuilds anyway.
-TESTBIN-INPUTS := host/chez jolt-core stdlib compatibility vendor/fs/src vendor/process/src vendor/cli/src vendor/grenadine/src vendor/grenadine-generated vendor/irregex
+TESTBIN-INPUTS := host/chez jolt-core stdlib compatibility vendor/fs/src vendor/process/src vendor/cli/src vendor/grenadine/src vendor/grenadine-generated vendor/irregex vendor/mir
 testbin:
 	@if [ -n "$${JOLT_FORCE_TESTBIN:-}" ] || [ ! -x target/release/jolt ] || \
 	   [ -n "$$(find $(TESTBIN-INPUTS) -type f -newer target/release/jolt -print -quit 2>/dev/null)" ]; then \
@@ -1123,15 +1123,33 @@ sortedcoll:
 transient:
 	@$(CHEZ) --script test/chez/transient-test.ss
 
+# The native-region JIT for a source checkout: MIR (vendor/mir) and jolt's shim
+# (host/chez/stub/jolt_mir.c) as one shared object, which bin/jolt loads the
+# first time a region's call site does (host/chez/java/natives-array.ss). A
+# built jolt links the same objects in (build-jolt.ss) and needs none of this.
+MIR-SRCS := vendor/mir/mir.c vendor/mir/mir-gen.c vendor/mir/c2mir/c2mir.c host/chez/stub/jolt_mir.c
+MIR-CC = $(or $(JOLT_CC),cc)
+MIR-SO := target/mir/libjoltmir$(if $(filter Darwin,$(shell uname -s)),.dylib,.so)
+mirlib: $(MIR-SO)
+$(MIR-SO): $(MIR-SRCS) $(wildcard vendor/mir/*.h vendor/mir/c2mir/*.h vendor/mir/*/*.c vendor/mir/*/*.h)
+	@test -f vendor/mir/c2mir/c2mir.c || { echo "mirlib: vendor/mir is empty: git submodule update --init vendor/mir"; exit 1; }
+	@mkdir -p target/mir
+	@for f in $(MIR-SRCS); do \
+	  $(MIR-CC) -O2 -DNDEBUG -std=gnu11 -fsigned-char -fPIC -w -Wno-psabi -Ivendor/mir -c $$f -o target/mir/$$(basename $$f .c).o || exit 1; \
+	done
+	@$(MIR-CC) -shared -o $@ $(patsubst %.c,target/mir/%.o,$(notdir $(MIR-SRCS))) -lm -lpthread
+	@echo "mirlib: wrote $@"
+
 # Native regions (stdlib/jolt/native): every accepted program compiled with a
-# tracking allocator and run as C and as its Jolt fallback, which must agree on
-# result, exception and input mutation and leave no live block or bad free; the
-# rejected programs must fail to compile. Needs cc.
-native:
+# tracking allocator twice, by cc and by the JIT (MIR); the two must agree on
+# result, exception and input mutation, match the plain Clojure body where it
+# means the same and test/native/golden.edn where it does not, and leave no
+# live block or bad free; the rejected programs must fail to compile. Needs cc.
+native: mirlib
 	@bin/jolt run test/chez/native-test.clj
 
-# A program with native regions: C in a jolt build binary, fallback under jolt
-# run, same output, every region linked in the binary and none under run.
+# A program with native regions: C in a jolt build binary, JIT'd under jolt
+# run, same output, every region linked in the binary and JIT'd under run.
 nativebuild: testbin
 	@JOLT_BIN="$${JOLT_BIN:-target/release/jolt}" sh host/chez/native-build-smoke.sh
 

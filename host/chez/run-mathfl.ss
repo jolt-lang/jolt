@@ -33,7 +33,8 @@
 (let ((e (emit-num "(def _ (fn [^double x] (Math/floor x)))")))
   (gate-check "(4) Math/floor -> flfloor" (gate-sub? e "flfloor") #t))
 (let ((e (emit-num "(def _ (fn [^double b] (Math/pow b 2)))")))
-  (gate-check "(4) Math/pow (int literal coerced) -> flexpt" (gate-sub? e "flexpt") #t))
+  ;; jolt-fl-pow is flexpt behind Java's two special cases C's pow lacks
+  (gate-check "(4) Math/pow (int literal coerced) -> jolt-fl-pow" (gate-sub? e "jolt-fl-pow") #t))
 
 ;; (5) untyped arg -> NOT specialized (stays host-static-call)
 (let ((e (emit-num "(def _ (fn [x] (Math/sqrt x)))")))

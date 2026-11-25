@@ -29,13 +29,15 @@
   folds left pair by pair, so (+ Long/MAX_VALUE 1 1.5) overflows on the first
   pair as it does on the JVM. Compile the output with -ffp-contract=off: a fused
   multiply-add rounds once where Jolt rounds twice."
-  (:require [clojure.string :as str]
+  (:require [clojure.set :as set]
+            [clojure.string :as str]
             [jolt.native.ast :as ast]
             [jolt.native.range :as ranges]
             [jolt.native.stack :as stack]))
 
 (def err-codes
-  {:oob 1 :overflow 2 :div-zero 3 :neg-size 4 :long-range 5 :oom 6 :fixnum-store 7})
+  {:oob 1 :overflow 2 :div-zero 3 :neg-size 4 :long-range 5 :oom 6 :fixnum-store 7 :stack-overflow 8
+   :mod-zero 9})
 
 ;; A borrowed long-array is a Chez fxvector: each slot a fixnum, the value times
 ;; 8 (scheme.h Sfixnum/Sfixnum_value). jolt widens the backing once a value
@@ -60,6 +62,13 @@
 ;; stack arrays per function (jolt.native.stack), and the current function's
 (def ^:dynamic *stacks* nil)
 (def ^:dynamic *stack* nil)
+;; the helper instances that can call themselves (directly or through others),
+;; whose C checks the stack on entry against the limit the region's entry read
+(def ^:dynamic *recursive* #{})
+;; how the current function reaches the thread's status: the entry names the
+;; thread-local, a helper the pointer to it the entry passed down (jn_st), so
+;; a helper call costs no thread-local lookup
+(def ^:dynamic *st* "jn_tls.")
 
 (defn- proven? [node k] (and *fast* (get-in *fast* [(:id node) k])))
 
@@ -69,7 +78,7 @@
   (case t
     :long "int64_t" :double "double" :bool "int" :unit "int" :never "int"
     (if (ast/array-type? t)
-      (if (= :double (ast/elem-type t)) "jn_arr_d" "jn_arr_l")
+      (case (ast/elem-type t) :double "jn_arr_d" :long "jn_arr_l" :byte "jn_arr_b")
       (throw (ex-info "no C type" {:type t})))))
 
 (defn- var-name [id] (str "x" id))
@@ -106,10 +115,10 @@
 
 (defn- raise! [node code & {:keys [a b d]}]
   (str "{ " (frees (:live node))
-       " jn_tls.code = " (err-codes code) ";"
-       (when a (str " jn_tls.a = " a ";"))
-       (when b (str " jn_tls.b = " b ";"))
-       (when d (str " jn_tls.d = " d ";"))
+       " " *st* "code = " (err-codes code) ";"
+       (when a (str " " *st* "a = " a ";"))
+       (when b (str " " *st* "b = " b ";"))
+       (when d (str " " *st* "d = " d ";"))
        " return " (ret-zero) "; }"))
 
 (declare emit fresh-copy! as-double-if emit-entry emit-stack-array emit-heap-array emit-aclone
@@ -174,7 +183,9 @@
       ;; behind the guard that makes it unreachable
       (let [[[a0 _] [b0 _]] args r (fresh! :long) a (fresh! :long) b (fresh! :long)]
         (line! a " = " a0 "; " b " = " b0 ";")
-        (line! "if (" b " == 0) " (raise! node :div-zero))
+        ;; quot and rem are Java's long / and % ("/ by zero"); mod is a Clojure
+        ;; fn over Objects, whose zero is Numbers' "Divide by zero"
+        (line! "if (" b " == 0) " (raise! node (if (= p :mod) :mod-zero :div-zero)))
         (case p
           ;; INT64_MIN / -1 is undefined in C; the JVM's long / wraps to INT64_MIN
           :quot (line! r " = (" b " == -1) ? (int64_t)(0ULL - (uint64_t)" a ") : " a " / " b ";")
@@ -202,6 +213,16 @@
       :pos? (str "(" (first one) " > 0)")
       :neg? (str "(" (first one) " < 0)")
       :not (str "(!" (first one) ")")
+      ;; two's complement on int64_t, as the JVM's long ops; a shift count is
+      ;; masked to 0..63 as the JVM masks it (C leaves 64 and up undefined), and
+      ;; a left shift goes through uint64_t, where C defines the wrap
+      (:bit-and :bit-or :bit-xor)
+      (str "(" (str/join (case p :bit-and " & " :bit-or " | " :bit-xor " ^ ") (map first args)) ")")
+      :bit-not (str "(~" (first one) ")")
+      :bit-shift-left (str "((int64_t)((uint64_t)" (ffirst args) " << (" (first (second args)) " & 63)))")
+      :bit-shift-right (str "(" (ffirst args) " >> (" (first (second args)) " & 63))")
+      :unsigned-bit-shift-right
+      (str "((int64_t)((uint64_t)" (ffirst args) " >> (" (first (second args)) " & 63)))")
       :to-double (as-double (first one) (second one))
       :to-long (if (= :long (second one))
                  (first one)
@@ -327,7 +348,7 @@
                 r (fresh! :double)
                 f (case (:fn node) "sqrt" "sqrt" "sin" "sin" "cos" "cos" "tan" "tan"
                         "exp" "exp" "log" "log" "floor" "floor" "ceil" "ceil"
-                        "pow" "pow" "atan2" "atan2")]
+                        "pow" "jn_pow" "atan2" "atan2")]
             (line! r " = " f "(" (str/join ", " args) ");")
             r)
     ;; a temp like every other value: inlined, (aget a (alength a)) emitted
@@ -366,8 +387,9 @@
     :call (let [args (mapv emit (:args node))
                 t (:type node)
                 r (if (ast/owned? t) (declare-var! (:id node) t) (fresh! (if (#{:unit :never} t) :long t)))]
-            (line! r " = " (helper-name (:instance node)) "(" (str/join ", " args) ");")
-            (line! "if (jn_tls.code) { " (frees (:live node)) " return " (ret-zero) "; }")
+            (line! r " = " (helper-name (:instance node)) "("
+                   (str/join ", " (conj args (if (= *st* "jn_tls.") "&jn_tls" "jn_st"))) ");")
+            (line! "if (" *st* "code) { " (frees (:live node)) " return " (ret-zero) "; }")
             r)
     :new-array (if-let [n-el (get-in *stack* [:sites (:id node)])]
                  (emit-stack-array node n-el)
@@ -427,11 +449,35 @@
 
 (def prelude
   "#include <stdint.h>
+#ifdef __MIRC__
+/* jolt's JIT (host/chez/stub/jolt_mir.c): c2mir declares the few C library
+   functions a region calls here, so a machine with no C headers can run one */
+#include <stddef.h>
+#ifndef JN_MIRC_DECLS
+#define JN_MIRC_DECLS
+#define JN_UNUSED
+void *calloc(size_t, size_t); void *malloc(size_t); void free(void *);
+void *memcpy(void *, const void *, size_t);
+double sqrt(double); double sin(double); double cos(double); double tan(double);
+double exp(double); double log(double); double floor(double); double ceil(double);
+double pow(double, double); double atan2(double, double); double fabs(double);
+static const union { uint64_t u; double d; } jn_nan_bits = {0x7ff8000000000000ULL};
+static const union { uint64_t u; double d; } jn_inf_bits = {0x7ff0000000000000ULL};
+#define JN_NAN (jn_nan_bits.d)
+#define JN_ISNAN(x) ((x) != (x))
+#define JN_ISINF(x) (fabs(x) == jn_inf_bits.d)
+#endif
+#else
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 /* (== x x) on a double is how NaN is tested; the comparison is meant */
 #pragma GCC diagnostic ignored \"-Wtautological-compare\"
+#define JN_UNUSED __attribute__((unused))
+#define JN_NAN NAN
+#define JN_ISNAN(x) isnan(x)
+#define JN_ISINF(x) isinf(x)
+#endif
 #if UINTPTR_MAX != 0xffffffffffffffffu
 #error \"jolt native regions need a 64-bit target\"
 #endif
@@ -439,7 +485,9 @@
 #define JN_PRELUDE
 typedef struct { int64_t len; double *data; } jn_arr_d;
 typedef struct { int64_t len; int64_t *data; } jn_arr_l;
-typedef struct { int64_t code; int64_t a; int64_t b; double d; int64_t len; } jn_out;
+typedef struct { int64_t len; int8_t *data; } jn_arr_b;
+typedef struct { int64_t code; int64_t a; int64_t b; double d; int64_t len;
+                 uintptr_t stack_lo; uintptr_t stack_thr; } jn_out;
 /* The status of the region this thread ran last: code 0, or a failure and its
    operands; and an array result's length. Thread-local rather than an argument
    buffer: a collect-safe call lets the collector run while C works, and a
@@ -447,14 +495,84 @@ typedef struct { int64_t code; int64_t a; int64_t b; double d; int64_t len; } jn
    into one translation unit, so a binary has one. JN_EXTERN_STATUS is for a
    single-threaded host that loads each region as its own shared object (the
    native gate) and defines one plain jn_tls for all of them. */
-#ifdef JN_EXTERN_STATUS
+#if defined(__MIRC__)
+/* MIR has no thread-local storage: the JIT keeps the status (jolt_mir.c) */
+jn_out *jolt_mir_status(void);
+#define jn_tls (*jolt_mir_status())
+#elif defined(JN_EXTERN_STATUS)
 extern jn_out jn_tls;
 #else
 static _Thread_local jn_out jn_tls;
 #endif
+/* The lowest stack address a recursive helper may enter at: the thread's real
+   stack bounds less some headroom (a frame, the C it calls, a signal handler),
+   read once per thread. Below it a helper fails with StackOverflowError rather
+   than run into the guard page. A platform without a way to ask gets no guard. */
+#ifndef JN_STACK_HEADROOM
+#define JN_STACK_HEADROOM (256 * 1024)
+#endif
+#if defined(__MIRC__)
+/* c2mir has no __builtin_frame_address; the JIT answers both */
+uintptr_t jolt_mir_stack_limit(uintptr_t headroom);
+uintptr_t jolt_mir_frame(void);
+#define jn_stack_limit() jolt_mir_stack_limit(JN_STACK_HEADROOM)
+#define JN_FRAME() jolt_mir_frame()
+#else
+#define JN_FRAME() ((uintptr_t)__builtin_frame_address(0))
+#if defined(_WIN32)
+__declspec(dllimport) void __stdcall GetCurrentThreadStackLimits(unsigned long long *, unsigned long long *);
+__declspec(dllimport) unsigned long __stdcall GetCurrentThreadId(void);
+#define JN_THREAD_ID() ((uintptr_t)GetCurrentThreadId())
+#else
+#include <pthread.h>
+#if defined(__linux__)
+int pthread_getattr_np(pthread_t, pthread_attr_t *);
+#endif
+#define JN_THREAD_ID() ((uintptr_t)pthread_self())
+#endif
+__attribute__((noinline, unused)) static uintptr_t jn_stack_limit_slow(void) {
+  uintptr_t lo = 0, size = 0;
+#if defined(__APPLE__)
+  uintptr_t hi = (uintptr_t)pthread_get_stackaddr_np(pthread_self());
+  size = pthread_get_stacksize_np(pthread_self());
+  lo = hi - size;
+#elif defined(__linux__)
+  pthread_attr_t at; void *addr; size_t sz;
+  if (pthread_getattr_np(pthread_self(), &at) == 0) {
+    if (pthread_attr_getstack(&at, &addr, &sz) == 0) { lo = (uintptr_t)addr; size = sz; }
+    pthread_attr_destroy(&at);
+  }
+#elif defined(_WIN32)
+  unsigned long long l = 0, h = 0;
+  GetCurrentThreadStackLimits(&l, &h);
+  lo = (uintptr_t)l; size = (uintptr_t)(h - l);
+#endif
+  uintptr_t head = size / 4 < JN_STACK_HEADROOM ? size / 4 : JN_STACK_HEADROOM;
+  jn_tls.stack_lo = size ? lo + head : 1;
+  jn_tls.stack_thr = JN_THREAD_ID();
+  return jn_tls.stack_lo;
+}
+__attribute__((unused)) static inline uintptr_t jn_stack_limit(void) {
+#ifdef JN_EXTERN_STATUS
+  /* one status for every thread: only good for the thread that read it */
+  return (jn_tls.stack_lo && jn_tls.stack_thr == JN_THREAD_ID()) ? jn_tls.stack_lo : jn_stack_limit_slow();
+#else
+  return jn_tls.stack_lo ? jn_tls.stack_lo : jn_stack_limit_slow();
+#endif
+}
+#endif
 /* Chez's 64-bit flvector layout (scheme.h Sflvector_length / Sflvector_ref) */
 #define JN_FLV_LEN(x) ((int64_t)((uintptr_t)(*((intptr_t *)((uintptr_t)(x) + 1))) >> 4))
 #define JN_FLV_DATA(x) ((double *)((uintptr_t)(x) + 9))
+/* a bytevector: its length is shifted 3 where an flvector's is shifted 4 */
+#define JN_BV_LEN(x) ((int64_t)((uintptr_t)(*((intptr_t *)((uintptr_t)(x) + 1))) >> 3))
+#define JN_BV_DATA(x) ((int8_t *)((uintptr_t)(x) + 9))
+/* Math.pow is Java's, not C's: a NaN exponent, or a base of magnitude 1 to an
+   infinite power, is NaN where C's pow answers 1 */
+static inline JN_UNUSED double jn_pow(double x, double y) {
+  if (JN_ISNAN(y) || (JN_ISINF(y) && fabs(x) == 1.0)) return JN_NAN;
+  return pow(x, y);
+}
 #endif
 /* allocation hooks: the test build defines these to track every live block */
 #ifndef JN_CALLOC
@@ -471,10 +589,40 @@ static _Thread_local jn_out jn_tls;
 (defn- helper-sig [inst]
   (let [t (:ret inst)]
     (str "static " (if (#{:unit :never} t) "int64_t" (ctype t)) " " (helper-name (:iid inst)) "("
-         (if (seq (:params inst))
-           (str/join ", " (map (fn [p] (str (ctype (:type p)) " " (var-name (:id p)))) (:params inst)))
-           "void")
+         (str/join ", " (conj (mapv (fn [p] (str (ctype (:type p)) " " (var-name (:id p)))) (:params inst))
+                              "jn_out *jn_st"))
          ")")))
+
+(defn- calls-of
+  "The helper instances a body calls."
+  [body]
+  (->> (tree-seq coll? (fn [n] (if (map? n) (vals n) n)) body)
+       (keep #(when (and (map? %) (= :call (:op %))) (:instance %)))
+       set))
+
+(defn recursive-instances
+  "The iids of the region's helper instances that can reach themselves through
+  their calls: only those can recurse without bound."
+  [region]
+  (let [g (into {} (map (fn [i] [(:iid i) (apply set/union (calls-of (:body i))
+                                                  (map (comp calls-of :body) (:variants i)))])
+                        (:instances region)))
+        reach (fn [start]
+                (loop [seen #{} todo (vec (g start))]
+                  (if-let [x (peek todo)]
+                    (if (seen x) (recur seen (pop todo)) (recur (conj seen x) (into (pop todo) (g x))))
+                    seen)))]
+    (set (filter #((reach %) %) (keys g)))))
+
+(defn- stack-guard
+  "A recursive helper's entry check, before it holds anything but the arrays
+  it takes, which it frees as it fails."
+  [inst]
+  (when (*recursive* (:iid inst))
+    (let [takes (get-in @*region* [:takes (:iid inst) :positions])
+          taken (keep-indexed (fn [i p] (when (contains? takes i) (:id p))) (:params inst))]
+      (str "if (JN_FRAME() < jn_st->stack_lo) { " (frees taken)
+           " jn_st->code = " (err-codes :stack-overflow) "; return " (ret-zero) "; }"))))
 
 (defn- useful? [facts]
   (some (fn [f] (or (:idx-int f) (:in-bounds f) (some true? (:no-ov f)))) (vals facts)))
@@ -523,8 +671,10 @@ static _Thread_local jn_out jn_tls;
             *lines* (atom [])
             *tmp* (atom 0)
             *fn-ret* (:ret inst)
+            *st* "jn_st->"
             *stack* (get *stacks* key)]
     (let [t (:ret inst)
+          _ (some-> (stack-guard inst) line!)
           v (emit-versioned body (get *ranges* key))
           lines @*lines*
           result (cond
@@ -588,7 +738,8 @@ static _Thread_local jn_out jn_tls;
   (binding [*sym* sym
             *region* (atom (assoc region :loops {}))
             *ranges* (ranges/analyze-region region)
-            *stacks* (stack/analyze-region region)]
+            *stacks* (stack/analyze-region region)
+            *recursive* (recursive-instances region)]
     (let [helpers (str (apply str (map #(str (helper-sig %) ";\n") (:instances region)))
                        (apply str (map emit-helper (:instances region))))]
       (str prelude "\n" (extern-decls region) helpers (emit-entry region sym)))))
@@ -608,8 +759,11 @@ static _Thread_local jn_out jn_tls;
               (when (ast/borrowed? (:type p))
                 ;; an fxvector has the flvector's layout (length at +1, slots at +9)
                 (swap! *decls* assoc (var-name (:id p))
-                       (str (ctype (:type p)) " " (var-name (:id p)) " = { JN_FLV_LEN(p" (:id p) "), "
-                            (if (fx-borrowed? (:type p)) "(int64_t *)" "") "JN_FLV_DATA(p" (:id p) ") };"))))
+                       (if (ast/byte-array-type? (:type p))
+                         (str "jn_arr_b " (var-name (:id p)) " = { JN_BV_LEN(p" (:id p) "), JN_BV_DATA(p" (:id p) ") };")
+                         (str (ctype (:type p)) " " (var-name (:id p)) " = { JN_FLV_LEN(p" (:id p) "), "
+                              (if (fx-borrowed? (:type p)) "(int64_t *)" "") "JN_FLV_DATA(p" (:id p) ") };")))))
+          _ (when (seq *recursive*) (line! "jn_stack_limit();"))
           v (emit-versioned (:body region) (:entry *ranges*))
           body @*lines*
           decls (vals @*decls*)

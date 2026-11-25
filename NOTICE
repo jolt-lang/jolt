@@ -35,6 +35,11 @@ irregex (vendor/irregex)
   (sre->procedure, cset-union); host/chez/regex-dfa-upstream.scm and
   host/chez/regex-anchor-sre-upstream.scm pin the originals.
 
+MIR (vendor/mir) - the JIT that compiles native regions outside a build
+  https://github.com/vnmakarov/mir
+  Copyright (c) 2018-2024 Vladimir Makarov
+  MIT License: licenses/MIT-mir.txt
+
 babashka.fs (vendor/fs) - the implementation behind jolt.fs
   https://github.com/babashka/fs
   Copyright (c) Michiel Borkent

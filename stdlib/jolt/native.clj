@@ -15,11 +15,13 @@
 
   The vector names the locals the region reads, each with its type: ^long,
   ^double, ^boolean, ^doubles or ^longs (an array the region borrows: it reads
-  and writes the caller's array in place, and cannot keep it). A borrowed
+  and writes the caller's array in place, and cannot keep it), or ^bytes (a
+  byte-array the region only reads, each element a signed byte as a long). A borrowed
   long-array holds fixnums, so storing a value outside -2^60..2^60-1 into one
   raises; widen it outside the region first. The body is a
   subset of Clojure: let, if, when, do, loop/recur, dotimes, and/or/not,
-  arithmetic and comparisons, quot/rem/mod, long/double, aget/aset/alength,
+  arithmetic and comparisons, quot/rem/mod, bit-and/bit-or/bit-xor/bit-not and
+  the three shifts, long/double, aget/aset/alength,
   double-array/long-array/aclone (arrays the region owns), and Math/sqrt, sin,
   cos, tan, exp, log, floor, ceil, pow, atan2. It returns a long, double,
   boolean, nil, or an array it owns, which arrives as a fresh double-array or
@@ -39,14 +41,17 @@
 
       (native ^:hold-gc [^double x] (* x x))
 
-  In a binary built with jolt build the body runs as C. Anywhere else (the
-  REPL, jolt run) the same checked program runs as Jolt, so the two agree. jolt
-  build needs a C compiler for a program with regions."
+  A region always runs as native code, from the same C. jolt build compiles it
+  with the C compiler and links it into the binary, so a build needs a C compiler
+  for a program with regions. Anywhere else (the REPL, jolt run) jolt compiles
+  the region in process with MIR (github.com/vnmakarov/mir) when its call site
+  loads, so a hot loop runs at native speed while you tune it. Where there is
+  no native path (the gambit target, a platform MIR does not support) calling a
+  region raises UnsupportedOperationException."
   (:require [clojure.string :as str]
             [jolt.native.ast :as ast]
             [jolt.native.memory :as memory]
             [jolt.native.emit :as emit]
-            [jolt.native.fallback :as fallback]
             [jolt.native.rt]
             [jolt.ffi]
             [jolt.scheme]))
@@ -62,7 +67,7 @@
   (str "jn_" (format "%08x%08x" (fnv32 src 2166136261) (fnv32 src 84696351))))
 
 (defn- param-kind [t]
-  (cond (= t [:ref :double]) :doubles (= t [:ref :long]) :longs
+  (cond (= t [:ref :double]) :doubles (= t [:ref :long]) :longs (= t [:ref :byte]) :bytes
         (= t :long) :long (= t :double) :double (= t :bool) :bool))
 
 (defn- result-kind [t]
@@ -77,23 +82,61 @@
         sym (region-sym (emit/emit-region r "JN_SYM"))]
     {:sym sym :src (emit/emit-region r sym) :region r}))
 
+(defn- specialized-names
+  "The params a region's ^{:specialize [...]} names, checked: scalar params of
+  the region, each once."
+  [params region]
+  (when-let [names (:specialize (meta params))]
+    (let [types (into {} (map (juxt (comp #(with-meta % nil) :name) :type) (:params region)))]
+      (when-not (and (vector? names) (seq names) (every? symbol? names) (apply distinct? names))
+        (throw (ex-info (str "native: :specialize takes a vector of parameter names, got " (pr-str names))
+                        {:jolt.native/error true})))
+      (doseq [n names]
+        (let [t (types n)]
+          (cond
+            (nil? t) (throw (ex-info (str "native: :specialize names " n ", which is not a parameter")
+                                     {:jolt.native/error true}))
+            (not (#{:long :double :bool} t))
+            (throw (ex-info (str "native: :specialize takes ^long ^double or ^boolean parameters; " n
+                                 " is an array (specialize on a long that gives its size)")
+                            {:jolt.native/error true})))))
+      names)))
+
 (defmacro native
-  "Run body as C in a built binary, as checked Jolt elsewhere. params names the
-  locals it reads, each hinted ^long ^double ^boolean ^doubles or ^longs."
+  "Run body as native code: linked into a jolt build binary, compiled by the
+  JIT elsewhere. params names the locals it reads, each hinted ^long ^double
+  ^boolean ^doubles ^longs or ^bytes.
+
+  ^{:specialize [n ...]} on params also compiles the region once per distinct
+  value of those scalar parameters the call site sees, with the values as
+  constants, so the range analysis works with real numbers (a fixed size, a
+  constant stride) and more checks drop out. Each variant is compiled by the
+  JIT the first time its values arrive, up to :max-variants of them (8 by
+  default); other values, and a binary jolt build made (which has no JIT), run
+  the region as written. The answers are the same either way."
   [params & body]
   (let [{:keys [sym src region]} (compile-region params body)
-        names (mapv :name (:params region))
-        plain (mapv #(with-meta % nil) names)]
-    ;; (jolt.native/__region sym src [param-kinds] result-kind [args] fallback-fn raise! mode)
-    ;; the analyzer derives the Chez foreign types from the kinds
-    (list 'jolt.native/__region
-          sym src
-          (mapv (comp param-kind :type) (:params region))
-          (result-kind (:type region))
-          plain
-          (list 'fn* names (fallback/region-form region))
-          'jolt.native.rt/raise!
-          (if (:hold-gc (meta params)) :hold-gc :pinned))))
+        plain (mapv #(with-meta (:name %) nil) (:params region))
+        ;; (jolt.native/__region sym src [param-kinds] result-kind [args] raise! mode)
+        ;; the analyzer derives the Chez foreign types from the kinds
+        generic (list 'jolt.native/__region
+                      sym src
+                      (mapv (comp param-kind :type) (:params region))
+                      (result-kind (:type region))
+                      plain
+                      'jolt.native.rt/raise!
+                      (if (:hold-gc (meta params)) :hold-gc :pinned))
+        spec (specialized-names params region)]
+    (if-not spec
+      generic
+      (let [keep-params (vec (remove (comp (set spec) #(with-meta % nil)) params))
+            f (gensym "variant")]
+        `(let [~f (specialized-variant ~sym '~params '~(vec body) '~spec
+                                       ~(get (meta params) :max-variants 8) '~(ns-name *ns*)
+                                       ~(vec spec))]
+           (if ~f
+             (~f ~@(mapv #(with-meta % nil) keep-params))
+             ~generic))))))
 
 (defn- on-form? [x] (and (seq? x) (= 'on (first x))))
 
@@ -134,8 +177,8 @@
   result type inferred from its base case; a return hint, (defnative ^double f
   [x] ...), is optional and checked.
 
-  A helper can give a body per platform, chosen by the C compiler, as Ferret's
-  defnative does:
+  A helper can give a body per platform or per CPU, chosen by the C compiler,
+  as Ferret's defnative does:
 
       (defnative sum [xs]
         (on \"defined(__aarch64__)\" ...)
@@ -144,10 +187,22 @@
   Each guard is a C preprocessor condition; the first that holds is compiled,
   and a platform no guard covers is a build error unless there is an
   (on :default ...). The bodies must agree on their result type and on which
-  arguments they take. The Jolt fallback runs the :default body, or the first.
+  arguments they take. jolt build compiles for its C compiler's default target
+  (usually the baseline); the JIT compiles on the machine the code runs on and
+  defines the macro of
+  each feature its CPU has (see cpu-features), so a SIMD body and a portable
+  one can sit side by side and each machine runs the one it can:
 
-  Outside a region, name is an ordinary fn over the same body, with Jolt's own
-  semantics."
+      (defextern ^double dot-avx2 [^doubles xs ^doubles ys])  ; cc -mavx2, in a :jolt/native lib
+      (defnative dot [xs ys]
+        (on \"defined(__AVX2__)\" (dot-avx2 xs ys))
+        (on :default (loop [i 0 s 0.0] ...)))
+
+  MIR's C compiler has no SIMD intrinsics, so a SIMD body calls C that has
+  them, through defextern.
+
+  Outside a region, name is an ordinary fn over the same body (the :default
+  one, or the first), with Jolt's own semantics."
   [name params & body]
   (let [variants (on-variants name body)
         default (or (first (filter #(= :default (:guard %)) variants)) (first variants))
@@ -211,9 +266,14 @@
   The region's C calls the function directly: it is declared from these hints,
   or by its :header when one is given (as Ferret's native-header does). A jolt
   build links it like any other symbol, so it must come from a :static
-  :jolt/native library (or libc/libm). Outside a region, and in a region's
-  Jolt fallback, name calls the same function through jolt.ffi, copying arrays
-  in and back out.
+  :jolt/native library (or libc/libm); the JIT finds it among the libraries
+  this process has loaded. Outside a region, name calls the same function
+  through jolt.ffi, copying arrays in and back out.
+
+  Outside a build the JIT reads a :header itself, with MIR's C compiler,
+  which cannot parse every system's headers (Android's bionic ones among
+  them); a region whose header it cannot read raises there. A header that
+  only declares the function can be swapped for the hinted prototype.
 
   The C name is the symbol's with each character C does not allow as _
   (fast-erf is fast_erf), unless :c names it. Without a :header the
@@ -221,10 +281,10 @@
   (abs, labs) needs its own :header or a wrapper of another name: the
   hinted prototype would conflict with the one the region's C includes.
 
-  The same array passed twice reaches C as one pointer, but the Jolt
-  fallback copies each argument into its own buffer: a function that reads
-  one while it writes the other sees different values in the two, so pass
-  distinct arrays.
+  The same array passed twice reaches C as one pointer from a region, but
+  name called outside one copies each argument into its own buffer: a
+  function that reads one while it writes the other sees different values in
+  the two, so pass distinct arrays.
 
   The checker cannot see into the C: a region that calls one is memory safe
   only as far as that function is."
@@ -251,9 +311,136 @@
       `(jolt.ffi/defcfn ~(vary-meta name assoc :jolt.native/extern info)
          ~c ~(mapv ffi-types ps) ~(ffi-types ret)))))
 
+(defn jit?
+  "Whether this process can compile a native region itself: true in jolt (the
+  REPL, jolt run) on a machine MIR supports; false in a binary jolt build made,
+  which runs only the regions linked into it."
+  []
+  (boolean (jolt.scheme/call "jolt-native-jit?")))
+
+(def ^:private feature-keywords
+  {"__SSE4_1__" :sse4.1 "__SSE4_2__" :sse4.2 "__POPCNT__" :popcnt "__AVX__" :avx
+   "__AVX2__" :avx2 "__FMA__" :fma "__BMI2__" :bmi2 "__AVX512F__" :avx512f "__ARM_NEON" :neon})
+
+(defn cpu-features
+  "The CPU features the JIT compiles regions for in this process, as keywords
+  (:avx2, :fma, :neon ...): it defines each one's C macro (__AVX2__, __FMA__,
+  __ARM_NEON ...), so a defnative's (on \"defined(__AVX2__)\" ...) body runs
+  on the machines that have it. jolt build compiles for its C compiler's
+  default target, usually the baseline, where those macros are off. Empty
+  without a JIT; JOLT_MIR_CPU=baseline makes the JIT target the baseline."
+  []
+  (into #{} (keep feature-keywords) (jolt.scheme/call "jolt-native-cpu-features")))
+
+(defn native-fn
+  "Compile a native region at runtime, from data: params is the vector native
+  takes (hinted symbols) and body a seq of forms. Answers a fn of the params
+  that runs the region as native code, compiled by the JIT before native-fn
+  returns, so a program can generate a region from what it learns at runtime
+  (a schema, a record layout, a size) and run it with no interpretation left.
+  A region's compile error throws here. Names in body (defnative helpers,
+  defexterns, macros) resolve in ns, by default the current namespace.
+
+      (def sq (native-fn '[^long n] '((* n n))))
+      (sq 7) ;=> 49
+
+  Needs the JIT (jit?): a binary jolt build made has none, and raises
+  UnsupportedOperationException."
+  ([params body] (native-fn params body *ns*))
+  ([params body ns]
+   (when-not (jit?)
+     (throw (UnsupportedOperationException.
+             "jolt.native/native-fn: this process has no JIT (a jolt build binary runs only the regions linked into it)")))
+   (binding [*ns* (the-ns ns)]
+     ;; checked first, so a bad program throws the region's own error; in ns,
+     ;; where its helpers and macros resolve
+     (compile-region params body)
+     (eval (list 'fn* (mapv #(with-meta % nil) params)
+                 (list* 'jolt.native/native params body))))))
+
+;; --- specialization -----------------------------------------------------------
+;; site (the generic region's symbol) -> {variant-key {:vals [value ...] :f variant-fn-or-:failed}}
+(def ^:private variants (atom {}))
+(def ^:private variants-lock (Object.))
+
+(defn- specialized-types [params]
+  (into {} (map (fn [p] [(with-meta p nil) (str (:tag (meta p)))]) params)))
+
+(defn- cast-specialized
+  "The values of the specialized params cast as the region casts its arguments
+  (jolt-native-arg-long, -double, -bool), so a variant sees what the region
+  would have."
+  [types names vals]
+  (mapv (fn [n v]
+          (case (types n)
+            "long" (long v)
+            "double" (double v)
+            "boolean" (if (boolean? v) v
+                          (throw (ClassCastException.
+                                  (str "native region: a ^boolean parameter got " (class v)))))))
+        names vals))
+
+(defn- variant-key
+  "The cache key of cast values: a double by its bits, since = treats 0.0 and
+  -0.0 as one value but a variant with either constant can answer differently
+  ((* k x) is -0.0 for one and 0.0 for the other)."
+  [vals]
+  (mapv #(if (double? %) [::bits (Double/doubleToRawLongBits %)] %) vals))
+
+(defn specialized-body
+  "The body of the variant of a region specialized on names (its params) at
+  vals: body with each name bound to its value, the value cast as the region
+  casts the argument. Answers [params-left body]; params-left keeps the
+  region's other options (^:hold-gc)."
+  [params body names vals]
+  (let [cast (cast-specialized (specialized-types params) names vals)
+        keep (with-meta (vec (remove (comp (set names) #(with-meta % nil)) params))
+               (dissoc (meta params) :specialize :max-variants))]
+    [keep (list (list* 'let (vec (interleave names cast)) body))]))
+
+(defn specialized-variant
+  "The variant of the region site, specialized on names at vals: compiled by
+  the JIT on the first call with these values, while the site has fewer than
+  max of them; nil (run the region as written) past that, without a JIT, or
+  when the variant failed to compile, or for an argument the region's cast
+  refuses (so the region raises its own error). Values are keyed after the
+  region's casts, so 2 and 2.0 for a ^double share one variant."
+  [site params body names max ns vals]
+  (let [cast (try (cast-specialized (specialized-types params) names vals)
+                  (catch Throwable _ nil))
+        k (variant-key cast)
+        hit (:f (get-in @variants [site k]))]
+    (cond
+      ;; an argument the region's own cast refuses: the region raises its error
+      (nil? cast) nil
+      (fn? hit) hit
+      (= :failed hit) nil
+      :else
+      (locking variants-lock
+        (let [known (get @variants site)
+              hit (:f (get known k))]
+          (cond
+            (fn? hit) hit
+            (= :failed hit) nil
+            (or (>= (count known) max) (not (jit?))) nil
+            :else
+            (let [f (try (let [[keep b] (specialized-body params body names cast)]
+                           (native-fn keep b ns))
+                         (catch Throwable _ :failed))]
+              (swap! variants assoc-in [site k] {:vals cast :f f})
+              (when (fn? f) f))))))))
+
+(defn specializations
+  "Each specialized region site that has compiled a variant, as a map of its
+  symbol to the value vectors it has variants for."
+  []
+  (into {} (map (fn [[site m]] [site (vec (keep #(when (fn? (:f %)) (:vals %)) (vals m)))])) @variants))
+
 (defn linked-regions
   "Each native region whose call site has loaded in this process, as a map of
-  its C symbol to whether that region runs as C here (true in a binary built
-  with jolt build, false in the REPL or under jolt run)."
+  its C symbol to how it runs here: :linked (compiled into a binary jolt build
+  made), :jit (compiled in this process, in the REPL or under jolt run), or
+  nil (no native path here; calling it raises)."
   []
-  (into {} (jolt.scheme/call "jolt-native-linked")))
+  (into {} (map (fn [[sym how]] [sym (some-> how keyword)]))
+        (jolt.scheme/call "jolt-native-linked")))

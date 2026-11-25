@@ -92,7 +92,7 @@
   (let [n (if (seq args) (Integer/parseInt (first args)) 20000)
         state (build n)
         small (build (quot n 4))
-        runs 5]
+        runs 3]
     (doseq [[_ f] ops] (dotimes [_ 3] (f small)))        ; warmup
     (let [per-op (mapv (fn [[nm f]]
                          (let [ts (mapv (fn [_] (time-ms f state)) (range runs))]
