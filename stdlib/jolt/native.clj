@@ -130,8 +130,12 @@
     (if-not spec
       generic
       (let [keep-params (vec (remove (comp (set spec) #(with-meta % nil)) params))
-            f (gensym "variant")]
-        `(let [~f (specialized-variant ~sym '~params '~(vec body) '~spec
+            f (gensym "variant")
+            ;; sites with the same generic region can still differ in what they
+            ;; specialize, their mode, budget and namespace: each keeps its own
+            site (symbol (str sym "$" (str/join "," spec) "$" (if (:hold-gc (meta params)) "hold-gc" "pinned")
+                              "$" (get (meta params) :max-variants 8) "$" (ns-name *ns*)))]
+        `(let [~f (specialized-variant '~site '~params '~(vec body) '~spec
                                        ~(get (meta params) :max-variants 8) '~(ns-name *ns*)
                                        ~(vec spec))]
            (if ~f
@@ -233,21 +237,30 @@
   a region, where the C gets the array's own storage. kinds says which
   arguments are arrays (:doubles, :longs) and which are scalars (nil)."
   [raw kinds args]
-  (let [bufs (mapv (fn [k a]
-                     (when k
-                       (let [n (alength a) t (if (= k :doubles) :double :int64)
-                             p (jolt.ffi/alloc (* 8 (max 1 n)))]
-                         (jolt.ffi/write-array p t a)
-                         {:p p :n n :t t :arr a})))
-                   kinds args)
-        cargs (mapcat (fn [b a] (if b [(:p b) (:n b)] [a])) bufs args)]
+  ;; each buffer is recorded as soon as it exists, so one argument failing to
+  ;; copy (not an array) frees those made before it; copied back only once
+  ;; the call ran
+  (let [held (volatile! [])
+        called (volatile! false)]
     (try
-      (apply raw cargs)
+      (let [cargs (vec (mapcat (fn [k a]
+                                 (if-not k
+                                   [a]
+                                   (let [n (alength a) t (if (= k :doubles) :double :int64)
+                                         p (jolt.ffi/alloc (* 8 (max 1 n)))]
+                                     (vswap! held conj {:p p :n n :t t :arr a})
+                                     (jolt.ffi/write-array p t a)
+                                     [p n])))
+                               kinds args))]
+        (vreset! called true)
+        (apply raw cargs))
       (finally
-        (doseq [{:keys [p n t arr]} (remove nil? bufs)]
-          (let [back (jolt.ffi/read-array p t n)]
-            (dotimes [i n] (aset arr i (aget back i))))
-          (jolt.ffi/free p))))))
+        (doseq [{:keys [p n t arr]} @held]
+          (try
+            (when @called
+              (let [back (jolt.ffi/read-array p t n)]
+                (dotimes [i n] (aset arr i (aget back i)))))
+            (finally (jolt.ffi/free p))))))))
 
 (defmacro defextern
   "Declare a C function native regions can call:
@@ -344,6 +357,13 @@
       (def sq (native-fn '[^long n] '((* n n))))
       (sq 7) ;=> 49
 
+  Each distinct region is compiled once and kept, its C source and machine
+  code, for the life of the process: the same params and body answer the
+  compiled code again, but a program that generates regions without bound
+  (one per request, say) grows without bound. Generate per shape and pass the
+  values that vary as parameters, or specialize on them with :specialize and
+  its :max-variants budget.
+
   Needs the JIT (jit?): a binary jolt build made has none, and raises
   UnsupportedOperationException."
   ([params body] (native-fn params body *ns*))
@@ -359,7 +379,7 @@
                  (list* 'jolt.native/native params body))))))
 
 ;; --- specialization -----------------------------------------------------------
-;; site (the generic region's symbol) -> {variant-key {:vals [value ...] :f variant-fn-or-:failed}}
+;; site (the generic region's symbol and what the site specializes) -> {variant-key {:vals [value ...] :f variant-fn-or-:failed}}
 (def ^:private variants (atom {}))
 (def ^:private variants-lock (Object.))
 
@@ -431,8 +451,9 @@
               (when (fn? f) f))))))))
 
 (defn specializations
-  "Each specialized region site that has compiled a variant, as a map of its
-  symbol to the value vectors it has variants for."
+  "Each specialized region site that has compiled a variant, as a map of a
+  symbol naming the site (its region and what it specializes) to the value
+  vectors it has variants for."
   []
   (into {} (map (fn [[site m]] [site (vec (keep #(when (fn? (:f %)) (:vals %)) (vals m)))])) @variants))
 

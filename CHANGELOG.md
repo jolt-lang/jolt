@@ -74,6 +74,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a foreign-callable whose fn returns a number for a `:bool` result. Code
   that passed `1` for true has to change too.
 
+### Fixed
+
+- `Math/log10` and `clojure.math/log10` give the JDK's digits: they are
+  fdlibm's, as the JDK's are, so `(Math/log10 1000.0)` is `3.0` rather than
+  `2.9999999999999996`.
+- `Matcher.start(g)`/`.end(g)` answer `-1` for a group that took no part in
+  the match (they answered `false`), and `group`/`start`/`end` of a group
+  number out of range throw `IndexOutOfBoundsException: No group N`.
+- `Character/digit` reads non-ASCII decimal digits and fullwidth letters, and
+  answers `-1` for a radix outside 2..36. `Character/getNumericValue` and
+  `Character/forDigit` exist.
+
 ## [0.8.30] - 2026-11-24
 
 `jolt.native` regions: blocks of hinted numeric code that `jolt build` compiles
