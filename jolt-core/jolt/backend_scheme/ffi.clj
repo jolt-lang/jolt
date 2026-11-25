@@ -757,13 +757,13 @@
 
 ;; The three jolt.ffi IR ops. EMIT lowers a callable's wrapped fn.
 ;; --- native regions (stdlib/jolt/native) ------------------------------------
-;; jolt.native/__region -> a call to the region's C entry when it is linked into
-;; this process, else its Jolt fallback. The entry is resolved once, when the
-;; enclosing top-level form loads (hoist-load-time), which also registers the C
-;; source for jolt build; it answers #f in the REPL, under jolt run, and in the
-;; build process itself, and the site then calls the fallback. Each argument
-;; goes through the host's check for its kind before either path, so both see
-;; the same coerced values. A ^doubles argument crosses as its flvector
+;; jolt.native/__region -> a call to the region's C entry. The entry is resolved
+;; once, when the enclosing top-level form loads (hoist-load-time), which also
+;; registers the C source for jolt build: linked into this process in a jolt
+;; build binary, else compiled by the host's JIT (MIR) in the REPL, under jolt
+;; run, and in the build process itself. With neither (gambit, or no JIT) the
+;; call raises UnsupportedOperationException. Each argument goes through the
+;; host's check for its kind first. A ^doubles argument crosses as its flvector
 ;; (scheme-object) and C reads it in place, locked (pinned) or with the thread
 ;; kept active (^:hold-gc) so no collection moves it. C reports a failure in its
 ;; per-thread status (code, two longs, a double, and an owned result's length),
@@ -799,11 +799,13 @@
   [node pinned?]
   (let [sym (:sym node)
         result (:result node)
-        entry-of (fn [suffix args ret] (hoist-load-time (native-entry-expr (str sym suffix) args ret)))]
-    {:entry (hoist-load-time
-             (str "(begin (jolt-native-register! " (chez-str-lit sym) " " (chez-str-lit (:src node)) ") "
-                  (native-entry-expr sym (mapv native-arg-chez (:kinds node))
-                                     (native-result-chez result) pinned?) ")"))
+        entry-of (fn [suffix args ret] (hoist-load-time (native-entry-expr (str sym suffix) args ret)))
+        ;; first: it registers the source the JIT compiles the helpers' entries from
+        entry (hoist-load-time
+               (str "(begin (jolt-native-register! " (chez-str-lit sym) " " (chez-str-lit (:src node)) ") "
+                    (native-entry-expr sym (mapv native-arg-chez (:kinds node))
+                                       (native-result-chez result) pinned?) ")"))]
+    {:entry entry
      :status (entry-of "_status" [] "integer-64")
      :err-l (entry-of "_err_l" ["integer-64"] "integer-64")
      :err-d (entry-of "_err_d" [] "double")
@@ -845,11 +847,13 @@
 (defn- emit-native-region [emit node]
   (let [kinds (:kinds node)
         args (mapv emit (:args node))
-        fallback (emit (:fallback node))
-        call-fallback (fn [as] (str "(jolt-invoke " fallback (apply str (map #(str " " %) as)) ")"))]
+        sym (chez-str-lit (:sym node))]
     (if (= :gambit (target))
-      ;; no ffi tier on gambit: the checked Jolt program is the region
-      (call-fallback args)
+      ;; no ffi tier on gambit, so no C to run the region as
+      (str "(begin " (apply str (map #(str % " ") args))
+           "(throw-jvm 'UnsupportedOperationException "
+           (chez-str-lit (str "native region " (:sym node) ": native regions are unsupported on the gambit target"))
+           "))")
       (let [pinned? (not= "hold-gc" (:mode node))
             acc (native-accessors node pinned?)
             p (fresh-label "jn_p")
@@ -869,7 +873,7 @@
              ")) "
              "(if (fx= 0 " code ") " (native-result-value (:result node) r info acc) " "
              "(jolt-invoke " (emit (:raise node)) " " code " (vector-ref " info " 0) (vector-ref " info " 1) (vector-ref " info " 2))))) "
-             (call-fallback as) "))")))))
+             "(jolt-native-unavailable " sym ")))")))))
 
 (defn emit-ffi-node [emit node]
   (case (:op node)

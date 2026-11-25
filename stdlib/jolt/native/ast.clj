@@ -156,8 +156,7 @@
                             ", which its init made " (pr-str want)
                             (when (and (= want :long) (= :double (:type a)))
                               " (initialize it with a double, e.g. 0.0)"))))))
-      (node :recur :never form :loop-id (:id lp) :args args
-            :want (mapv #(:type (:init %)) (:bindings lp))))))
+      (node :recur :never form :loop-id (:id lp) :args args))))
 
 (defn- analyze-dotimes [env [_ bv & body :as form] tail]
   (when-not (and (vector? bv) (= 2 (count bv)) (local-sym? (first bv)))

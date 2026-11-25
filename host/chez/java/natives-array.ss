@@ -1864,8 +1864,8 @@
 
 ;; --- native regions (stdlib/jolt/native) ------------------------------------
 ;; A region call (the backend's :native-region lowering) passes each argument
-;; through one of these before either path runs, so the C half and the Jolt
-;; fallback see the same coerced values and fail the same way. A ^long or
+;; through one of these before C runs, so a linked region and a JIT'd one see
+;; the same coerced values and fail the same way. A ^long or
 ;; ^double parameter converts as clojure.core/long and double do; a ^boolean
 ;; one must be a boolean; a ^doubles one must be a double-array whose backing
 ;; is still an flvector. jolt widens a double-array's backing to a plain vector
@@ -1930,14 +1930,10 @@
           (free ptr)
           a))))
 
-;; The C entry's address, or #f when no region of that name is linked into this
-;; process (the REPL, source mode, and the build process itself before the
-;; region is compiled): the call site then runs its fallback.
-(define (jolt-native-entry sym) (and (sa-foreign-entry? sym) (sa-foreign-entry-address sym)))
-
 ;; Every region whose call site has loaded, sym -> C source, for jolt build to
-;; compile and link. Registered when the site's top-level form loads, so a build
-;; served from the AOT cache sees the same set as one that macroexpanded.
+;; compile and link and for the JIT. Registered when the site's top-level form
+;; loads, so a build served from the AOT cache sees the same set as one that
+;; macroexpanded.
 (define jolt-native-regions '())
 (define jolt-native-regions-mutex (make-mutex))
 (define (jolt-native-register! sym src)
@@ -1946,9 +1942,111 @@
       (set! jolt-native-regions (cons (cons sym src) jolt-native-regions)))))
 (define (jolt-native-registered)
   (jolt-with-mutex jolt-native-regions-mutex (reverse jolt-native-regions)))
-;; jolt.native/linked-regions: each loaded region as [sym linked?], as a jolt
-;; vector of vectors (a Scheme list does not cross into jolt as a seq).
+(define (jolt-native-source sym)
+  (jolt-with-mutex jolt-native-regions-mutex
+    (let ((r (assoc sym jolt-native-regions))) (and r (cdr r)))))
+
+;; --- the JIT ------------------------------------------------------------------
+;; A region not linked into this process (the REPL, jolt run, the build process
+;; itself) is compiled here by MIR's C compiler (host/chez/stub/jolt_mir.c), from
+;; the same C a build links, the first time its call site loads. The release
+;; jolt links MIR in; anything else loads the object JOLT_MIR_LIB names, which
+;; bin/jolt points at the checkout's target/mir/libjoltmir (make mirlib). There
+;; is no default path: one relative to the working directory would let a binary
+;; jolt build made (which carries no MIR, every region its program loads being
+;; linked into it) load whatever library sits under target/mir where it runs.
+(define (jolt-mir-object-path)
+  (let ((env (getenv "JOLT_MIR_LIB")))
+    (and env (not (string=? env "")) env)))
+
+;; #(compile lookup error resolver-entry) once MIR is found, 'none when it is not
+(define jolt-mir-procs #f)
+(define jolt-mir-mutex (make-mutex))
+(define (jolt-mir-find!)
+  (unless (sa-foreign-entry? "jolt_mir_compile")
+    (let ((path (jolt-mir-object-path)))
+      (when (and path (file-exists? path))
+        (guard (e (#t #f)) (sa-load-shared-object path)))))
+  (if (sa-foreign-entry? "jolt_mir_compile")
+      ;; by address, not by name: a named foreign reference is a load-time
+      ;; relocation on Windows, which aborts the boot when the symbol is absent
+      (vector (sa-foreign-procedure (sa-foreign-entry-address "jolt_mir_compile") (string uptr) uptr)
+              (sa-foreign-procedure (sa-foreign-entry-address "jolt_mir_lookup") (uptr string) uptr)
+              (sa-foreign-procedure (sa-foreign-entry-address "jolt_mir_error") () string)
+              ;; java/ffi.ss, which loads after this file and before any region runs
+              (jolt-mir-resolver-entry))
+      'none))
+
+;; base sym -> MIR module address, or a string: why the region has no code here
+(define jolt-mir-modules (make-hashtable string-hash string=?))
+
+(define (jolt-mir-module base)
+  (jolt-with-mutex jolt-mir-mutex
+    (or (hashtable-ref jolt-mir-modules base #f)
+        (let ((m (jolt-mir-compile base)))
+          (hashtable-set! jolt-mir-modules base m)
+          m))))
+
+(define (jolt-mir-compile base)
+  (let ((src (jolt-native-source base)))
+    (if src
+        (jolt-mir-compile-source src)
+        "its C source was never registered")))
+
+;; SRC, C, compiled by MIR: the module, whose functions jolt-mir-lookup finds,
+;; or a string, why there is none. Called under jolt-mir-mutex; the native gate
+;; (test/chez/native-test.clj) calls it directly, from one thread.
+(define (jolt-mir-compile-source src)
+  (unless jolt-mir-procs (set! jolt-mir-procs (jolt-mir-find!)))
+  (if (eq? jolt-mir-procs 'none)
+      (string-append "it is not linked into this binary, and this process has no JIT"
+                     (let ((path (jolt-mir-object-path)))
+                       (if path
+                           (string-append " (MIR: " path " not found)")
+                           " (no MIR linked in, and JOLT_MIR_LIB is unset)")))
+      ;; interrupts off across the call: the resolver re-enters Scheme with C
+      ;; frames on the stack, where no fiber may switch out
+      (let ((m (begin (disable-interrupts)
+                      (let ((m ((vector-ref jolt-mir-procs 0) src (vector-ref jolt-mir-procs 3))))
+                        (enable-interrupts)
+                        m))))
+        (if (eqv? m 0)
+            (string-append "the JIT could not compile it: " ((vector-ref jolt-mir-procs 2)))
+            m))))
+
+;; The address of the function NAME in MODULE, or #f.
+(define (jolt-mir-lookup m name)
+  (let ((p ((vector-ref jolt-mir-procs 1) m name)))
+    (and (not (eqv? p 0)) p)))
+
+;; The C entry's address: linked into this process (a jolt build binary), else
+;; JIT-compiled, else #f, when the call site raises jolt-native-unavailable.
+;; Resolved once per site, when its top-level form loads.
+(define (jolt-native-entry sym)
+  (cond
+    ((sa-foreign-entry? sym) (sa-foreign-entry-address sym))
+    ((< (string-length sym) 19) #f)
+    (else
+     (let ((m (jolt-mir-module (substring sym 0 19))))
+       (and (not (string? m)) (jolt-mir-lookup m sym))))))
+
+;; A region call whose entry did not resolve.
+(define (jolt-native-unavailable sym)
+  (let ((m (jolt-with-mutex jolt-mir-mutex (hashtable-ref jolt-mir-modules sym #f))))
+    (throw-jvm 'UnsupportedOperationException
+               (string-append "native region " sym " has no native code here: "
+                              (if (string? m) m "its entry did not resolve")))))
+
+;; jolt.native/linked-regions: each loaded region as [sym how], how being
+;; "linked" (compiled into this binary), "jit" (compiled in this process), or
+;; nil, as a jolt vector of vectors (a Scheme list does not cross into jolt as
+;; a seq).
 (define (jolt-native-linked)
   (make-pvec (list->vector
-              (map (lambda (r) (make-pvec (vector (car r) (if (jolt-native-entry (car r)) #t #f))))
+              (map (lambda (r)
+                     (let ((sym (car r)))
+                       (make-pvec (vector sym
+                                          (cond ((sa-foreign-entry? sym) "linked")
+                                                ((jolt-native-entry sym) "jit")
+                                                (else jolt-nil))))))
                    (jolt-native-registered)))))
