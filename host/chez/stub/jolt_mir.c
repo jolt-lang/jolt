@@ -32,6 +32,11 @@
 #include "c2mir/c2mir.h"
 
 #if defined(_WIN32)
+/* GetCurrentThreadStackLimits is Windows 8's; mingw declares it only from there */
+#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0602
+#undef _WIN32_WINNT
+#define _WIN32_WINNT 0x0602
+#endif
 #include <windows.h>
 #define JOLT_MIR_EXPORT __declspec(dllexport)
 #else
