@@ -161,6 +161,53 @@ static void jolt_mir_init_incs(void) {
 #endif
 }
 
+/* --- the machine the JIT compiles for -------------------------------------------
+   A region's (on guard ...) bodies are chosen by the C preprocessor. jolt build
+   compiles for the build machine's baseline (no -march), so __AVX2__ and its
+   kin are off there; the JIT compiles on the machine that runs the code, so it
+   defines the GCC macro of each feature this CPU has, and a guard picks the
+   body for it. Bit k of jolt_mir_cpu_features is feature k of
+   jolt_mir_feature_macro; JOLT_MIR_CPU=baseline turns them all off. */
+#define JOLT_MIR_NFEATURES 9
+static const char *jolt_mir_feature_macro(int k) {
+  switch (k) {
+  case 0: return "__SSE4_1__";
+  case 1: return "__SSE4_2__";
+  case 2: return "__POPCNT__";
+  case 3: return "__AVX__";
+  case 4: return "__AVX2__";
+  case 5: return "__FMA__";
+  case 6: return "__BMI2__";
+  case 7: return "__AVX512F__";
+  case 8: return "__ARM_NEON";
+  default: return NULL;
+  }
+}
+
+JOLT_MIR_EXPORT const char *jolt_mir_feature_name(int64_t k) {
+  return k >= 0 && k < JOLT_MIR_NFEATURES ? jolt_mir_feature_macro((int)k) : NULL;
+}
+
+JOLT_MIR_EXPORT int64_t jolt_mir_cpu_features(void) {
+  int64_t f = 0;
+  const char *env = getenv("JOLT_MIR_CPU");
+  if (env && strcmp(env, "baseline") == 0) return 0;
+#if (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__))
+  __builtin_cpu_init();
+  if (__builtin_cpu_supports("sse4.1")) f |= 1 << 0;
+  if (__builtin_cpu_supports("sse4.2")) f |= 1 << 1;
+  if (__builtin_cpu_supports("popcnt")) f |= 1 << 2;
+  if (__builtin_cpu_supports("avx")) f |= 1 << 3;
+  if (__builtin_cpu_supports("avx2")) f |= 1 << 4;
+  if (__builtin_cpu_supports("fma")) f |= 1 << 5;
+  if (__builtin_cpu_supports("bmi2")) f |= 1 << 6;
+  if (__builtin_cpu_supports("avx512f")) f |= 1 << 7;
+#elif defined(__aarch64__) || defined(_M_ARM64)
+  f |= 1 << 8; /* Advanced SIMD is part of every AArch64 core */
+#endif
+  return f;
+}
+
 typedef struct { const char *s; size_t i; } jolt_mir_src;
 static int jolt_mir_getc(void *data) {
   jolt_mir_src *src = data;
@@ -207,6 +254,23 @@ JOLT_MIR_EXPORT void *jolt_mir_compile(const char *src, void *(*resolve)(const c
   jolt_mir_init_incs();
   opts.include_dirs = jolt_mir_incs;
   opts.include_dirs_num = jolt_mir_incs_n;
+  /* the running CPU's feature macros, and SSE/SSE2, which every x86-64 has */
+  struct c2mir_macro_command macros[JOLT_MIR_NFEATURES + 2];
+  size_t nmacros = 0;
+#if defined(__x86_64__) || defined(_M_X64)
+  macros[nmacros].def_p = 1; macros[nmacros].name = "__SSE__"; macros[nmacros].def = "1"; nmacros++;
+  macros[nmacros].def_p = 1; macros[nmacros].name = "__SSE2__"; macros[nmacros].def = "1"; nmacros++;
+#endif
+  int64_t feats = jolt_mir_cpu_features();
+  for (int k = 0; k < JOLT_MIR_NFEATURES; k++)
+    if (feats & ((int64_t)1 << k)) {
+      macros[nmacros].def_p = 1;
+      macros[nmacros].name = jolt_mir_feature_macro(k);
+      macros[nmacros].def = "1";
+      nmacros++;
+    }
+  opts.macro_commands = macros;
+  opts.macro_commands_num = nmacros;
   jolt_mir_src in = {src, 0};
   int ok = c2mir_compile(jolt_mir_ctx, &opts, jolt_mir_getc, &in, "native-region.c", NULL);
   if (!ok) {

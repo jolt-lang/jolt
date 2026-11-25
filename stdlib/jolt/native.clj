@@ -177,8 +177,8 @@
   result type inferred from its base case; a return hint, (defnative ^double f
   [x] ...), is optional and checked.
 
-  A helper can give a body per platform, chosen by the C compiler, as Ferret's
-  defnative does:
+  A helper can give a body per platform or per CPU, chosen by the C compiler,
+  as Ferret's defnative does:
 
       (defnative sum [xs]
         (on \"defined(__aarch64__)\" ...)
@@ -187,7 +187,18 @@
   Each guard is a C preprocessor condition; the first that holds is compiled,
   and a platform no guard covers is a build error unless there is an
   (on :default ...). The bodies must agree on their result type and on which
-  arguments they take.
+  arguments they take. jolt build compiles for the build machine's baseline;
+  the JIT compiles on the machine the code runs on and defines the macro of
+  each feature its CPU has (see cpu-features), so a SIMD body and a portable
+  one can sit side by side and each machine runs the one it can:
+
+      (defextern ^double dot-avx2 [^doubles xs ^doubles ys])  ; cc -mavx2, in a :jolt/native lib
+      (defnative dot [xs ys]
+        (on \"defined(__AVX2__)\" (dot-avx2 (aclone xs) (aclone ys)))
+        (on :default (loop [i 0 s 0.0] ...)))
+
+  MIR's C compiler has no SIMD intrinsics, so a SIMD body calls C that has
+  them, through defextern.
 
   Outside a region, name is an ordinary fn over the same body (the :default
   one, or the first), with Jolt's own semantics."
@@ -305,6 +316,20 @@
   which runs only the regions linked into it."
   []
   (boolean (jolt.scheme/call "jolt-native-jit?")))
+
+(def ^:private feature-keywords
+  {"__SSE4_1__" :sse4.1 "__SSE4_2__" :sse4.2 "__POPCNT__" :popcnt "__AVX__" :avx
+   "__AVX2__" :avx2 "__FMA__" :fma "__BMI2__" :bmi2 "__AVX512F__" :avx512f "__ARM_NEON" :neon})
+
+(defn cpu-features
+  "The CPU features the JIT compiles regions for in this process, as keywords
+  (:avx2, :fma, :neon ...): it defines each one's C macro (__AVX2__, __FMA__,
+  __ARM_NEON ...), so a defnative's (on \"defined(__AVX2__)\" ...) body runs
+  on the machines that have it. jolt build compiles for the build machine's
+  baseline, where those macros are off. Empty without a JIT; JOLT_MIR_CPU=
+  baseline makes the JIT compile as the build does."
+  []
+  (into #{} (keep feature-keywords) (jolt.scheme/call "jolt-native-cpu-features")))
 
 (defn native-fn
   "Compile a native region at runtime, from data: params is the vector native

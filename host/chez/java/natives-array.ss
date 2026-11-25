@@ -1971,7 +1971,8 @@
                          ((windows) ".dll")
                          (else ".so"))))))
 
-;; #(compile lookup error resolver-entry) once MIR is found, 'none when it is not
+;; #(compile lookup error resolver-entry cpu-features feature-name) once MIR is
+;; found, 'none when it is not
 (define jolt-mir-procs #f)
 (define jolt-mir-mutex (make-mutex))
 (define (jolt-mir-find!)
@@ -1986,7 +1987,9 @@
               (sa-foreign-procedure (sa-foreign-entry-address "jolt_mir_lookup") (uptr string) uptr)
               (sa-foreign-procedure (sa-foreign-entry-address "jolt_mir_error") () string)
               ;; java/ffi.ss, which loads after this file and before any region runs
-              (jolt-mir-resolver-entry))
+              (jolt-mir-resolver-entry)
+              (sa-foreign-procedure (sa-foreign-entry-address "jolt_mir_cpu_features") () integer-64)
+              (sa-foreign-procedure (sa-foreign-entry-address "jolt_mir_feature_name") (integer-64) string))
       'none))
 
 ;; base sym -> MIR module address, or a string: why the region has no code here
@@ -2044,6 +2047,21 @@
   (jolt-with-mutex jolt-mir-mutex
     (unless jolt-mir-procs (set! jolt-mir-procs (jolt-mir-find!)))
     (not (eq? jolt-mir-procs 'none))))
+
+;; jolt.native/cpu-features: the C macro of each CPU feature the JIT defines
+;; when it compiles a region here (jolt_mir.c), as a jolt vector of strings;
+;; empty without a JIT.
+(define (jolt-native-cpu-features)
+  (if (jolt-native-jit?)
+      (let ((bits ((vector-ref jolt-mir-procs 4))) (name (vector-ref jolt-mir-procs 5)))
+        (make-pvec
+         (list->vector
+          (let loop ((k 0) (acc '()))
+            (let ((m (name k)))
+              (cond ((not m) (reverse acc))
+                    ((logbit? k bits) (loop (+ k 1) (cons m acc)))
+                    (else (loop (+ k 1) acc))))))))
+      (make-pvec (vector))))
 
 ;; A region call whose entry did not resolve.
 (define (jolt-native-unavailable sym)
