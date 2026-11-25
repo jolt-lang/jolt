@@ -507,6 +507,133 @@
        2 (if (= :timed-out paths) paths (count paths)))
   (jolt.host/delete-tree! root))
 
+;;;; precedence: the closer declaration wins, key by key
+;; The project merges over library A, and A over the library B it depends on —
+;; even when the project names B itself ahead of A, which the breadth-first
+;; inclusion order used to put first. deps.local.edn is closer than the project.
+(let [root (str (System/getProperty "java.io.tmpdir") "/precedence-" (System/currentTimeMillis))
+      mod (fn [m edn] (jolt.host/mkdirs! (str root "/" m "/src"))
+            (spit (str root "/" m "/deps.edn") (pr-str edn)))
+      _ (do (mod "b" {:jolt/native [{:name "foo" :linux ["b/libfoo.so"] :darwin ["b/libfoo.dylib"]
+                                      :windows ["b/foo.dll"] :static {:archive "b/libfoo.a"}
+                                      :build "bnative"}
+                                     {:name "qux" :linux ["b/libqux.so"]}]
+                       :jolt/provides {'b.shim ['java.foo.Baz 'java.foo.Quux]}})
+            (mod "a" {:deps {'p/b {:local/root "../b"}}
+                      :jolt/native [{:name "foo" :linux ["a/libfoo.so"] :darwin ["a/libfoo.dylib"]
+                                     :build "native"}]
+                      :jolt/provides {'a.shim ['java.foo.Bar 'java.foo.Baz]}})
+            (mod "c" {:jolt/provides {'c.shim ['java.foo.Quux]}})
+            (mod "app" {:deps {'p/b {:local/root "../b"} 'p/a {:local/root "../a"}}
+                        :jolt/native [{:name "foo" :linux ["app/libfoo.so"] :optional true}]
+                        :jolt/provides {'app.shim ['java.foo.Bar]}})
+            (spit (str root "/app/deps.local.edn")
+                  (pr-str {:jolt/native [{:name "qux" :linux ["/opt/qux/libqux.so.2"]}]
+                           :aliases {:dev {:extra-paths ["dev"]}}})))
+      app (str root "/app")
+      r (deps/resolve-project app [:dev])
+      by-name (into {} (map (juxt :name identity)) (:natives r))
+      foo (by-name "foo")
+      qux (by-name "qux")
+      rel (fn [p] (when p (str/replace p (str root "/app/../") "")))]
+  (is= "a library's roots precede the roots of the libraries it depends on"
+       ["dev" "src" "a/src" "b/src"]
+       (mapv #(-> % rel (str/replace (str app "/") "")) (:roots r)))
+  (is= "the project wins the keys it declares"
+       [["app/libfoo.so"] true] [(:linux foo) (:optional foo)])
+  (is= "A fills what the project left out, ahead of B"
+       ["a/libfoo.dylib" "a"] [(first (:darwin foo)) (rel (get-in foo [:jolt.deps/roots :darwin]))])
+  (is= "B fills what A left out too, :static included, with its own root"
+       [["b/foo.dll"] {:archive "b/libfoo.a"} "b"]
+       [(:windows foo) (:static foo) (rel (get-in foo [:jolt.deps/roots :static]))])
+  (is= "each :build stays with the deps.edn that declared it"
+       {"a" "native" "b" "bnative"}
+       (into {} (map (fn [[k v]] [(rel k) v])) (:jolt.deps/builds foo)))
+  (is= "deps.local.edn overrides a dependency's library path"
+       ["/opt/qux/libqux.so.2"] (:linux qux))
+  (is= "and the library still loads on the dependency's first require"
+       true (boolean (seq (:jolt.deps/paths qux))))
+  (is= "deps.local.edn merges its other keys over the project's"
+       true (boolean (some #(str/ends-with? % "/app/dev") (:roots r))))
+  (is= "-Srepro leaves deps.local.edn out"
+       ["b/libqux.so"] (:linux (some #(when (= "qux" (:name %)) %)
+                                     (:natives (deps/resolve-project app [] nil {:repro? true})))))
+  (is= "a closer :jolt/provides claim takes the class from a farther one"
+       [["app.shim" nil "java.foo.Bar"] ["a.shim" "p/a" "java.foo.Baz"] ["b.shim" "p/b" "java.foo.Quux"]]
+       (:provides r))
+  (mod "app2" {:deps {'p/b {:local/root "../b"} 'p/c {:local/root "../c"}}})
+  (is= "two unrelated libraries claiming one class are still refused"
+       "java.foo.Quux"
+       (try (deps/resolve-project (str root "/app2")) nil
+            (catch Exception e (:jolt/class (ex-data e)))))
+  (is= "-Sdescribe names the local file"
+       (str app "/deps.local.edn") (:config-local (deps/env-info app)))
+  (jolt.host/delete-tree! root))
+
+;;;; jolt.configure: discovery without a pkg-config, ldconfig or brew process
+(require 'jolt.configure)
+(let [pc (jolt.configure/parse-pc
+          "prefix=/opt/foo\nlibdir=${prefix}/lib\n# c\nName: foo\nVersion: 1.2\nLibs: -L${libdir} -lfoo\n")]
+  (is= ".pc variables expand" "/opt/foo/lib" (get-in pc [:vars "libdir"]))
+  (is= ".pc fields expand" "-L/opt/foo/lib -lfoo" (get-in pc [:fields "Libs"])))
+(is= "the soname ranks ahead of the file it links to, the newest soname first"
+     ["libz.so" "libz.so.2" "libz.so.1" "libz.so.1.2.11"]
+     (vec ((var jolt.configure/rank) ["libz.so.1.2.11" "libz.so.1" "libz.so" "libz.so.2"] [])))
+(is= "a candidate the spec names ranks first"
+     "libz.so.1" (first ((var jolt.configure/rank) ["libz.so.1" "libz.so"] ["libz.so.1"])))
+(is= "a found path is recorded for this platform, other keys kept"
+     {:aliases {:x {}}
+      :jolt/native [{:name "foo" :darwin ["/d/libfoo.dylib"] :linux ["/l/libfoo.so.1"]}
+                    {:name "bar" :linux ["/l/libbar.so"]}]}
+     (jolt.configure/merge-found
+      {:aliases {:x {}} :jolt/native [{:name "foo" :darwin ["/d/libfoo.dylib"]}]}
+      [{:name "foo" :status :found :path "/l/libfoo.so.1"}
+       {:name "bar" :status :found :path "/l/libbar.so"}
+       {:name "baz" :status :missing}]
+      :linux))
+(let [root (str (System/getProperty "java.io.tmpdir") "/configure-" (System/currentTimeMillis))
+      lib (str root "/lib")]
+  (jolt.host/mkdirs! lib)
+  ;; named the way the running platform names a shared library: the soname
+  ;; is preferred over the fuller version it links to
+  (let [[want other] (case (jolt.configure/platform)
+                       :darwin  ["libjoltfake.3.dylib" "libjoltfake.3.1.0.dylib"]
+                       :windows ["libjoltfake-3.dll" nil]
+                       ["libjoltfake.so.3" "libjoltfake.so.3.1.0"])]
+    (spit (str lib "/" want) "")
+    (when other (spit (str lib "/" other) ""))
+    (is= "a :search directory is looked in, relative to the declaring deps.edn"
+       {:path (str lib "/" want) :via :search}
+       (jolt.configure/find-library {:name "joltfake" :search ["lib"] :jolt.deps/root root}
+                                    {:verify? false})))
+  ;; locate opens what it returns, so it needs a real library under the name:
+  ;; a copy of the zlib the runtime already links, where one is on disk.
+  (when-let [z (first (filter #(.isFile (java.io.File. ^String %))
+                              ["/lib/x86_64-linux-gnu/libz.so.1" "/usr/lib/x86_64-linux-gnu/libz.so.1"
+                               "/usr/lib/libz.so.1" "/usr/lib64/libz.so.1" "/usr/lib/libz.dylib"]))]
+    (let [named (str lib "/libjoltlocate.so.1")]
+      (with-open [in (java.io.FileInputStream. ^String z)
+                  out (java.io.FileOutputStream. ^String named)]
+        (.transferTo in out))
+      (is= "locate finds a bare filename under the declaring root's :search dirs"
+           named (jolt.configure/locate {:name "joltlocate" :search ["lib"]} "libjoltlocate.so.1" root))
+      (is= "and beside the declaring deps.edn first"
+           named (jolt.configure/locate {:name "joltlocate"} "libjoltlocate.so.1" lib))
+      (is= "a bare filename nowhere is nil"
+           nil (jolt.configure/locate {:name "joltlocate"} "libjoltlocate.so.9" root))))
+  (is= "a library found nowhere is nil"
+       nil (jolt.configure/find-library {:name "joltfake-absent"} {:verify? false}))
+  (jolt.host/delete-tree! root))
+
+;; `jolt run configure --dry-run sqlite3`: a task's default parse would read
+;; "sqlite3" as --dry-run's value and drop every positional, so configure!
+;; carries its own babashka.cli spec.
+(require 'babashka.cli)
+(is= "configure!'s cli spec collects library names and boolean flags"
+     {:dry-run true :all true :libs ["sqlite3" "z"]}
+     (babashka.cli/parse-opts ["--dry-run" "sqlite3" "--all" "z"]
+                              (:org.babashka/cli (meta (var jolt.configure/configure!)))))
+
 (println (str "deps-expand: " (- @checks @failures) "/" @checks " passed"))
 (when (pos? @failures)
   (System/exit 1))

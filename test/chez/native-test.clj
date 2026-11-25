@@ -141,6 +141,34 @@
                  (#{:unit :never} (:type r)) nil
                  :else res)))}))
 
+;; make nativesan: cc builds each region with AddressSanitizer and UBSan (the
+;; process preloads the ASan runtime) and with JN_VERIFY_FACTS, which puts back
+;; every check a range fact dropped as one that raises "a range fact did not
+;; hold". ASan alone cannot see a wrong fact: a borrowed array lives in Chez's
+;; heap, which has no redzones, so a read past one lands in the next object.
+(def sanitize? (boolean (System/getenv "NATIVE_SANITIZE")))
+(def sanitize-flags
+  (when sanitize?
+    ["-fsanitize=address,undefined" "-fno-sanitize-recover=undefined" "-fno-omit-frame-pointer"
+     "-DJN_VERIFY_FACTS=1"]))
+
+;; NATIVE_EMIT_DUMP=dir: write each compiled region's C to dir, named by a hash
+;; of its source, for tools/native-emit-diff.clj (make nativeemitgate), which
+;; compares what two checkouts emit for the same programs
+(def emit-dump (System/getenv "NATIVE_EMIT_DUMP"))
+(def emit-seen (atom {}))
+
+(defn- dump-emit! [params body src]
+  (when emit-dump
+    (let [text (pr-str [params body])
+          ;; FNV-1a, not hash: the key must not depend on the checkout
+          h (format "%08x" (reduce (fn [h c] (bit-and (* (bit-xor h (int c)) 16777619) 0xffffffff))
+                                   2166136261 text))
+          k (str h "-" (get (swap! emit-seen update h (fnil inc -1)) h))]
+      (.mkdirs (java.io.File. ^String emit-dump))
+      (spit (str emit-dump "/" k ".edn") (str text "\n"))
+      (spit (str emit-dump "/" k ".c") (str/replace src #"jn_t\d+" "jn_T")))))
+
 (defn- cc-compile
   "SRC built by cc into its own shared object, loaded process-wide (like a
   statically linked region; ffi/load-library scopes a library to its defcfns)."
@@ -148,14 +176,29 @@
   (let [c (str work-dir "/" sym ".c")
         so (str work-dir "/" sym ".dylib")
         _ (spit c src)
-        cmd ["cc" "-O2" "-ffp-contract=off" "-shared" "-fPIC" "-Wall" "-Werror" "-DJN_EXTERN_STATUS"
-             "-Wno-unused-variable" "-Wno-unused-but-set-variable" "-Wno-unused-function" "-o" so c rt-so ext-so
-             ;; bionic links no libm into a shared object unasked (atan2 went unresolved)
-             "-lm"]
+        cmd (concat ["cc" "-O2" "-ffp-contract=off" "-shared" "-fPIC" "-Wall" "-Werror" "-DJN_EXTERN_STATUS"
+                     "-Wno-unused-variable" "-Wno-unused-but-set-variable" "-Wno-unused-function"]
+                    sanitize-flags
+                    ["-o" so c rt-so ext-so
+                     ;; bionic links no libm into a shared object unasked (atan2 went unresolved)
+                     "-lm"])
         p (.start (ProcessBuilder. ^java.util.List cmd))
         err (slurp (.getErrorStream p))]
     (when-not (zero? (.waitFor p))
       (throw (ex-info (str "cc failed for " sym ":\n" err) {:src src})))
+    ;; the JIT's side of the prelude must declare every C function the region
+    ;; calls: c2mir takes an undeclared call as an unprototyped one, which on
+    ;; Darwin arm64 passes its arguments the variadic way (on the stack), so a
+    ;; missing memset prototype once left stack arrays unzeroed there. cc
+    ;; reads that branch here and refuses an implicit declaration on any host.
+    ;; Not for an emit dump, which compares the C whatever it declares.
+    (when-not emit-dump
+      (let [m (.start (ProcessBuilder. ^java.util.List
+                                       ["cc" "-fsyntax-only" "-D__MIRC__" "-Werror=implicit-function-declaration"
+                                        "-x" "c" c]))
+            merr (slurp (.getErrorStream m))]
+        (when-not (zero? (.waitFor m))
+          (throw (ex-info (str "the JIT prelude leaves a call undeclared in " sym ":\n" merr) {:src src})))))
     (scm/call "load-shared-object" so)
     (fn [name args ret collect-safe?]
       (scm/eval-string (str "(foreign-procedure " (when collect-safe? "__collect_safe ")
@@ -180,6 +223,7 @@
   (let [r (mem/check-region (ast/analyze-region params body))
         sym (str "jn_t" (swap! counter inc))
         src (str (tracker sym) (emit/emit-region r sym))
+        _ (dump-emit! params body src)
         cc (caller r sym (cc-compile sym src))
         jit (when-not cc-only (caller r sym (jit-compile sym src)))]
     (assoc cc :jit jit :region r :c src)))
@@ -213,6 +257,7 @@
   (cond
     (and (double? a) (double? b)) (same-double? a b)
     (and (instance? longs-class a) (instance? longs-class b)) (= (vec a) (vec b))
+    (and (instance? (class (byte-array 0)) a) (instance? (class (byte-array 0)) b)) (= (vec a) (vec b))
     (and (instance? (class (double-array 0)) a) (instance? (class (double-array 0)) b))
     (and (= (alength a) (alength b)) (every? true? (map same-double? a b)))
     :else (= a b)))
@@ -246,6 +291,8 @@
                       :else v)
     (instance? (class (double-array 0)) v) {:doubles (mapv gnorm v)}
     (instance? longs-class v) {:longs (vec v)}
+    ;; not as an #object, which names the array's identity and reads back as nothing
+    (instance? (class (byte-array 0)) v) {:bytes (vec v)}
     (map? v) (into {} (map (fn [[k x]] [k (gnorm x)]) v))
     :else v))
 
@@ -428,7 +475,9 @@
   [src]
   (let [entry (subs src (str/index-of src "double jn_"))
         g (str/index-of entry "if (x")]
-    (when g (subs entry g (str/index-of entry "} else {" g)))))
+    ;; less the checks only JN_VERIFY_FACTS keeps (the sanitizer lane)
+    (when g (str/join "\n" (remove #(str/includes? % "JN_VERIFY_FACTS &&")
+                                   (str/split-lines (subs entry g (str/index-of entry "} else {" g))))))))
 
 (let [src (emit/emit-region (mem/check-region (ast/analyze-region nbody-params nbody-body)) "jn_x")
       fast (fast-copy src)]
@@ -476,6 +525,72 @@
   (check-eq "a loop-carried alength passed on unchanged gets a fast copy" (some? fast) true)
   (check-eq "a loop-carried alength passed on unchanged still proves the index"
             (when fast (re-find #"jn_tls\.code = 1" fast)) nil))
+
+;; symbolic bounds: an index bounded by a long parameter, by another array's
+;; length, or by a length minus a constant (scriptc's bytes-loop-versions). The
+;; guard compares the bound with the array's length once, at the entry.
+(defn- fast-of [params body]
+  (fast-copy (emit/emit-region (mem/check-region (ast/analyze-region params body)) "jn_x")))
+(defn- no-checks [label params body]
+  (let [fast (fast-of params body)]
+    (check-eq (str label ": a guard picks a fast copy") (some? fast) true)
+    (check-eq (str label ": the fast copy keeps no overflow, cast or bounds check")
+              (when fast (re-find #"overflow|INT32_MIN|jn_tls\.code = 1" fast)) nil)
+    fast))
+
+(def ub-param-params '[^doubles xs ^long m])
+(def ub-param-body '((loop [i 0 s 0.0] (if (< i m) (recur (inc i) (+ s (aget xs i))) s))))
+(let [fast (no-checks "a loop bounded by a long parameter" ub-param-params ub-param-body)]
+  (check-eq "the guard compares the parameter with the length"
+            (boolean (and fast (re-find #"x\d+ < x\d+\.len" fast))) true))
+(check-run "a loop bounded by a long parameter" ub-param-params ub-param-body
+           [[(da 1 2 3) 3] [(da 1 2 3) 2] [(da 1 2 3) 4] [(da 1 2 3) -5] [(da) 0] [(da) 1]
+            [(da 1) 9223372036854775807]] :raw true)
+
+(def ub-other-params '[^doubles xs ^doubles ys])
+(def ub-other-body '((loop [i 0 s 0.0]
+                       (if (< i (alength xs)) (recur (inc i) (+ s (* (aget xs i) (aget ys i)))) s))))
+(no-checks "a loop to one array's length reading another" ub-other-params ub-other-body)
+(check-run "a loop to one array's length reading another" ub-other-params ub-other-body
+           [[(da 1 2 3) (da 4 5 6)] [(da 1 2 3) (da 4 5)] [(da 1) (da 4 5)] [(da) (da)]] :raw true)
+
+(def ub-stencil-params '[^doubles xs])
+(def ub-stencil-body '((let [n (alength xs)]
+                         (loop [i 0 s 0.0]
+                           (if (< i (dec n)) (recur (inc i) (+ s (aget xs (inc i)))) s)))))
+(let [fast (no-checks "a stencil reading i + 1 below n - 1" ub-stencil-params ub-stencil-body)]
+  ;; (inc i) is written twice; the fast copy computes it once
+  (check-eq "the stencil's two (inc i) are computed once"
+            (when fast (count (re-seq #"= x\d+ \+ 1;" fast))) 1))
+(check-run "a stencil reading i + 1 below n - 1" ub-stencil-params ub-stencil-body
+           [[(da 1 2 3)] [(da 5)] [(da)]] :raw true)
+
+(check-run "an index one past a parameter bound still raises" '[^doubles xs ^long m]
+           '((loop [i 0 s 0.0] (if (<= i m) (recur (inc i) (+ s (aget xs i))) s)))
+           [[(da 1 2 3) 2] [(da 1 2 3) 3] [(da) 0]] :raw true)
+
+;; a repeated pure expression is computed once in a block, never across a
+;; branch that may not have run
+(check-run "a repeated expression in one branch only" '[^long a ^long b]
+           '((let [x (if (pos? a) (+ a b) 0)] (+ x (+ a b))))
+           [[1 2] [-1 2] [9223372036854775807 0] [9223372036854775807 1] [-5 9223372036854775807]])
+
+;; an accumulator that adds a bounded step once per counted iteration stays
+;; within init + trips * step: a byte sum cannot overflow (scriptc's lanes.ts
+;; exactness rule)
+(def bsum-params '[^bytes bs])
+(def bsum-body '((loop [i 0 s 0] (if (< i (alength bs)) (recur (inc i) (+ s (aget bs i))) s))))
+(no-checks "a byte sum" bsum-params bsum-body)
+(check-run "a byte sum" bsum-params bsum-body
+           [[(byte-array [1 -2 127 -128])] [(byte-array 0)] [(byte-array (repeat 1000 -128))]] :raw true)
+(let [fast (fast-of '[^longs ls]
+                    '((loop [i 0 s 0] (if (< i (alength ls)) (recur (inc i) (+ s (aget ls i))) s))))]
+  (check-eq "a long sum keeps its overflow check"
+            (boolean (re-find #"__builtin_add_overflow\(x\d+, t" (or fast ""))) true))
+(check-run "a long sum still overflows" '[^longs ls]
+           '((loop [i 0 s 0] (if (< i (alength ls)) (recur (inc i) (+ s (aget ls i))) s)))
+           ;; sixteen times 2^59 is 2^63
+           [[(long-array [1 2 3])] [(long-array (repeat 16 576460752303423488))]])
 
 (check-run "a count up to Long/MAX_VALUE cannot overflow its inc" '[^long n ^long k]
            '((loop [i (- n k)] (if (< i n) (recur (inc i)) i)))

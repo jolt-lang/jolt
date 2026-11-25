@@ -61,6 +61,7 @@ grenadine.source
 grenadine.tree
 jolt.cli
 jolt.completions
+jolt.configure
 jolt.continuations
 jolt.debug
 jolt.fibers

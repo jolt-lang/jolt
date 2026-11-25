@@ -20,7 +20,11 @@
      jolt_mir_frame        an address in the caller's frame, for the helper's
                            check against that limit.
    Everything else a region calls (malloc, sqrt, a defextern's function) is
-   resolved by the resolver Chez passes in, which is Chez's own foreign-entry. */
+   resolved in the process's global scope, then by the resolver Chez passes
+   in, which is Chez's own foreign-entry (jolt_mir_resolve). */
+#if !defined(_WIN32) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE /* RTLD_DEFAULT, on glibc */
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,6 +45,7 @@
 #define JOLT_MIR_EXPORT __declspec(dllexport)
 #else
 #include <pthread.h>
+#include <dlfcn.h>
 #define JOLT_MIR_EXPORT __attribute__((visibility("default")))
 #endif
 
@@ -114,8 +119,29 @@ static void MIR_NO_RETURN jolt_mir_on_error(MIR_error_type_t type, const char *f
   abort();
 }
 
+/* A name first resolves in the process's global scope, which is where a call
+   from a region jolt build linked in binds: an interposed definition (an
+   LD_PRELOADed ASan or jemalloc) wins there. Chez's foreign-entry walks its
+   shared objects newest first, each in its own local scope, so it answered by
+   whichever object was loaded last: with libjoltmir newest, glibc's free (it
+   does not link the interposer); with a sanitized object newest, ASan's calloc.
+   MIR keeps the first answer for a name in the context, so regions compiled
+   at different points paired one allocator's calloc with the other's free.
+   Chez's list stays the fallback, for a name only a library ffi/load-library
+   opened (RTLD_LOCAL, so not in the global scope) defines. */
+static void *jolt_mir_find_symbol(const char *name) {
+  void *p = NULL;
+#if !defined(_WIN32)
+  p = dlsym(RTLD_DEFAULT, name);
+#endif
+  if (p == NULL && jolt_mir_resolver) p = jolt_mir_resolver(name);
+  return p;
+}
+
+/* The link's resolver: the import check before it already found every name,
+   so a miss here is MIR's own (an internal one it did not report earlier). */
 static void *jolt_mir_resolve(const char *name) {
-  void *p = jolt_mir_resolver ? jolt_mir_resolver(name) : NULL;
+  void *p = jolt_mir_find_symbol(name);
   /* MIR's link raises on a NULL: name the symbol rather than its message */
   if (p == NULL) {
     snprintf(jolt_mir_msg, sizeof jolt_mir_msg, "undefined symbol %s", name);
@@ -301,12 +327,12 @@ JOLT_MIR_EXPORT void *jolt_mir_compile(const char *src, void *(*resolve)(const c
      reports a missing one through the error function, after which the context
      cannot be trusted. The names MIR's generator adds itself (mir.*) come
      later, during the link. A region imports nothing from another region, so
-     the resolver answers for every name, as it does at the link. */
+     jolt_mir_find_symbol answers for every name, as at the link. */
   for (MIR_item_t it = DLIST_HEAD(MIR_item_t, module->items); it != NULL;
        it = DLIST_NEXT(MIR_item_t, it)) {
     if (it->item_type != MIR_import_item) continue;
     const char *name = it->u.import_id;
-    if (jolt_mir_resolver && jolt_mir_resolver(name) != NULL) continue;
+    if (jolt_mir_find_symbol(name) != NULL) continue;
     snprintf(jolt_mir_msg, sizeof jolt_mir_msg, "undefined symbol %s", name);
     jolt_mir_jmp = NULL;
     return NULL;

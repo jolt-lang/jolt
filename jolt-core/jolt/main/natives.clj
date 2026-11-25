@@ -56,6 +56,18 @@
 (defn- native-root [spec plat base]
   (or (get (:jolt.deps/roots spec) plat) (:jolt.deps/root spec) base))
 
+;; A reconciled spec keeps each declaration's :build under the root it was
+;; declared in (:jolt.deps/builds), since a task builds the files ITS deps.edn
+;; names. SPEC as seen by whoever needs the files under ROOT: the task declared
+;; there as its :build (none when that deps.edn declared none), run in ROOT.
+;; A spec that was never reconciled is returned as it is.
+(defn- with-build-for [spec root]
+  (if-let [bs (:jolt.deps/builds spec)]
+    (let [task (get bs root)]
+      (cond-> (dissoc spec :build :jolt.deps/builds)
+        task (assoc :build task :jolt.deps/build-root root)))
+    spec))
+
 ;; A BUILD-TIME path (a :static archive, a -L directory) relative to that root.
 ;; Unlike native-candidate this prefixes a bare filename too: those paths are
 ;; handed to the linker, which reads "libfoo.a" as a file in the current
@@ -146,7 +158,8 @@
 (defn- canonical-dir [d] (.getCanonicalPath (java.io.File. ^String d)))
 
 (defn- native-build-dir [spec base]
-  (when-let [d (or (:jolt.deps/root spec) base)] (canonical-dir d)))
+  (when-let [d (or (:jolt.deps/build-root spec) (:jolt.deps/root spec) base)]
+    (canonical-dir d)))
 
 (defn- ancestor-building? [dir]
   (let [v (jolt.host/getenv native-building-env)]
@@ -372,9 +385,17 @@
 
 ;; A required library none of whose candidates loaded: an error when strict?,
 ;; otherwise a warning (or nothing, under the auto-build that is producing it).
+(defn- bare-name? [c] (not (or (str/includes? c "/") (str/includes? c "\\"))))
+
+(defn- discover-note [cands]
+  (when (and (some bare-name? cands)
+             (not= "0" (jolt.host/getenv "JOLT_NATIVE_DISCOVER")))
+    "; autodiscovery found no other copy (set its path in deps.local.edn, or run a jolt.configure task)"))
+
 (defn- report-missing-native! [spec plat cands dir result buildable? strict?]
   (let [msg (str (native-missing-msg spec plat cands)
-                 (when dir (native-build-note spec dir result cands)))]
+                 (when dir (native-build-note spec dir result cands))
+                 (discover-note cands))]
     (cond
       strict?
       (throw (ex-info msg {:native spec}))
@@ -393,15 +414,42 @@
                       (when (and buildable? (not dir))
                         " (a task may build it)")))))))
 
+;; A bare filename ("libcrypto.3.dylib") names a library, not a place, so it is
+;; looked for: first beside the deps.edn that declared it — a project that ships
+;; or builds the library into its own folder gets that copy — then wherever the
+;; platform's loader finds it, and when neither opens it, autodiscovery
+;; (jolt.configure/locate): pkg-config's libdirs, Homebrew, the linker's
+;; configured directories and the usual system ones, read without running
+;; anything. Discovery runs only after every candidate failed, so a library the
+;; loader already finds costs nothing extra. JOLT_NATIVE_DISCOVER=0 turns the
+;; discovery step off; `jolt run configure` records what it finds in
+;; deps.local.edn instead, for a machine that wants it pinned.
+
+(defn- project-first [cands root]
+  (if root
+    (vec (mapcat #(if (bare-name? %) [(str root "/" %) %] [%]) cands))
+    cands))
+
+(defn- discover-native [spec cands root]
+  (when-not (= "0" (jolt.host/getenv "JOLT_NATIVE_DISCOVER"))
+    (when-let [locate (try (requiring-resolve 'jolt.configure/locate)
+                           (catch Exception _ nil))]
+      (some #(locate spec % root) (distinct (filter bare-name? cands))))))
+
 (defn- load-native-spec! [spec plat strict? base]
-  (let [cands (native-load-candidates spec plat base)
+  (let [spec (with-build-for spec (native-root spec plat base))
+        root (native-root spec plat base)
+        declared (native-load-candidates spec plat base)
+        cands (project-first declared root)
         ;; Load the native RTLD_LOCAL and register its handle, so the
         ;; spec's defcfns resolve from the handle (isolated from the
         ;; process-global namespace) rather than depending on global
         ;; foreign-entry search order. load-native returns #t on success
         ;; (a handle, or Windows-global), #f when no candidate opens.
         load! #(some (fn [c] (when (jolt.ffi/load-native c) c)) cands)
-        hit (load!)
+        hit (or (load!)
+                (when (and (not (:static spec)) (seq declared))
+                  (discover-native spec declared root)))
         ;; a task may build a library it declared candidates for, but
         ;; not one already on disk that failed to load. A :static
         ;; spec's declared shared object is built the same way; only a
@@ -485,6 +533,12 @@
                                   (fn [ns] (load-dependency-natives! specs strict? base ns)))))))
 
 ;; --- natives in a built binary ---------------------------------------------
+;; The root a spec's :static paths resolve against: the deps.edn that declared
+;; the :static it carries, which reconciliation records when it took :static from
+;; a farther declaration than the one that won the spec.
+(defn- static-root [spec base]
+  (or (get (:jolt.deps/roots spec) :static) (:jolt.deps/root spec) base))
+
 ;; The static-link description of a :jolt/native spec for this platform, or nil.
 ;; :static may be flat ({:archive "…"} / {:lib "z" :libdir "…"}) or per-platform
 ;; ({:darwin {…} :linux {…}}). Returns a vector build.ss reads and wraps in the
@@ -498,7 +552,7 @@
           ;; project's own "native/libfoo.a" only worked when the build happened
           ;; to run from the project dir — which bin/jolt, which cd's to the jolt
           ;; tree, never does (jolt-9a8).
-          root (native-root spec plat base)]
+          root (static-root spec base)]
       (cond
         (:archive s) ["archive" (native-build-path root (:archive s))]
         (:lib s)     ["lib" (:lib s) (if-let [d (:libdir s)]
@@ -512,7 +566,7 @@
 ;; run rather than as a linker error about a missing file.
 (defn- build-static-archives! [natives base]
   (let [plat (current-platform)]
-    (doseq [spec natives
+    (doseq [spec (map #(with-build-for % (static-root % base)) natives)
             :when (and (:build spec) (not (:optional spec)) (not (:process spec)))]
       (let [[kind archive] (static-link-spec spec plat base)
             present #(when (jolt.host/file-exists? archive) archive)]
@@ -539,7 +593,8 @@
 ;; system's to find, and a task cannot be said to have produced it.
 (defn- build-dependency-libraries! [encoded natives base]
   (let [plat (current-platform)]
-    (doseq [[e spec] (map vector encoded natives)
+    (doseq [[e spec] (map vector encoded
+                          (map #(with-build-for % (native-root % plat base)) natives))
             :when (and (= "dep" (first e)) (:build spec) (not (:optional spec)))]
       (let [cands (filterv #(or (str/includes? % "/") (str/includes? % "\\"))
                            (mapv #(native-candidate (native-root spec plat base) %)

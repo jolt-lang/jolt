@@ -132,6 +132,13 @@ if [ -z "${JOLT_NO_DEVCACHE:-}" ] && \
   fi
 fi
 
+# A library for the dynamic loader to preload into Chez (make nativesan preloads
+# the ASan runtime). macOS drops DYLD_* from the environment when it runs this
+# script through the protected /bin/sh, so the name travels without the prefix.
+if [ -n "${JOLT_DYLD_INSERT_LIBRARIES:-}" ]; then
+  export DYLD_INSERT_LIBRARIES="$JOLT_DYLD_INSERT_LIBRARIES"
+fi
+
 # The devcache entry is a checked-in script sharing cli.ss's tail (cli-tail.ss)
 # — an inline heredoc here once drifted from cli.ss and broke project commands.
 if [ "$use_cache" = 1 ]; then
