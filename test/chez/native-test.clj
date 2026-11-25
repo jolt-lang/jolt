@@ -1018,6 +1018,16 @@
       fast (fast-copy src)]
   (check-eq "a masked index is proven in bounds" (boolean (and fast (str/includes? fast ".len > 3LL"))) true))
 
+;; an unsigned shift by 1 can still answer 2^63 - 1: its range must not drop the
+;; bounds check or the overflow check after it
+(check-run "an unsigned shift by 1 keeps the index checked" '[^longs xs ^long i]
+           '((aget xs (unsigned-bit-shift-right i 1)))
+           [[(long-array [1 2 3 4]) 6] [(long-array [1 2 3 4]) -1] [(long-array [1 2 3 4]) -2]] :raw true)
+(defn ushr1-inc [^long i] (jolt.native/native [^long i] (inc (unsigned-bit-shift-right i 1))))
+(check-eq "an unsigned shift by 1 keeps the overflow check (the JVM's inc throws)"
+          [(outcome (fn [_] (ushr1-inc 6)) nil) (outcome (fn [_] (ushr1-inc -1)) nil)]
+          [{:value 4} {:throw "java.lang.ArithmeticException" :msg "integer overflow"}])
+
 ;; --- native-fn: regions compiled at runtime from data ------------------------------
 ;; through eval, the backend and the JIT, as a call site in the REPL is
 
@@ -1032,6 +1042,10 @@
           true)
 (check-eq "native-fn resolves helpers in the namespace it is given"
           ((jolt.native/native-fn '[^bytes bs] '((byte-at bs 1)) 'native-test) (ba 3 -4)) -4)
+(check-eq "native-fn checks the region in the namespace it is given, not the caller's"
+          (binding [*ns* (the-ns 'clojure.core)]
+            ((jolt.native/native-fn '[^bytes bs] '((byte-at bs 0)) 'native-test) (ba 3 -4)))
+          3)
 (check-eq "native-fn runs as JIT'd code" (some #{:jit} (vals (jolt.native/linked-regions))) :jit)
 
 ;; --- jolt.native.layout: a record layout lowered into a parser and a scan ---------

@@ -112,7 +112,8 @@
     :unsigned-bit-shift-right
     (let [[_ rk] (mapv #(rng % env) (:args node))]
       (if (and rk (= (rk 0) (rk 1)) (< 0 (rk 0) 64))
-        [0 (dec (bit-shift-left 1 (- 64 (rk 0))))]
+        ;; 2^(64-k) - 1, without forming 2^63 (k = 1), which would overflow
+        [0 (bit-shift-right Long/MAX_VALUE (dec (rk 0)))]
         full))
     (:bit-or :bit-xor :bit-not :bit-shift-left :bit-shift-right)
     (do (run! #(rng % env) (:args node)) full)

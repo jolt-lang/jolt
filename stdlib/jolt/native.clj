@@ -286,9 +286,10 @@
    (when-not (jit?)
      (throw (UnsupportedOperationException.
              "jolt.native/native-fn: this process has no JIT (a jolt build binary runs only the regions linked into it)")))
-   ;; checked first, so a bad program throws the region's own error
-   (compile-region params body)
    (binding [*ns* (the-ns ns)]
+     ;; checked first, so a bad program throws the region's own error; in ns,
+     ;; where its helpers and macros resolve
+     (compile-region params body)
      (eval (list 'fn* (mapv #(with-meta % nil) params)
                  (list* 'jolt.native/native params body))))))
 
