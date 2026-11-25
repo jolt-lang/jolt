@@ -1,0 +1,1513 @@
+;; jolt's build and gate as jolt tasks, beside the Makefile: `jolt info` lists
+;; them by group, `jolt build` builds, `jolt test -j 8` runs the full gate.
+;; Variables come from the environment (`CHEZ=/opt/chez/bin/chez jolt testbin`).
+;; Shared code is in tools/tasks/, and taskparity fails when this file and the
+;; Makefile stop naming the same targets.
+{:tasks
+ {:requires ([babashka.fs :as fs]
+             [clojure.string :as str])
+  :init (do (load-file "tools/tasks/env.clj")
+            (load-file "tools/tasks/gate.clj")
+            (refer 'tasks.env :only '[sh chez gambit-env jolt-bin]))
+
+  ;; --- Start here --------------------------------------------------------------
+
+  info {:doc "Every task, grouped by topic (start here)"
+        :task (do (load-file "tools/tasks/info.clj")
+                  (tasks.info/print-info (:tasks (read-string (slurp "deps.edn")))))}
+
+  chez-path {:doc "Print the Chez these tasks run"
+             :task (println (deref tasks.env/chez-path))}
+
+  deps {:doc "Submodules plus a threaded, patched Chez (provisioned when absent)"
+        :depends [submodules]
+        :task (let [out (-> (babashka.process/shell {:out :string :err :string :continue true
+                                                     :in "(write (threaded?)) (newline)\n"}
+                                                    (deref tasks.env/chez-path) "-q")
+                            :out str str/trim)]
+                (when-not (= "#t" out)
+                  (println (str "Jolt requires a threaded Chez Scheme (" (deref tasks.env/chez-path) " reported " out ")"))
+                  (System/exit 1)))}
+
+  submodules {:doc "Initialize every vendored submodule when any is missing"
+              :task (when (tasks.env/sh-out "git submodule status --recursive | grep -q '^-' && echo missing")
+                      (shell "git submodule update --init --recursive"))}
+
+  hooks {:doc "Install the repo's git hooks into .git/hooks (re-run after a hook changes)"
+         :task (sh "for h in tools/git-hooks/*; do cp \"$h\" \".git/hooks/$(basename \"$h\")\"; chmod +x \".git/hooks/$(basename \"$h\")\"; echo \"installed .git/hooks/$(basename \"$h\")\"; done")}
+
+  ;; --- Build and install -------------------------------------------------------
+
+  build {:doc "Build the standalone binary (testbin)"
+         :override-builtin true
+         :depends [testbin]
+         :task nil}
+
+  default {:doc "What a bare `make` does: build"
+           :depends [build]
+           :task nil}
+
+  ;; Per-case CLI and build gates boot a built binary about 10x faster than
+  ;; script mode.
+  testbin {:doc "Standalone binary at target/release/jolt, rebuilt when an input is newer"
+           :depends [deps]
+           :task (if (tasks.gate/done? 'testbin)
+                   (println "testbin: built once by the gate runner")
+                   (let [inputs ["host/chez" "jolt-core" "stdlib" "compatibility" "vendor/fs/src"
+                                 "vendor/process/src" "vendor/cli/src" "vendor/grenadine/src"
+                                 "vendor/grenadine-generated" "vendor/irregex"]
+                         bin "target/release/jolt"]
+                     (if (or (tasks.env/getenv "JOLT_FORCE_TESTBIN")
+                             (not (fs/executable? bin))
+                             (not-empty (tasks.env/sh-out (str "find " (str/join " " inputs)
+                                                               " -type f -newer " bin " -print -quit 2>/dev/null"))))
+                       (chez "--script" "host/chez/build-jolt.ss" "release" bin)
+                       (println "testbin: target/release/jolt up to date"))))}
+
+  mirlib {:doc "The native-region JIT for a source checkout: MIR as target/mir/libjoltmir"
+          :task (sh "srcs='vendor/mir/mir.c vendor/mir/mir-gen.c vendor/mir/c2mir/c2mir.c host/chez/stub/jolt_mir.c'; \\
+                     so=target/mir/libjoltmir$([ \"$(uname -s)\" = Darwin ] && echo .dylib || echo .so); cc=${JOLT_CC:-cc}; \\
+                     test -f vendor/mir/c2mir/c2mir.c || { echo 'mirlib: vendor/mir is empty: git submodule update --init vendor/mir'; exit 1; }; \\
+                     if [ -f \"$so\" ] && [ -z \"$(find $srcs vendor/mir -name '*.[ch]' -newer \"$so\" -print -quit)\" ]; then echo \"mirlib: $so up to date\"; exit 0; fi; \\
+                     mkdir -p target/mir; \\
+                     for f in $srcs; do $cc -O2 -DNDEBUG -std=gnu11 -fsigned-char -fPIC -w -Wno-psabi -Ivendor/mir -c $f -o target/mir/$(basename $f .c).o || exit 1; done; \\
+                     $cc -shared -o \"$so\" target/mir/mir.o target/mir/mir-gen.o target/mir/c2mir.o target/mir/jolt_mir.o -lm -lpthread $([ \"$(uname -s)\" = Linux ] && echo -ldl); \\
+                     echo \"mirlib: wrote $so\"")}
+
+  ;; Not named install, because jolt runs a file named ./install before a task of
+  ;; that name.
+  install-local {:doc "Install target/release/jolt into $PREFIX/bin (default ~/.local)"
+                 :depends [build]
+                 :task (let [prefix (or (tasks.env/getenv "PREFIX")
+                                        (if (= "0" (tasks.env/sh-out "id -u"))
+                                          "/usr/local"
+                                          (str (System/getProperty "user.home") "/.local")))]
+                         (shell "install -d" (str prefix "/bin"))
+                         (shell "install -m 755 target/release/jolt" (str prefix "/bin/jolt")))}
+
+  jolt {:doc "Check the seed fixpoint, then build the release and debug binaries"
+        :depends [selfhost jolt-release jolt-debug deps]
+        :task (sh "echo \"OK: target/release/jolt and target/debug/jolt built\"")}
+
+  jolt-release {:doc "Build the self-contained release binary at target/release/jolt"
+                :depends [deps]
+                :task (sh "$JOLT_CHEZ --script host/chez/build-jolt.ss release target/release/jolt $JOLT_CROSS_TARGET")}
+
+  jolt-debug {:doc "Build the debug binary at target/debug/jolt"
+              :depends [deps]
+              :task (sh "$JOLT_CHEZ --script host/chez/build-jolt.ss debug target/debug/jolt")}
+
+  remint {:doc "Re-mint the seed after changing a seed source (reader, analyzer, backend)"
+          :depends [deps]
+          :task (sh "sh host/chez/remint.sh")}
+
+  devboot {:doc "Precompile the runtime to target/dev/flat.so so dev bin/jolt boots ~10x faster"
+           :depends [submodules deps]
+           :task (chez "--script" "host/chez/make-devboot.ss")}
+
+  gateboot {:doc "Precompile the gate boot preamble to target/dev/gate.so for faster gate boots"
+            :depends [submodules deps]
+            :task (chez "--script" "host/chez/make-gateboot.ss")}
+
+  ;; --- The gate ----------------------------------------------------------------
+
+  ;; Includes the self-host byte fixpoint, which only holds on the Chez that
+  ;; minted the seed.
+  test {:doc "Full gate for a dev machine: selfhost plus the CI gate (-j N runs N at once)"
+        :depends [deps]
+        :task (tasks.gate/run-gate! "test" tasks.gate/test-gates *command-line-args*)}
+
+  ;; The seed runs on any Chez but its bytes differ by Chez version, so CI skips
+  ;; selfhost.
+  ci {:doc "CI gate, behavior only: every gate except the self-host byte fixpoint"
+      :depends [deps]
+      :task (tasks.gate/run-gate! "ci" tasks.gate/ci-gates *command-line-args*)}
+
+  bionic-ci {:doc "The CI gate on bionic (Android/Termux)"
+             :task (tasks.gate/run-gate! "bionic-ci" tasks.gate/ci-gates *command-line-args*)}
+
+  ci-shard {:doc "Run one shard of a gate: SHARD_SET=test|ci SHARD=i SHARDS=n"
+            :task (tasks.gate/ci-shard! *command-line-args*)}
+
+  ci-shard-list {:doc "Print the gates that shard SHARD of SHARDS would run"
+                 :task (doseq [g (:gates (tasks.gate/shard))] (println g))}
+
+  gate-status {:doc "Say whether this exact working tree is covered by a complete gate run"
+               :task (tasks.gate/gate-status!)}
+
+  ;; --- Seed and self-host ------------------------------------------------------
+
+  selfhost {:doc "Self-host fixpoint: rebuilding the seed with bootstrap.ss gives the same seed"
+            :depends [deps]
+            :task (sh "sh host/chez/selfcheck.sh")}
+
+  seeddefs {:doc "Every var the checked-in seed defines exists after the seed loads"
+            :task (sh "$JOLT_CHEZ --script host/chez/run-seed-defs.ss"
+                      "JOLT_WP_TRACE=1 JOLT_IR_VALIDATE=1 $JOLT_CHEZ --script host/chez/run-seed-defs.ss")}
+
+  ;; Without it a forward reference could slip through a remint that an in-order
+  ;; load refuses.
+  mintgate {:doc "The seed mint refuses a form that names a var defined below it"
+            :depends [deps]
+            :task (chez "--script" "test/chez/mint-gate-test.ss")}
+
+  ;; cli.ss and bootstrap.ss hand-mirror build.ss's manifest, so a load added to
+  ;; one drifts.
+  manifestcheck {:doc "cli.ss and bootstrap.ss load manifests match build.ss's runtime manifest"
+                 :task (sh "sh host/chez/manifest-check.sh")}
+
+  ;; --- Conformance against Clojure on the JVM ----------------------------------
+
+  corpus {:doc "Corpus conformance against JVM-sourced expected values (allowlist and floor)"
+          :depends [deps]
+          :task (chez "--script" "host/chez/run-corpus.ss")}
+
+  cts {:doc "Run the vendored clojure-test-suite per namespace against a failures baseline"
+       :depends [testbin deps]
+       :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" bash host/chez/cts.sh")}
+
+  sci {:doc "Load borkdude/sci's source through jolt, gated on a floor"
+       :depends [deps]
+       :task (chez "--script" "host/chez/run-sci.ss")}
+
+  ;; Complements run-sci.ss, which is a broad but deliberately lenient
+  ;; source-loading check.
+  scifunctional {:doc "Load SCI through the ordinary dependency path, then reuse real contexts"
+                 :depends [testbin]
+                 :task (sh "JOLT_NO_USER_DEPS=1 target/release/jolt -Sdeps '{:deps {borkdude/sci {:local/root \"vendor/sci\"}}}' run test/chez/sci-functional-test.clj")}
+
+  ;; The JVM's default locale changes rendered text (zone names), so the locale
+  ;; is pinned to en_US.
+  certify {:doc "Check corpus expecteds against JVM Clojure via the pinned oracle"
+           :task (sh "if command -v clojure >/dev/null 2>&1; then \\
+v=$(sed -n 's/^ :clojure-version \"\\([^\"]*\\)\".*/\\1/p' test/conformance/profile.edn); \\
+if [ -z \"$v\" ]; then echo \"certify: no :clojure-version in test/conformance/profile.edn\"; exit 1; fi; \\
+jdk=$(sed -n 's/^ :oracle-jdk \\([0-9]*\\).*/\\1/p' test/conformance/profile.edn); \\
+if [ -z \"$jdk\" ]; then echo \"certify: no :oracle-jdk in test/conformance/profile.edn\"; exit 1; fi; \\
+if [ -z \"$JAVA_CMD\" ]; then \\
+for c in /opt/homebrew/opt/openjdk@$jdk/bin/java /usr/local/opt/openjdk@$jdk/bin/java \\
+/usr/lib/jvm/java-$jdk-openjdk*/bin/java /usr/lib/jvm/temurin-$jdk-jdk*/bin/java \\
+/usr/lib/jvm/java-$jdk-*/bin/java; do \\
+if [ -x \"$c\" ]; then JAVA_CMD=\"$c\"; break; fi; \\
+done; \\
+if [ -z \"$JAVA_CMD\" ] && [ -x /usr/libexec/java_home ]; then \\
+h=$(/usr/libexec/java_home -v \"$jdk\" 2>/dev/null) && [ -x \"$h/bin/java\" ] && JAVA_CMD=\"$h/bin/java\"; \\
+fi; \\
+if [ -n \"$JAVA_CMD\" ]; then echo \"certify: JAVA_CMD=$JAVA_CMD (profile pins JDK $jdk)\"; export JAVA_CMD; fi; \\
+fi; \\
+deps=\"{:deps {org.clojure/clojure {:mvn/version \\\"$v\\\"}}}\"; \\
+clojure -J-Duser.language=en -J-Duser.country=US -Sdeps \"$deps\" -M test/conformance/certify.clj --self-test && \\
+clojure -J-Duser.language=en -J-Duser.country=US -Sdeps \"$deps\" -M test/conformance/certify.clj; \\
+else \\
+echo \"certify: clojure not on PATH — skipped\"; \\
+fi")}
+
+  ;; Needs no JVM, so it runs in ci. certify checks the JVM half.
+  documented {:doc "Each known-divergence entry renders its recorded jolt value, unlike the JVM's"
+              :task (chez "--script" "host/chez/run-documented.ss")}
+
+  documented-record {:doc "Print what jolt answers for the known-divergences entries, to record a new one"
+                     :task (sh "$JOLT_CHEZ --script host/chez/run-documented.ss --record")}
+
+  unit {:doc "Host-specific unit cases"
+        :depends [deps]
+        :task (chez "--script" "host/chez/run-unit.ss")}
+
+  ;; Skips and exits 0 without library checkouts, so a green `jolt test` does not
+  ;; cover them.
+  libconformance {:doc "OPT-IN: replay third-party libraries' own test suites and compare tallies"
+                  :depends [testbin deps]
+                  :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" \\
+JOLT_NO_USER_DEPS=1 target/release/jolt run test/conformance/libs/run.clj $LIBS"
+                            "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh host/chez/embedded-migratus-upstream-smoke.sh")}
+
+  libperf {:doc "OPT-IN: time library test suites on jolt and JVM Clojure, list the slow ones"
+           :depends [testbin deps]
+           :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" \\
+JOLT_NO_USER_DEPS=1 target/release/jolt run test/conformance/libs/timing.clj $LIBS")}
+
+  ;; --- Values and collections --------------------------------------------------
+
+  values {:doc "Value-model unit tests (nil, truthiness, collections on Chez)"
+          :depends [deps]
+          :task (chez "--script" "test/chez/values-test.ss")}
+
+  ;; A tuning pass that changes a hash value fails nothing until a hash crosses
+  ;; to the JVM.
+  hasheq {:doc "The hash engine's values match JVM Clojure's, pinned as literal goldens"
+          :depends [deps]
+          :task (chez "--script" "test/chez/hasheq-test.ss")}
+
+  ;; A 32-bit Chez computes in bignums, so this forces those generic twins under
+  ;; test on 64-bit.
+  narrowhash {:doc "The hash suites again with the engine's 32-bit-safe generic arms forced on"
+              :depends [deps]
+              :task (sh "JOLT_NARROW_HASH=1 $JOLT_CHEZ --script test/chez/hasheq-test.ss"
+                        "JOLT_NARROW_HASH=1 $JOLT_CHEZ --script test/chez/values-test.ss"
+                        "JOLT_NARROW_HASH=1 $JOLT_CHEZ --script test/chez/transient-test.ss")}
+
+  transient {:doc "Transients: mutable backing, snapshot on persistent!, linear-time builds"
+             :depends [deps]
+             :task (chez "--script" "test/chez/transient-test.ss")}
+
+  sortedcoll {:doc "Sorted collections: lazy tree walk for seq, rseq, subseq, hash and = from tree"
+              :depends [deps]
+              :task (chez "--script" "test/chez/sorted-test.ss")}
+
+  rrbprop {:doc "RRB vector catvec and slice against a list model, with RRB invariants"
+           :task (chez "--script" "test/chez/rrb-property-test.ss")}
+
+  rrbscaling {:doc "RRB vector catvec and slice stay within their complexity bounds"
+              :task (chez "--script" "test/chez/rrb-scaling-test.ss")}
+
+  arraymap {:doc "Array-mode maps use one flat slot vector, with matching transients and seqs"
+            :task (chez "--script" "test/chez/arraymap-test.ss")}
+
+  ;; Random assoc/dissoc, persistent and through a transient, against an alist
+  ;; model over collision families and nil/false keys.
+  hamt {:doc "Hash-mode maps and sets match a model, iterate in hash order, keep their node layout"
+        :task (chez "--script" "test/chez/hamt-test.ss")}
+
+  arraybacking {:doc "Which Chez vector type backs each array element kind, boxed arrays included"
+                :task (chez "--script" "test/chez/array-backing-test.ss")}
+
+  recfast {:doc "Plain defrecords answer count, seq, assoc, reduce-kv, =, hash from their slots"
+           :task (chez "--script" "test/chez/recfast-test.ss")}
+
+  recordinline {:doc "Record predicates, accessors and constructors are open-coded, same semantics"
+                :task (chez "--script" "test/chez/record-inline-test.ss")}
+
+  recordshadow {:doc "A top-level define may not silently rebind a define-record-type generated name"
+                :depends [deps]
+                :task (chez "--script" "host/chez/record-shadow-check.ss")}
+
+  ;; Each of these was O(n) while the reference is O(1), and no value test can
+  ;; see that.
+  complexity {:doc "Operations that must not be linear (count, drop, rseq, sorted first) stay fast"
+              :depends [testbin deps]
+              :task (sh "JOLT_NO_USER_DEPS=1 target/release/jolt run test/complexity_test.clj")}
+
+  ;; Chez's single-attempt CAS fails spuriously on Apple silicon, which lost a
+  ;; connection once in ~1400.
+  cas {:doc "compare-and-swap is strong, with no spurious refusals on AArch64"
+       :task (chez "--script" "test/chez/cas-test.ss")}
+
+  s64wrap {:doc "unchecked-add, -subtract and -multiply wrap at 64 bits past the fixnum range"
+           :depends [deps]
+           :task (chez "--script" "test/chez/s64-wrap-test.ss")}
+
+  flonumprint {:doc "A double prints as Double.toString does, and the fast path beats the host path"
+               :task (chez "--script" "test/chez/flonum-print-test.ss")}
+
+  ;; The old upward probe faulted on a flonum at the start of a page and killed
+  ;; MinGW scheme.exe (#1337).
+  flonumdisp {:doc "The flonum payload probe reads nothing in front of the flonum"
+              :task (chez "--script" "test/chez/flonum-disp-test.ss")}
+
+  utf8decode {:doc "UTF-8 bytes decode as java.nio's decoder does, malformed input included"
+              :task (chez "--script" "test/chez/utf8-decode-test.ss")}
+
+  stateimage {:doc "State images: value-graph round trip via jolt.image and the fasl behavior"
+              :depends [deps]
+              :task (chez "--script" "test/chez/state-image-test.ss")}
+
+  ;; A shim that cannot round-trip must be refused by class name, never written
+  ;; silently wrong.
+  imagecoverage {:doc "Every java.util collection shim round-trips via a state image or is refused"
+                 :depends [deps]
+                 :task (chez "--script" "test/chez/image-coverage-test.ss")}
+
+  ;; --- Compiler: inference and optimization ------------------------------------
+
+  infer {:doc "Type inference: diagnostic counts and collected calls and escapes"
+         :depends [deps]
+         :task (chez "--script" "host/chez/run-infer.ss")}
+
+  inferscaling {:doc "The optimizing passes stay polynomial in nesting depth"
+                :depends [deps]
+                :task (chez "--script" "host/chez/run-infer-scaling.ss")}
+
+  wp {:doc "Whole-program param-type fixpoint: record types flowing across fn boundaries"
+      :depends [deps]
+      :task (chez "--script" "host/chez/run-wp.ss")}
+
+  numwp {:doc "Hintless double inference unboxes params that every caller passes as flonum"
+         :depends [deps]
+         :task (chez "--script" "host/chez/run-numwp.ss")}
+
+  ;; Lets portable hint-free code reach the same emission as hinted code.
+  fieldjoin {:doc "Whole-program record field-type inference joined across every constructor call"
+             :depends [deps]
+             :task (chez "--script" "host/chez/run-fieldjoin.ss")}
+
+  fieldnum {:doc "A ^double record field reads back as a flonum, so arithmetic over it unboxes"
+            :depends [deps]
+            :task (chez "--script" "host/chez/run-fieldnum.ss")}
+
+  fieldread {:doc "A keyword lookup on a known record reads its slot directly, same value"
+             :depends [deps]
+             :task (chez "--script" "host/chez/run-fieldread.ss")}
+
+  contagion {:doc "Flonum contagion for :num record fields, only beside a proven :double operand"
+             :depends [deps]
+             :task (chez "--script" "host/chez/run-contagion.ss")}
+
+  narrow {:doc "Nilable record types and flow-sensitive narrowing inside `if (some? x)`"
+          :depends [deps]
+          :task (chez "--script" "host/chez/run-narrow.ss")}
+
+  protoret {:doc "A protocol method whose impls return one record type gets a monomorphic return"
+            :depends [deps]
+            :task (chez "--script" "host/chez/run-protoret.ss")}
+
+  ;; Typing an accumulator from its initial value alone would wrongly fold nil?
+  ;; or coerce a long.
+  accfix {:doc "A reduce accumulator or loop binding is typed from its fixpoint, not its init"
+          :task (chez "--script" "host/chez/run-accfix.ss")}
+
+  ;; The extend-type epoch bump is what keeps a stale cache from serving the old
+  ;; impl.
+  pic {:doc "Protocol-dispatch inline cache: emission, megamorphic use, extend-type reset"
+       :depends [deps]
+       :task (chez "--script" "host/chez/run-pic.ss")}
+
+  devirt {:doc "A monomorphic protocol call resolves its impl by record tag, matching dispatch"
+          :depends [deps]
+          :task (chez "--script" "host/chez/run-devirt.ss")}
+
+  ;; ^:dynamic, ^:redef and nested defs must opt out or redefinition would stop
+  ;; working.
+  directlink {:doc "Direct-link emission binds app defs to Scheme bindings, skipping var-deref"
+              :depends [deps]
+              :task (chez "--script" "test/chez/directlink-test.ss")}
+
+  directcall {:doc "Call shapes a direct-link build emits: seed vars, interop guards, unchecked"
+              :task (chez "--script" "host/chez/run-directcall.ss")}
+
+  linkedrace {:doc "A direct-linked call racing a redefinition of its callee on another thread"
+              :depends [deps]
+              :task (chez "--script" "test/chez/linked-call-race-test.ss")}
+
+  inline {:doc "IR inlining of small single-arity defns, with ^double and ^long coercions kept"
+          :depends [deps]
+          :task (chez "--script" "test/chez/inline-test.ss")}
+
+  inline-body {:doc "Inlined defrecord and deftype method bodies read fields by index, not jolt-get"
+               :depends [deps]
+               :task (chez "--script" "host/chez/run-inline-body.ss")}
+
+  guardedinline {:doc "Guarded inlining in the open-world compile, falling back after a redefinition"
+                 :depends [deps]
+                 :task (chez "--script" "host/chez/run-guarded-inline.ss")}
+
+  ;; Inlining rows skip on a stock Chez unless JOLT_REQUIRE_LOCKFREE_CHEZ=1 (set
+  ;; in CI).
+  toplevelinline {:doc "Inlining through a top-level definition made with sa-define-inlinable!"
+                  :depends [deps]
+                  :task (chez "--script" "test/chez/top-level-inline-test.ss")}
+
+  numeric {:doc "^double and ^long hints lower arithmetic to fl/fx ops, unhinted stays generic"
+           :depends [deps]
+           :task (chez "--script" "test/chez/numeric-test.ss")}
+
+  mathfl {:doc "java.lang.Math over proven flonums lowers to native Chez flonum ops"
+          :depends [deps]
+          :task (chez "--script" "host/chez/run-mathfl.ss")}
+
+  flarr {:doc "aget on a ^doubles array lowers to an unboxed flvector-ref typed :double"
+         :depends [deps]
+         :task (chez "--script" "host/chez/run-flarr.ss")}
+
+  ;; op-registry names a proc per kind but not its arity, and this pins the two
+  ;; together.
+  oparity {:doc "Every numeric fast-path op at each admitted arity agrees with the generic path"
+           :depends [deps]
+           :task (chez "--script" "test/chez/op-arity-test.ss")}
+
+  recfold {:doc "What an optimizing compile emits for record constructors, record? and seq?"
+           :task (chez "--script" "host/chez/run-recfold.ss")}
+
+  mandelbrot-num {:doc "Mandelbrot hot loop compiles to flonum ops with no generic arithmetic"
+                  :depends [deps]
+                  :task (chez "--script" "host/chez/run-mandelbrot-num.ss")}
+
+  ;; --- Compiler: emission and IR -----------------------------------------------
+
+  ;; A macro-spliced var-deref has no :var node, so only the text scan roots its
+  ;; target.
+  dcerefs {:doc "Dead-code elimination roots a target by IR walk or by scanning emitted Scheme"
+           :depends [deps]
+           :task (chez "--script" "host/chez/run-dce-refs.ss")}
+
+  fnform {:doc "Anonymous fns get unique letrec names and registered source forms"
+          :depends [deps]
+          :task (chez "--script" "test/chez/fnform-test.ss")}
+
+  poolshape {:doc "A constant pool's scope nesting does not grow with the pool"
+             :depends [deps]
+             :task (chez "--script" "test/chez/pool-shape-test.ss")}
+
+  ;; A native set!-extended after its def-var! leaves an unnamed procedure and
+  ;; images silently break.
+  coreproc {:doc "Every clojure.core fn is nameable in value position so images can write it"
+            :depends [deps]
+            :task (chez "--script" "test/chez/core-proc-name-test.ss")}
+
+  defmetacells {:doc "A var named in a def's evaluated metadata is cell-cached"
+                :depends [deps]
+                :task (chez "--script" "host/chez/run-defmetacells.ss")}
+
+  staticsite {:doc "Class and member sites are emitted with a per-site cache"
+              :depends [deps]
+              :task (chez "--script" "host/chez/run-staticsite.ss")}
+
+  hostsite {:doc "A host-object method call site caches its resolution and sees later additions"
+            :task (chez "--script" "test/chez/jhost-method-site-test.ss")}
+
+  dispatchalloc {:doc "An unhinted method call allocates only its arg vector and at most one arg list"
+                 :task (chez "--script" "test/chez/method-dispatch-alloc-test.ss")}
+
+  unitcontext {:doc "Emit-session state is per compilation unit, so units stay isolated"
+               :depends [deps]
+               :task (chez "--script" "test/chez/unit-context-test.ss")}
+
+  irvalidate {:doc "The IR schema validator (JOLT_IR_VALIDATE) reports no problems on real code"
+              :depends [deps]
+              :task (sh "sh host/chez/ir-validate-smoke.sh")}
+
+  ;; The list of munge-renamed names is kept by hand and drifted before.
+  emittedheads {:doc "Every head the back end emits is one munge-name renames a user local away from"
+                :depends [deps]
+                :task (sh "JOLT_NO_USER_DEPS=1 bin/jolt run host/chez/emitted-heads-check.clj")}
+
+  ;; A per-form cost regression is linear but slow, and one shipped green through
+  ;; the whole gate.
+  compilescaling {:doc "Compiling a namespace stays linear in its source, and quoted forms stay cheap"
+                  :depends [testbin]
+                  :task (sh "JOLT_NO_USER_DEPS=1 target/release/jolt run test/compile_scaling_test.clj")}
+
+  shakelocal {:doc "Shaken fixture apps match plain builds and drop dead defs, no examples repo"
+              :depends [testbin deps]
+              :task (sh "SHAKESMOKE_SCOPE=local JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh host/chez/tree-shake-smoke.sh")}
+
+  ;; Slow (two builds per app), so it is not in the default gate. Skips without
+  ;; the examples repo.
+  shakesmoke {:doc "Tree-shake soundness: example apps built plain and tree-shaken print the same"
+              :depends [testbin deps]
+              :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh host/chez/tree-shake-smoke.sh")}
+
+  ;; --- Errors and tracing ------------------------------------------------------
+
+  ;; Other gates only assert a bad program is rejected. Regenerate goldens with
+  ;; sh host/chez/error-report-check.sh generate.
+  errorreport {:doc "What a user reads on a rejected program: message, position, ex-data, trace"
+               :depends [testbin]
+               :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh host/chez/error-report-check.sh")}
+
+  ;; An unregistered kind has no documented meaning, and an unraised entry rots
+  ;; into decoration.
+  errorkinds {:doc "Every raised diagnostic kind is in error-kinds.edn and every entry is raised"
+              :task (sh "sh host/chez/error-kinds-check.sh")}
+
+  tracesmoke {:doc "An escaping throw names the Clojure fn, file and line, even after TCO"
+              :depends [testbin]
+              :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh host/chez/trace-smoke.sh")}
+
+  ;; Wrapping an inline primitive re-boxed an unboxed flonum and cost 19x on an
+  ;; array loop.
+  traceemit {:doc "Tracing wraps no call in a ring save or restore, so primitives stay inline"
+             :depends [deps]
+             :task (chez "--script" "host/chez/run-trace-emit.ss")}
+
+  traceeval {:doc "Eval-path frames resolve to the original source line, untraced registers none"
+             :task (chez "--script" "host/chez/run-traceeval.ss")}
+
+  ;; A per-site save and restore once made compiles about 1.57x slower and a
+  ;; library suite 40% slower (#1645).
+  tracecompilecost {:doc "Tracing keeps Chez compile time within 1.40x of untraced"
+                    :depends [submodules deps]
+                    :task (sh "JOLT_AOT_CACHE=0 $JOLT_CHEZ --script test/chez/trace-compile-cost-test.ss")}
+
+  degradedbacktrace {:doc "With introspection suppressed, a throw still reports type and message"
+                     :task (chez "--script" "host/chez/run-degraded-backtrace.ss")}
+
+  stacklimit {:doc "Runaway recursion throws StackOverflowError, JOLT_STACK_LIMIT sets the limit"
+              :depends [testbin deps]
+              :task (sh "$JOLT_CHEZ --script test/chez/stack-limit-test.ss"
+                        "sh test/chez/stack-limit-smoke.sh target/release/jolt")}
+
+  ;; --- Scaling and performance -------------------------------------------------
+
+  ;; Reading was quadratic until v0.7.7 (37s for core.clj) and the value-based
+  ;; corpus rows missed it.
+  readscaling {:doc "Reading a source file form by form costs time linear in its size"
+               :depends [testbin deps]
+               :task (sh "JOLT_NO_USER_DEPS=1 target/release/jolt run test/read_scaling_test.clj")}
+
+  ;; Without the variadic registration, (apply max (range)) realizes an unbounded
+  ;; seq until the process dies.
+  applyscaling {:doc "apply streams a variadic's rest, so (apply max (range)) stays lazy"
+                :depends [testbin deps]
+                :task (sh "JOLT_NO_USER_DEPS=1 JOLT_GC_TRIP_BYTES=16777216 target/release/jolt run test/apply_scaling_test.clj")}
+
+  ;; Judged by counting mutex allocations, not a timed ratio, so load can't
+  ;; move it.
+  lazyscaling {:doc "Lazy realization takes no per-cell mutex, before or after a thread exists"
+               :depends [testbin deps]
+               :task (sh "JOLT_NO_USER_DEPS=1 target/release/jolt run test/lazyseq_mt_scaling_test.clj")}
+
+  vecscaling {:doc "(into vec vec) and subvec stay O(log n) through core"
+              :depends [testbin deps]
+              :task (sh "JOLT_NO_USER_DEPS=1 target/release/jolt run test/vec_scaling_test.clj")}
+
+  ;; The jpipe buffer was re-copied on each write, which made N chunks cost
+  ;; O(N^2).
+  pipescaling {:doc "A piped-stream write costs O(1), not O(chunks queued)"
+               :depends [testbin deps]
+               :task (sh "JOLT_NO_USER_DEPS=1 target/release/jolt run test/pipe_scaling_test.clj")}
+
+  chunkscaling {:doc "chunk-append costs O(1) amortized per item"
+                :depends [testbin deps]
+                :task (sh "JOLT_NO_USER_DEPS=1 target/release/jolt run test/chunk_scaling_test.clj")}
+
+  ;; jolt-str-join was a right-fold of string-append that re-copied the joined
+  ;; suffix per element.
+  printscaling {:doc "Printing a collection costs O(printed length)"
+                :depends [testbin deps]
+                :task (sh "JOLT_NO_USER_DEPS=1 target/release/jolt run test/print_scaling_test.clj")}
+
+  ;; Runs alone: beside its shard it read 0.65-1.87 for a ratio quiet runs put
+  ;; at 1.05-1.15.
+  pmoverhead {:doc "A user print-method does not slow printing of values it does not reach"
+              :depends [testbin deps]
+              :task (sh "JOLT_NO_USER_DEPS=1 target/release/jolt run test/print_method_overhead_test.clj")}
+
+  ;; The reader buffer was re-copied and re-parsed per item, making a drain
+  ;; O(input x items).
+  ioscaling {:doc "Draining *in* or with-in-str by lines or forms costs O(input)"
+             :depends [testbin deps]
+             :task (sh "JOLT_NO_USER_DEPS=1 target/release/jolt run test/io_scaling_test.clj")}
+
+  hotscaling {:doc "Hot-path shapes: split-with-limit, timeouts, ArrayDeque, ns-publics, sets"
+              :depends [testbin deps]
+              :task (sh "JOLT_NO_USER_DEPS=1 target/release/jolt run test/hotpath_scaling_test.clj")}
+
+  ;; Runs alone because a busy neighbour moved its ratio 1.5-3x. The CPU is
+  ;; printed first: some rows' ratios are a property of the runner's
+  ;; microarchitecture, not of the moment. A failing row is
+  ;; retried in a fresh process.
+  fastpathratio {:doc "Read, string-scan and dispatch fast paths, judged as ratios in one process"
+                 :depends [testbin]
+                 :task (sh "echo \"fastpathratio: cpu $( (grep -m1 'model name' /proc/cpuinfo 2>/dev/null || sysctl -n machdep.cpu.brand_string 2>/dev/null || uname -m) | sed 's/.*: //')\"; \\
+if JOLT_NO_USER_DEPS=1 target/release/jolt run test/fastpath_ratio_test.clj >target/fastpathratio.out 2>&1; then \\
+cat target/fastpathratio.out; \\
+else \\
+cat target/fastpathratio.out; \\
+only=$(sed -n 's/^  - \\([^:]*\\): .*/\\1/p' target/fastpathratio.out | paste -sd, -); \\
+if [ -z \"$only\" ]; then exit 1; fi; \\
+echo; echo \"fastpathratio: judging $only again in a fresh process\"; \\
+FASTPATH_ONLY=\"$only\" JOLT_NO_USER_DEPS=1 target/release/jolt run test/fastpath_ratio_test.clj; \\
+fi")}
+
+  ;; Stdlib fasls once got built with var-cache off, which ran 2-7x slower. CI
+  ;; runs it after its shard.
+  stdlibratio {:doc "A stdlib fn runs as fast as the same source compiled from a user file"
+               :depends [testbin]
+               :task (sh "JOLT_NO_USER_DEPS=1 target/release/jolt run test/stdlib_compile_ratio_test.clj")}
+
+  ;; Each case runs in its own process under a 256MB ceiling so an out-of-memory
+  ;; one cannot mask the next.
+  lazyretain {:doc "Lazy realization walks past consumed items in constant memory, as the JVM does"
+              :depends [testbin deps]
+              :task (sh "t=test/lazy_retention_test.clj; j=target/release/jolt; fails=0; n=0; \\
+for c in $(JOLT_NO_USER_DEPS=1 $j run $t); do \\
+n=$((n + 1)); \\
+out=$(JOLT_NO_USER_DEPS=1 JOLT_MAX_HEAP=256m timeout 60 $j run $t $c 2>&1 | tail -1); \\
+case \"$out\" in \"$c ok\") ;; *) fails=$((fails + 1)); echo \"FAIL lazyretain: $c: ${out:-timed out}\";; esac; \\
+done; \\
+[ \"$fails\" = 0 ] || exit 1; \\
+echo \"lazyretain: $n cases in constant memory under a 256MB heap\"")}
+
+  ;; madvise had dirtied the boot arrays when they sat in writable data.
+  footprint {:doc "What a process holds beyond its data: boot chunks, boot arrays, GC baseline"
+             :depends [testbin]
+             :task (sh "sh test/chez/footprint-test.sh target/release/jolt \"$JOLT_CHEZ\"")}
+
+  gcpolicy {:doc "GC policy: nursery sizing, JOLT_MAX_HEAP ceiling, overhead limit, env checks"
+            :depends [testbin deps]
+            :task (sh "floor=16777216; t=test/gc_policy_test.clj; j=target/release/jolt; \\
+trip() { env JOLT_NO_USER_DEPS=1 \"$@\" $j run $t churn 2>&1 | sed -n 's/^trip //p'; }; \\
+set -- $(JOLT_NO_USER_DEPS=1 $j run $t churn 2>&1 | sed -n 's/^trip //p;s/^live //p'); churn=${1:-}; live=${2:-0}; \\
+light=$(JOLT_NO_USER_DEPS=1 $j run $t light 2>&1 | sed -n 's/^trip //p'); \\
+pinned=$(trip JOLT_GC_TRIP_BYTES=33554432); \\
+capped=$(trip JOLT_MAX_NEW_SIZE=24m); \\
+echo \"gcpolicy: churn $churn (live $live), light $light, pinned $pinned, max-new-size 24m -> $capped\"; \\
+[ -n \"$churn\" ] && [ \"$churn\" -gt \"$floor\" ] || { echo \"FAIL gcpolicy: a churning program kept the $floor floor\"; exit 1; }; \\
+[ \"$live\" -gt 0 ] && [ \"$churn\" -le $((live * 8)) ] || { echo \"FAIL gcpolicy: a ~40MB-live loop grew its nursery to $churn, past 8x its live set $live (the bound is the live set at the default free ratio, and one checked growth past it reaches 8x)\"; exit 1; }; \\
+paths=$(JOLT_NO_USER_DEPS=1 JOLT_MAX_HEAP=off $j run $t decide 2>&1 | sed -n 's/^path //p' | paste -sd' ' -); \\
+echo \"gcpolicy: nursery paths (MB) on supplied readings, 64MB live: $paths\"; \\
+[ \"$paths\" = \"over-target 16,32,64 paid 16,32,64,128 costlier 16,32,64,128,512,64 big-window 16,32,64,128,512\" ] || { echo \"FAIL gcpolicy: the live-set bound or the check on growth past it decided differently on the same readings: collection over the target stops at the 64MB bound, a doubling past it that pays is kept, one that costs more jumps once to 8x, then comes back and holds unless that paid\"; exit 1; }; \\
+[ \"$light\" = \"$floor\" ] || { echo \"FAIL gcpolicy: a light program left the floor ($light)\"; exit 1; }; \\
+[ \"$pinned\" = \"33554432\" ] || { echo \"FAIL gcpolicy: JOLT_GC_TRIP_BYTES did not pin the nursery ($pinned)\"; exit 1; }; \\
+[ -n \"$capped\" ] && [ \"$capped\" -le 25165824 ] || { echo \"FAIL gcpolicy: JOLT_MAX_NEW_SIZE=24m did not cap the nursery ($capped)\"; exit 1; }; \\
+full=$(JOLT_NO_USER_DEPS=1 $j -e '(print (.maxMemory (Runtime/getRuntime)))'); \\
+tenth=$(JOLT_NO_USER_DEPS=1 JOLT_MAX_RAM_PERCENTAGE=10 $j -e '(print (.maxMemory (Runtime/getRuntime)))'); \\
+[ $((tenth * 25 / 10)) -le $((full + 1)) ] && [ $((tenth * 25 / 10)) -ge $((full - 4)) ] || { echo \"FAIL gcpolicy: JOLT_MAX_RAM_PERCENTAGE=10 gave $tenth against $full at the default 25\"; exit 1; }; \\
+out=$(JOLT_NO_USER_DEPS=1 JOLT_GC_LOG=1 JOLT_MAX_HEAP=256m $j run $t ceiling 2>&1); \\
+set -- $(printf '%s\\n' \"$out\" | sed -n 's/^peak //p'); pk=$1; mx=$3; \\
+after=$(printf '%s\\n' \"$out\" | sed -n 's/^gc: .* total \\([0-9]*\\)MB .*/\\1/p' | sort -n | tail -1); \\
+echo \"gcpolicy: JOLT_MAX_HEAP=256m with ~100MB held -> total after collections ${after}MB, peak $((pk / 1048576))MB, max $((mx / 1048576))MB\"; \\
+[ -n \"$after\" ] && [ $((after * 1048576 * 10)) -le $((mx * 11)) ] || { echo \"FAIL gcpolicy: a collection left the total heap at ${after}MB, more than 10% over JOLT_MAX_HEAP=256m: the ceiling bounds the TOTAL heap, as -Xmx does, within the collector's working room\"; exit 1; }; \\
+[ -n \"$pk\" ] && [ $((pk * 10)) -le $((mx * 11)) ] || { echo \"FAIL gcpolicy: the total heap peaked at $pk during collections, more than 10% over JOLT_MAX_HEAP=256m (v0.8.12 peaked 23% over)\"; exit 1; }; \\
+fdir=$(mktemp -d); \\
+for pad in 0 1024 4096 8192; do \\
+set -- $(cd \"$fdir\" && JOLT_NO_USER_DEPS=1 JOLT_MAX_HEAP=256m \"$JOLT_ROOT/$j\" run \"$JOLT_ROOT/test/gc_ceiling_forced_test.clj\" $pad 2>&1 | sed -n 's/^peak //p'); pk=$1; mx=$3; \\
+echo \"gcpolicy: a ceiling-forced full collection with ~140MB spread over the older generations, ${pad}KB more at boot -> peak $((${pk:-0} / 1048576))MB\"; \\
+[ -n \"$pk\" ] && [ $((pk * 10)) -le $((mx * 11)) ] || { rmdir \"$fdir\"; echo \"FAIL gcpolicy: the heap peaked at ${pk:-?} near the ceiling with ${pad}KB more at boot, more than 10% over JOLT_MAX_HEAP=256m: a collection under the ceiling copied more than the room left (a whole generation beside its sources; sa-collect-young!, sa-collect-tight; jolt-exoj)\"; exit 1; }; \\
+done; rmdir \"$fdir\"; \\
+set -- $(JOLT_NO_USER_DEPS=1 $j run $t refresh 2>&1 | sed -n 's/^growth //p'); \\
+echo \"gcpolicy: older generations' allowance with ~100MB held $((${1:-0} / 1048576))MB, after dropping it and System/gc $((${2:-0} / 1048576))MB\"; \\
+[ -n \"${2:-}\" ] && [ \"$1\" -gt 67108864 ] && [ \"$2\" -ge 67108864 ] && [ $(($2 * 2)) -lt \"$1\" ] || { echo \"FAIL gcpolicy: System/gc did not re-measure the live set the older generations' allowance is sized from\"; exit 1; }; \\
+st=$(JOLT_NO_USER_DEPS=1 $j run $t startup 2>&1 | sed -n 's/^trip //p'); \\
+echo \"gcpolicy: a sub-millisecond first reading then cheap collections -> nursery $st\"; \\
+[ \"$st\" = \"$floor\" ] || { echo \"FAIL gcpolicy: one collection right after startup grew the nursery to ${st:-?} (the share must weigh collections by their time, and wait for five)\"; exit 1; }; \\
+set -- $(JOLT_NO_USER_DEPS=1 JOLT_GC_TRIP_BYTES=16m JOLT_GC_LOG=1 $j run $t walk 2>&1 | sed -n 's/^gc: .* heap \\([0-9]*\\)MB .*/\\1/p' | sort -n | sed -n '1p;$p'); \\
+echo \"gcpolicy: a lazy-seq walk's heap after each collection ranged ${1:-?}MB..${2:-?}MB\"; \\
+[ -n \"${2:-}\" ] && [ $(($2 - $1)) -le 4 ] || { echo \"FAIL gcpolicy: the heap after a lazy-seq walk's collections climbed from ${1:-?}MB to ${2:-?}MB: a dead promoted cell is rooting the cells realized after it (nepotism; see sa-collect-young!)\"; exit 1; }; \\
+oh=$(JOLT_NO_USER_DEPS=1 JOLT_MAX_HEAP=1g JOLT_GC_TIME_LIMIT=0 JOLT_GC_HEAP_FREE_LIMIT=100 $j run $t churn 2>&1) || true; \\
+case \"$oh\" in *OutOfMemoryError*\"GC overhead limit exceeded\"*) ;; *) echo \"FAIL gcpolicy: with every collection over the limits, the GC overhead limit did not raise: $(printf '%s' \"$oh\" | head -2)\"; exit 1;; esac; \\
+off=$(JOLT_NO_USER_DEPS=1 JOLT_MAX_HEAP=1g JOLT_GC_TIME_LIMIT=0 JOLT_GC_HEAP_FREE_LIMIT=100 JOLT_GC_OVERHEAD_LIMIT=off $j run $t churn 2>&1 | sed -n 's/^trip //p'); \\
+[ -n \"$off\" ] || { echo \"FAIL gcpolicy: JOLT_GC_OVERHEAD_LIMIT=off did not turn the limit off\"; exit 1; }; \\
+echo \"gcpolicy: the GC overhead limit raises OutOfMemoryError, and JOLT_GC_OVERHEAD_LIMIT=off turns it off\"; \\
+for bad in JOLT_GC_TIME_RATIO=0 JOLT_MAX_HEAP_FREE_RATIO=100 JOLT_MAX_RAM_PERCENTAGE=abc JOLT_NEW_SIZE=12q JOLT_GC_TIME_LIMIT=200; do \\
+msg=$(env JOLT_NO_USER_DEPS=1 $bad $j -e '(println :ran)' 2>&1) || true; \\
+case \"$msg\" in *\"${bad%%=*}\"*\"is not valid\"*) ;; *) echo \"FAIL gcpolicy: $bad was not refused by name: $msg\"; exit 1;; esac; \\
+done; \\
+echo \"gcpolicy: passed\"")}
+
+  ;; An unpinned large array in a mostly-free chunk was copied at every full
+  ;; collection (#1225).
+  largebytesgc {:doc "A large byte array is pinned in place and never copied by the collector"
+                :task (chez "--script" "test/chez/large-bytes-gc-test.ss")}
+
+  ;; Chez has no immobile fxvector or flvector, so the backing must be pinned
+  ;; (#1227).
+  largefxgc {:doc "A large long, int or double array's backing is pinned and freed with the array"
+             :task (chez "--script" "test/chez/large-fx-gc-test.ss")}
+
+  ;; Reads the live heap, since the high-water mark hides anything under one
+  ;; collection trip.
+  zipmemory {:doc "java.util.zip streams peak within 2 MB when moving 100 MB through GZIP"
+             :depends [testbin deps]
+             :task (sh "JOLT_NO_USER_DEPS=1 JOLT_GC_TRIP_BYTES=16777216 target/release/jolt run test/zip_memory_test.clj")}
+
+  buildscaling {:doc "Build back-end cost shapes: init procedures, collect trip, vfasl, caches"
+                :task (sh "JOLT_MAX_HEAP=off $JOLT_CHEZ --script test/chez/build-scaling-test.ss")}
+
+  ;; Manual, because the default gates hold no wall-clock assertions.
+  doseqperf {:doc "MANUAL: doseq over a chunked seq costs at most 1.5x a list of the same items"
+             :depends [deps]
+             :task (chez "--script" "test/chez/doseq-perf.ss")}
+
+  ;; Manual, because a timing floor would be flaky on loaded CI.
+  printperf {:doc "MANUAL: perf probe for print and pr, 200000 values each through with-out-str"
+             :depends [deps]
+             :task (chez "--script" "test/chez/print-throughput.ss")}
+
+  ;; Asserts a scaling ratio, not wall-clock time, so it is meaningful on a
+  ;; loaded machine.
+  sbperf {:doc "MANUAL: StringBuilder.append stays amortised O(1), judged as a scaling ratio"
+          :depends [deps]
+          :task (chez "--script" "test/chez/string-builder-perf.ss")}
+
+  aotcacheperf {:doc "MANUAL: cold vs warm AOT cache time for a multi-library require"
+                :depends [deps]
+                :task (sh "sh test/chez/aot-cache-perf.sh")}
+
+  dynbench {:doc "OPT-IN benchmark of the dynamic-var binding stack by depth, width and workload"
+            :task (sh "sh bench/dyn-binding/run.sh")}
+
+  ;; Not for CI. Every phase runs the runtime from source, so it is blind to dev
+  ;; mode.
+  fibersbench {:doc "OPT-IN benchmark of :thread against :fiber, printed as a comparison table"
+               :task (sh "sh bench/fibers/run.sh")}
+
+  ;; --- Fibers, threads and locks -----------------------------------------------
+
+  fibers {:doc "Fiber primitive, scheduler, dynamic state, channels, go, pools, IO, locks"
+          :depends [deps]
+          :task (sh "$JOLT_CHEZ --script test/chez/fibers-test.ss"
+                    "$JOLT_CHEZ --script test/chez/fibers-state-test.ss"
+                    "$JOLT_CHEZ --script test/chez/fibers-chan-test.ss"
+                    "$JOLT_CHEZ --script test/chez/fibers-go-test.ss"
+                    "$JOLT_CHEZ --script test/chez/fibers-pool-test.ss"
+                    "$JOLT_CHEZ --script test/chez/fibers-io-test.ss"
+                    "$JOLT_CHEZ --script test/chez/fibers-process-io-test.ss"
+                    "$JOLT_CHEZ --script test/chez/fibers-sm-test.ss"
+                    "$JOLT_CHEZ --script test/chez/fibers-preempt-test.ss"
+                    "$JOLT_CHEZ --script test/chez/fibers-lock-test.ss"
+                    "$JOLT_CHEZ --script test/chez/fibers-monitor-test.ss"
+                    "$JOLT_CHEZ --script test/chez/fibers-interrupt-test.ss"
+                    "$JOLT_CHEZ --script test/chez/async-io-thread-test.ss"
+                    "out=\"$($JOLT_CHEZ --script host/chez/cli.ss test/chez/sync-classes-test.clj 2>&1)\"; \\
+if printf '%s' \"$out\" | grep -q 'SYNC-CLASSES-TEST OK'; then echo \"fibers: sync-classes-test OK\"; \\
+else printf '%s\\n' \"$out\" | tail -20; echo \"fibers: sync-classes-test FAILED\"; exit 1; fi")}
+
+  ;; poll(2) is the same code over the same contract as WSAPoll, so every POSIX
+  ;; run covers Windows.
+  fiberspoll {:doc "Fibers IO and socket tests under JOLT_IO_POLLER=poll (WSAPoll code on POSIX)"
+              :depends [deps]
+              :task (sh "JOLT_IO_POLLER=poll $JOLT_CHEZ --script host/chez/cli.ss test/chez/poll-backend-active.clj"
+                        "JOLT_IO_POLLER=poll $JOLT_CHEZ --script test/chez/fibers-io-test.ss"
+                        "out=\"$(JOLT_IO_POLLER=poll $JOLT_CHEZ --script host/chez/cli.ss test/chez/socket-test.clj 2>&1)\"; \\
+if printf '%s' \"$out\" | grep -q 'SOCKET-TEST OK'; then echo \"fiberspoll: socket-test OK\"; \\
+else printf '%s\\n' \"$out\" | tail -40; echo \"fiberspoll: socket-test FAILED\"; exit 1; fi"
+                        "JOLT_IO_POLLER=poll $JOLT_CHEZ --script host/chez/cli.ss test/chez/win-parity-smoke.clj"
+                        "JOLT_IO_POLLER=poll $JOLT_CHEZ --script host/chez/cli.ss test/chez/poller-registration.clj"
+                        "JOLT_IO_POLLER=poll $JOLT_CHEZ --script host/chez/cli.ss test/chez/poller-retirement.clj"
+                        "JOLT_IO_POLLER=poll $JOLT_CHEZ --script host/chez/cli.ss test/chez/poller-direct.clj")}
+
+  fibersresidue {:doc "OPT-IN probes of a fiber's size with real frames and memory under fiber churn"
+                 :task (doseq [s ["bench/fibers/residue.ss"
+                                  "bench/fibers/churn.ss"]]
+                         (chez "--script" s))}
+
+  gosm {:doc "The CPS pass over a go body: each site's park representation, and fallbacks"
+        :depends [deps]
+        :task (chez "--script" "host/chez/run-gosm.ss")}
+
+  ;; A sleep off the condition variable dropped the wake for a nearer deadline.
+  asynctimer {:doc "The single (timeout ms) timer thread closes each timeout on its own deadline"
+              :depends [deps]
+              :task (chez "--script" "test/chez/async-timer-test.ss")}
+
+  flow {:doc "clojure.core.async.flow end to end, plus the j.u.c seams it relies on"
+        :task (sh "bin/jolt run test/chez/flow-test.clj")}
+
+  ticks {:doc "The per-thread tick scheduler: independent client cadences on one engine timer"
+         :task (chez "--script" "test/chez/ticks-test.ss")}
+
+  interruptnest {:doc "A nested run-interruptible extent restores the enclosing polling timer on exit"
+                 :task (chez "--script" "test/chez/interrupt-nesting-test.ss")}
+
+  monitorescape {:doc "An interrupt at any check point leaves no monitor or mutex held"
+                 :task (chez "--script" "test/chez/monitor-escape-test.ss")}
+
+  windescape {:doc "An interrupt never skips a finally or strands a binding frame, *out* or claim"
+              :task (chez "--script" "test/chez/wind-escape-test.ss")}
+
+  ;; With hasheq caches shared across threads instead of per-thread, it faults in
+  ;; the collector.
+  threadsafety {:doc "The runtime's shared side-tables hold up under concurrent access"
+                :depends [deps]
+                :task (chez "--script" "test/chez/thread-safety-test.ss")}
+
+  ;; The failure is a whole-process hang, so the script runs under an outside
+  ;; deadline.
+  maskedacquire {:doc "A fiber's lock or condition wait with interrupts off does not stall a GC"
+                 :depends [deps]
+                 :task (sh "sh host/chez/masked-acquire-gate.sh $JOLT_CHEZ")}
+
+  ;; A wrapper nobody must use decays into the hand-marked scheme it replaced.
+  lockcheck {:doc "Every lock in the runtime goes through jolt's wrapper"
+             :task (sh "sh host/chez/lock-check.sh")}
+
+  ;; lockcheck proves a held lock is visible, and this proves nothing parks while
+  ;; one is held.
+  parkcheck {:doc "A fiber never parks while its carrier holds a counted lock"
+             :task (sh "sh host/chez/park-lock-check.sh")}
+
+  ;; Without the release fence an arm64 dispatch cache can pair a new epoch with
+  ;; an old method.
+  mmepochcheck {:doc "Every multimethod epoch bump goes through mm-epoch-bump! and its release fence"
+                :task (sh "sh host/chez/mm-epoch-check.sh")}
+
+  exitwait {:doc "The process ends after main returns only once every non-daemon thread finishes"
+            :depends [testbin]
+            :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh host/chez/exit-wait-smoke.sh")}
+
+  ;; Invoking an escape captured on another fiber would hang the process without
+  ;; its guard.
+  continuations {:doc "Escape continuations in jolt.continuations: one-shot contract, unwind, misuse"
+                 :task (sh "bin/jolt run test/chez/continuations-test.clj")}
+
+  ;; Not in CI, because the CI images lack SWI-Prolog. Run it after touching
+  ;; monitor-enter!/exit!.
+  monitormodel {:doc "MANUAL: model-check the object monitor's lock-free owner word (needs swipl)"
+                :task (sh "command -v swipl >/dev/null || { echo \"monitormodel: needs swipl (SWI-Prolog)\" >&2; exit 1; }"
+                          "swipl -q -g main -t halt tools/monitor-model.pl")}
+
+  enumregistrymodel {:doc "MANUAL: model-check the enum tables' lock-free publication (needs swipl)"
+                     :depends [deps]
+                     :task (sh "command -v swipl >/dev/null || { echo \"enumregistrymodel: needs swipl (SWI-Prolog)\" >&2; exit 1; }"
+                               "swipl -q -g main -t halt tools/enum-registry-model.pl")}
+
+  cowpublishmodel {:doc "MANUAL: model-check copy-on-write publication (needs swipl)"
+                   :depends [deps]
+                   :task (sh "command -v swipl >/dev/null || { echo \"cowpublishmodel: needs swipl (SWI-Prolog)\" >&2; exit 1; }"
+                             "swipl -q -g main -t halt tools/cow-publish-model.pl")}
+
+  failfastmodel {:doc "MANUAL: model-check fail-fast iteration and the ArrayDeque ring (needs swipl)"
+                 :depends [deps]
+                 :task (sh "command -v swipl >/dev/null || { echo \"failfastmodel: needs swipl (SWI-Prolog)\" >&2; exit 1; }"
+                           "swipl -q -g main -t halt tools/failfast-model.pl")}
+
+  ;; --- CLI, deps.edn and tasks -------------------------------------------------
+
+  ;; Uses the built binary, since the per-case process boots about 10x faster
+  ;; than script mode.
+  smoke {:doc "Real-CLI smoke over the built binary (JOLT_BIN=bin/jolt for script mode)"
+         :depends [testbin deps]
+         :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh host/chez/smoke.sh")}
+
+  scriptsmoke {:doc "Running a file as a script via the CLI, including a `#!/usr/bin/env jolt` line"
+               :depends [testbin]
+               :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh host/chez/script-smoke.sh")}
+
+  depssmoke {:doc "deps.edn aliases and CLI semantics (-X, -T, -Sdeps, user deps.edn, jar, git)"
+             :depends [testbin deps]
+             :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh host/chez/deps-alias-smoke.sh")}
+
+  depsunit {:doc "Grenadine dependency expansion: exclusions, version selection, orphan cutting"
+            :depends [deps]
+            :task (sh "JOLT_NO_USER_DEPS=1 bin/jolt run test/deps_expand_test.clj")}
+
+  depscpcache {:doc "The resolved-roots cache in .jolt/cpcache: reuse, key, invalidation"
+               :depends [testbin]
+               :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh host/chez/deps-cpcache-smoke.sh")}
+
+  ;; Fixes jars that needed unzip on PATH, and refuses a truncated jar loudly
+  ;; (#988, #1005).
+  depsnounzip {:doc "Maven jars load in place with no unzip and no extraction"
+               :depends [testbin]
+               :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh host/chez/deps-no-unzip-smoke.sh")}
+
+  taskssmoke {:doc "bb.edn and deps.edn :tasks through the CLI: task semantics and exit codes"
+              :depends [testbin]
+              :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh host/chez/tasks-smoke.sh")}
+
+  completionssmoke {:doc "`jolt completions` output and the zsh, bash and fish snippets it installs"
+                    :depends [testbin]
+                    :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh host/chez/completions-smoke.sh")}
+
+  ;; *exit-fn* is a dynamic var and import-vars cannot re-export it, so it is
+  ;; deliberately left out.
+  clishim {:doc "jolt.cli re-exports babashka.cli's parser, dispatcher and help renderer"
+           :task (sh "JOLT_NO_USER_DEPS=1 bin/jolt run test/cli_shim_test.clj")}
+
+  grenadine {:doc "Vendored Grenadine core plus Jolt's effective-POM adapter"
+             :depends [deps]
+             :task (sh "JOLT_NO_USER_DEPS=1 bin/jolt run test/grenadine_test.clj")}
+
+  ;; Compares the commit, since CI's submodule checkout has no tags and git
+  ;; describe would fail.
+  grenadinecheck {:doc "The generated Grenadine records match the pinned vendor/grenadine commit"
+                  :task (sh "pinned=$(git -C vendor/grenadine rev-parse HEAD 2>/dev/null); \\
+vendored=$(sed -n 's/^[^#].* //p' vendor/grenadine-generated/VERSION 2>/dev/null | tr -d '[:space:]'); \\
+tag=$(sed -n 's/^\\([^# ][^ ]*\\) .*/\\1/p' vendor/grenadine-generated/VERSION 2>/dev/null); \\
+if [ -z \"$pinned\" ]; then \\
+echo \"grenadinecheck: vendor/grenadine is not checked out — run 'git submodule update --init'\" >&2; \\
+exit 1; \\
+elif [ \"$pinned\" = \"$vendored\" ]; then \\
+echo \"grenadinecheck: generated sources match the pinned submodule ($tag $(echo $pinned | cut -c1-7))\"; \\
+else \\
+echo \"grenadinecheck: vendor/grenadine is at $pinned but vendor/grenadine-generated records $vendored ($tag)\" >&2; \\
+echo \"  refresh the generated sources — see vendor/grenadine-generated/README.md\" >&2; \\
+exit 1; \\
+fi")}
+
+  ;; No network and no OpenSSL, so it can stay in the default gate.
+  mvnhttp {:doc "jolt.mvn-http pure functions: URL, redirect, header and body parsing"
+           :depends [deps]
+           :task (sh "bin/jolt run test/mvn_http_test.clj")}
+
+  httpsfetch {:doc "OPT-IN: jolt.mvn-http cert-verifying HTTPS fetch against Central and Clojars"
+              :depends [deps]
+              :task (sh "sh host/chez/https-fetch-smoke.sh")}
+
+  ;; A script rather than a unit row, because it drives bin/jolt from a scratch
+  ;; directory.
+  userdirpaths {:doc "Relative paths under bin/jolt resolve against the caller's directory"
+                :task (sh "sh test/chez/user-dir-paths-smoke.sh")}
+
+  ;; A checkout with no release tag answers dev-g<sha>, which no
+  ;; :jolt/min-version accepts.
+  versionsmoke {:doc "tools/version.sh reports release tags only, never the rolling vnightly tag"
+                :task (sh "bash test/version-smoke.sh")}
+
+  makefilesmoke {:doc "Explicit Chez overrides bypass the Makefile's local Chez provisioning"
+                 :task (sh "bash test/makefile-smoke.sh")}
+
+  ;; Baselined like certify, so a case that starts passing also fails until
+  ;; recorded.
+  loaderconf {:doc "jolt.loader conformance (roots, isolation, delegation, unload) vs a baseline"
+              :depends [testbin]
+              :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh host/chez/loaderconf.sh")}
+
+  loadercache {:doc "jolt.loader's artifact cache for context-private namespaces"
+               :depends [testbin]
+               :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh test/chez/loader-cache-smoke.sh")}
+
+  nsaudit {:doc "tools/ns_audit.clj reports the (ns ...) forms ns refuses, without loading them"
+           :depends [testbin]
+           :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh host/chez/ns-audit-check.sh")}
+
+  ;; --- jolt build and the AOT cache --------------------------------------------
+
+  buildsmoke {:doc "`jolt build` produces a working standalone binary"
+              :depends [testbin deps]
+              :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh host/chez/build-smoke.sh")}
+
+  buildlibsmoke {:doc "`jolt build --library` makes a shared object a C program loads and calls"
+                 :depends [testbin deps]
+                 :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh host/chez/build-lib-smoke.sh")}
+
+  buildnatives {:doc "The build driver's static native plumbing: archive resolution, dedup, mkdir-p"
+                :task (chez "--script" "test/chez/build-natives-test.ss")}
+
+  buildsegments {:doc "Boot image segments end at top-level form boundaries, under a standard chunk"
+                 :task (chez "--script" "test/chez/build-segments-test.ss")}
+
+  reprobuildsmoke {:doc "Building the same sources twice gives every compiled unit identical text"
+                   :depends [testbin deps]
+                   :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh host/chez/repro-build-smoke.sh")}
+
+  profilebuildsmoke {:doc "`jolt build` profile-gen and profile-use: Chez block profiles round trip"
+                     :depends [testbin deps]
+                     :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh host/chez/profile-build-smoke.sh")}
+
+  staticnativesmoke {:doc "`jolt build` links a :jolt/native :static archive in, dynamic loads it later"
+                     :depends [testbin deps]
+                     :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh host/chez/static-native-smoke.sh")}
+
+  embeddedresources {:doc "Resources embedded in a built binary load by URL, jar, archive and file path"
+                     :depends [testbin deps]
+                     :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh host/chez/embedded-resource-smoke.sh"
+                               "set -e; for mode in --url --resource-url --jar-full --jar-base --fs-full --files-full --archive-lifecycle; do \\
+JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh host/chez/embedded-java-smoke.sh \"$mode\"; \\
+done"
+                               "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh test/chez/embedded-resource-oracle.sh")}
+
+  joltsmoke {:doc "The distributed jolt compiles an app with Chez and cc removed"
+             :depends [deps]
+             :task (sh "sh host/chez/jolt-selfbuild-smoke.sh")}
+
+  aotcachesmoke {:doc "The per-namespace AOT cache: miss, hit, invalidate, edge cases and bypass"
+                 :depends [testbin deps]
+                 :task (sh "sh test/chez/aot-cache-smoke.sh")}
+
+  ;; Needs a built binary: source mode has no worker to spawn.
+  aotworkersmoke {:doc "The AOT cache's worker removes what it wrote once its run is gone, ^C and kill included"
+                  :depends [testbin]
+                  :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh test/chez/aot-worker-cleanup-smoke.sh")}
+
+  ;; The cache once compiled a pid-unique temp and renamed it, baking a path that
+  ;; no longer existed.
+  aotcachepathsmoke {:doc "A frame from a cached namespace reports a source path that exists"
+                     :depends [testbin deps]
+                     :task (sh "sh test/chez/aot-cache-path-smoke.sh")}
+
+  ;; The cache was keyed on content alone, so the same source via another root
+  ;; replayed the first path.
+  aotcachesourcepathsmoke {:doc "A cache hit reports the source path this load found the namespace at"
+                           :depends [testbin deps]
+                           :task (sh "sh test/chez/aot-cache-source-path-smoke.sh")}
+
+  aotcachestarfilesmoke {:doc "*file* and *source-path* name a required namespace's own source, even cached"
+                         :depends [testbin deps]
+                         :task (sh "sh test/chez/aot-cache-star-file-smoke.sh")}
+
+  ;; Covers what the smoke test cannot reach without a full rebuild, a
+  ;; one-character edit.
+  aotfingerprint {:doc "The AOT cache content hash and the source-tree and baked fingerprints on it"
+                  :depends [deps]
+                  :task (chez "--script" "test/chez/aot-fingerprint-test.ss")}
+
+  ;; Each phase is its own jolt run, and the point is loading with the source
+  ;; removed.
+  compilepathsmoke {:doc "clojure.core/compile writes under *compile-path* and a later process loads it"
+                    :depends [testbin deps]
+                    :task (sh "sh test/chez/compile-path-smoke.sh")}
+
+  ;; MAKEFLAGS is cleared because the script re-invokes make and cannot claim the
+  ;; jobserver.
+  devbootsmoke {:doc "The dev boot cache is used when fresh and invalidated when stale"
+                :depends [devboot deps]
+                :task (if (tasks.gate/done? 'devbootsmoke)
+                        (println "devbootsmoke: already run by the gate runner")
+                        (sh "MAKEFLAGS= sh test/chez/devboot-smoke.sh"))}
+
+  gatebootsmoke {:doc "The gate boot image's staleness predicate, over synthetic inputs"
+                 :depends [gateboot devbootsmoke deps]
+                 :task (sh "sh test/chez/gateboot-smoke.sh")}
+
+  ;; Chez cannot read back a big LZ4 fasl entry, so large apps built binaries
+  ;; that died at boot (#886).
+  vfaslceiling {:doc "The boot image's LZ4 ceiling: an oversized image is re-encoded and still boots"
+                :depends [deps]
+                :task (sh "JOLT_MAX_HEAP=off $JOLT_CHEZ --script test/chez/vfasl-ceiling-test.ss")}
+
+  ;; compile-file made every literal its own object, and a hello app held 788
+  ;; copies of `clojure.core`.
+  vfaslstrings {:doc "Equal string constants share one object in a vfasl image"
+                :task (chez "--script" "test/chez/vfasl-shared-strings-test.ss")}
+
+  stdlibfasl {:doc "A built jolt serves clojure.test and jolt.time from embedded fasls, not source"
+              :depends [testbin]
+              :task (sh "sh host/chez/stdlib-fasl-smoke.sh")}
+
+  ;; --- FFI, natives and zlib ---------------------------------------------------
+
+  ;; Includes a callback arriving on the library's own thread while the caller is
+  ;; parked (#973).
+  ffi {:doc "FFI: typed foreign procedures, memory, callbacks, collect-safe :blocking calls"
+       :depends [deps]
+       :task (sh "$JOLT_CHEZ --script test/chez/ffi-binding-test.ss"
+                 "sh test/chez/ffi-widths-test.sh \"$JOLT_CHEZ\""
+                 "sh test/chez/ffi-layout-test.sh \"$JOLT_CHEZ\""
+                 "sh test/chez/ffi-aggregate-test.sh \"$JOLT_CHEZ\""
+                 "sh test/chez/ffi-pointer-call-test.sh"
+                 "sh test/chez/ffi-callable-by-value-test.sh"
+                 "sh test/chez/ffi-stack-args-test.sh \"$JOLT_CHEZ\""
+                 "bin/jolt run test/chez/jolt-ffi-scoped-test.clj"
+                 "bin/jolt run test/chez/jolt-ffi-arena-test.clj"
+                 "bin/jolt run test/chez/jolt-ffi-typed-array-test.clj"
+                 "bin/jolt run test/chez/jolt-ffi-callback-preempt-test.clj"
+                 "bin/jolt run test/chez/jolt-ffi-string-arg-test.clj"
+                 "sh test/chez/ffi-native-error-test.sh \"$JOLT_CHEZ\""
+                 "sh test/chez/ffi-foreign-thread-test.sh"
+                 "sh test/chez/ffi-gc-stall-test.sh"
+                 "sh test/chez/collect-safe-activation-test.sh \"$JOLT_CHEZ\"")}
+
+  ;; A native carrying a static copy of another's code used to go inert with no
+  ;; error (#731).
+  ffidupsym {:doc "A :jolt/native carrying a duplicate copy of another's symbols is reported"
+             :task (sh "sh host/chez/ffi-duplicate-symbol-smoke.sh")}
+
+  ffiloadfail {:doc "A native on disk that fails to load is reported with the loader's reason"
+               :task (sh "sh host/chez/ffi-load-failure-smoke.sh")}
+
+  ;; Chez dlsyms every loaded handle before its static table, so 57 boot loads
+  ;; made each miss take 2 ms.
+  foreignhandles {:doc "The process's own symbol handle is loaded once per process"
+                  :task (chez "--script" "test/chez/foreign-handles-test.ss")}
+
+  ;; Measures the layout with no platform identity, then reads a file whose mode
+  ;; it just set.
+  statlayout {:doc "The struct stat offsets chosen for the platform match a file's real mode"
+              :depends [deps]
+              :task (chez "--script" "test/chez/stat-layout-test.ss")}
+
+  ;; Reading errno is itself a foreign call, so asking twice loses the value.
+  errnocheck {:doc "Syscall wrappers capture errno once at the syscall and branch on that value"
+              :task (sh "sh host/chez/errno-check.sh")}
+
+  ioerrno {:doc "A read or write the OS refuses is an IOException carrying the errno text"
+           :depends [deps]
+           :task (chez "--script" "test/chez/io-errno-message-test.ss")}
+
+  zlibunit {:doc "zlib bindings: z_stream layout, checksums, round trips, errors, dictionaries"
+            :task (chez "--script" "test/chez/zlib-test.ss")}
+
+  zlibnativesmoke {:doc "A zlib loaded through :jolt/native does not change the one java.util.zip uses"
+                   :depends [testbin deps]
+                   :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh host/chez/zlib-native-smoke.sh")}
+
+  zlibregistersmoke {:doc "Every binary kind registers its linked zlib as jolt_z_* names"
+                     :depends [testbin deps]
+                     :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh host/chez/zlib-register-smoke.sh")}
+
+  ;; Every accepted program compiled with a tracking allocator and run as C and
+  ;; as its Jolt fallback; the rejected programs must fail to compile. Needs cc.
+  native {:doc "Native regions: cc and the JIT agree on result, exception and mutation, no leaks"
+          :depends [mirlib]
+          :task (sh "bin/jolt run test/chez/native-test.clj")}
+
+  nativesan {:doc "The native gate with cc's regions under AddressSanitizer and UBSan, and JN_VERIFY_FACTS"
+             :depends [mirlib]
+             :task (sh "if [ -n \"${TERMUX_VERSION:-}${ANDROID_ROOT:-}\" ]; then \\
+                          echo 'nativesan: skipped on bionic (no preloadable ASan runtime for a termux process)'; exit 0; fi; \\
+                        rt=''; for n in libclang_rt.asan_osx_dynamic.dylib libasan.so \\
+                          libclang_rt.asan-$(uname -m).so libclang_rt.asan.so; do \\
+                          p=$(cc -print-file-name=$n); case \"$p\" in /*) [ -f \"$p\" ] && { rt=$p; break; } ;; esac; \\
+                        done; \\
+                        [ -n \"$rt\" ] || { echo 'nativesan: cc has no ASan runtime'; exit 1; }; \\
+                        if [ \"$(uname -s)\" = Darwin ]; then pre=\"JOLT_DYLD_INSERT_LIBRARIES=$rt\"; else pre=\"LD_PRELOAD=$rt\"; fi; \\
+                        env $pre ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 NATIVE_SANITIZE=1 \\
+                          bin/jolt run test/chez/native-test.clj")}
+
+  nativeemitgate {:doc "Each native region's emitted C against BASE (another built checkout); ALLOW names regions that may differ"
+                  :depends [mirlib]
+                  :task (sh "[ -n \"${BASE:-}\" ] || { echo 'nativeemitgate: BASE=<path to the other checkout>'; exit 1; }; \\
+                             make --no-print-directory -C \"$BASE\" mirlib >/dev/null && \\
+                             rm -rf target/native-emit && mkdir -p target/native-emit && \\
+                             { NATIVE_EMIT_DUMP=\"$PWD/target/native-emit/candidate\" bin/jolt run test/chez/native-test.clj \\
+                                 > target/native-emit/candidate.log 2>&1 || true; } && \\
+                             here=$PWD && { (cd \"$BASE\" && NATIVE_EMIT_DUMP=\"$here/target/native-emit/base\" bin/jolt run \"$here/test/chez/native-test.clj\" \\
+                                 > \"$here/target/native-emit/base.log\" 2>&1) || true; } && \\
+                             bin/jolt run tools/native-emit-diff.clj target/native-emit/base target/native-emit/candidate \"${ALLOW:-}\"")}
+
+  nativebuild {:doc "Native regions are C in a jolt build binary and the fallback under jolt run, same output"
+               :depends [testbin]
+               :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh host/chez/native-build-smoke.sh")}
+
+  ;; Manual: the CI images do not carry z3.
+  nativeproofs {:doc "The ownership and cast rules native regions rely on, proved with z3"
+                :task (sh "for f in test/native/proofs/*.smt2; do \\
+r=$(z3 \"$f\"); [ \"$r\" = unsat ] || { echo \"FAIL nativeproofs: $f answered $r\"; exit 1; }; \\
+done; echo \"native proofs OK\"")}
+
+  ;; --- Host runtime ------------------------------------------------------------
+
+  ;; Needs a real pipe on stdin, so it is a script rather than a corpus row.
+  systemstreams {:doc "System/in, out and err: the process streams and the classes the JVM reports"
+                 :task (sh "sh test/chez/system-streams-smoke.sh")}
+
+  ;; Runs the CLI through $JOLT_CHEZ so the windows-deps job runs it too (#1331).
+  closedstdout {:doc "A stream whose reader has gone drops writes, and checkError says so"
+                :task (sh "sh test/chez/closed-stdout-smoke.sh $JOLT_CHEZ")}
+
+  ;; The Windows rows are the point, so it runs the CLI through $JOLT_CHEZ for
+  ;; the windows-deps job.
+  stderrsplit {:doc "stderr is its own descriptor when stdout and stderr are two files"
+               :task (sh "sh test/chez/stderr-split-smoke.sh $JOLT_CHEZ")}
+
+  ;; Needs two processes, so it is a script; the single-process rows are in
+  ;; unit.edn's nio-filelock suite.
+  filelock {:doc "FileChannel.lock and tryLock exclude other processes until the holder lets go or exits"
+            :task (sh "sh test/chez/file-lock-smoke.sh $JOLT_CHEZ")}
+
+  ;; The rows it exists for are Windows' (FILE_FLAG_DELETE_ON_CLOSE), which run
+  ;; against jolt.exe in windows-static and under tools/wine.
+  deleteonclose {:doc "DELETE_ON_CLOSE streams and channels work until closed and leave nothing behind"
+                 :task (chez "--script" "host/chez/cli.ss" "test/chez/delete-on-close-smoke.clj")}
+
+  ;; HOME is read once per process, so it drives bin/jolt with a scratch HOME
+  ;; (#1554).
+  mimetypes {:doc "Files/probeContentType reads ~/.mime.types before the JDK's own table"
+             :task (sh "sh test/chez/mime-types-smoke.sh")}
+
+  ;; The runtime used to spawn env, sw_vers and uname to answer about itself.
+  noexecsmoke {:doc "The runtime runs no program off PATH to answer about its own process"
+               :depends [testbin deps]
+               :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh host/chez/no-external-programs-smoke.sh")}
+
+  ;; An open member passes every arity check, so wrong-arity calls would fail
+  ;; only on the JVM.
+  hostarity {:doc "Every host member answers the JVM's arities, varargs members included"
+             :depends [deps]
+             :task (chez "--script" "test/chez/host-arity-test.ss")}
+
+  ;; One wrong row is a wrong SIGCHLD, LC_TIME and stat offset at once (#796).
+  hostprops {:doc "The derived host properties sa-os-family, sa-arch and sa-endian are right"
+             :task (chez "--script" "test/chez/host-derived-props-test.ss")}
+
+  hostregistry {:doc "Host method registry tag relations agree with the class graph and cannot cycle"
+                :task (chez "--script" "test/chez/host-registry-test.ss")}
+
+  enummodel {:doc "Every modeled enum is declared through the enum model with its full method set"
+             :depends [deps]
+             :task (chez "--script" "test/chez/enum-model-test.ss")}
+
+  ;; Passes CHEZ in double quotes through the env, since a single-quoted
+  ;; $JOLT_CHEZ never expands.
+  lazyshims {:doc "Lazily loaded host shims: index current, load rules kept, references load"
+             :depends [deps]
+             :task (sh "CHEZ=\"$JOLT_CHEZ\" $JOLT_CHEZ --script tools/lazy-shims-gen.ss --check"
+                       "CHEZ=\"$JOLT_CHEZ\" $JOLT_CHEZ --script test/chez/lazy-shims-test.ss"
+                       "$JOLT_CHEZ --script test/chez/lazy-hoist-test.ss")}
+
+  ;; Dead procedures still compile into every binary and get copied into the
+  ;; Gambit half.
+  deadhost {:doc "Fail on any top-level host procedure that nothing references"
+            :depends [deps]
+            :task (sh "sh host/chez/dead-host-check.sh")}
+
+  ;; The adapter defines nothing, so this only fails when the contract lists a
+  ;; name Chez lacks.
+  adaptercheck {:doc "Every name in the adapter CONTRACT.txt is bound in (chezscheme)"
+                :task (chez "--script" "host/scheme-adapter/chez.ss")}
+
+  portcheck {:doc "Portability lint: no blocklisted Chez-only identifier outside its allowlist"
+             :task (sh "sh host/chez/portability-check.sh")}
+
+  census {:doc "Count the Chez-only identifiers in the host .ss files"
+          :task (sh "sh host/chez/portability-check.sh --census")}
+
+  ;; The backward-composing property cannot be read from Chez, so a miss is a
+  ;; wrong answer.
+  normalizecheck {:doc "Normalizer fast paths agree with Chez, and the pinned composer set is current"
+                  :task (chez "--script" "test/chez/normalize-fastpath-test.ss")}
+
+  ;; --- Regex -------------------------------------------------------------------
+
+  ;; Judges which engine a pattern got, not a clock, so it is deterministic
+  ;; (#945).
+  regexdfa {:doc "The regex DFA work budget: pathological patterns use the backtracker"
+            :depends [deps]
+            :task (chez "--script" "test/chez/regex-dfa-test.ss")}
+
+  ;; A vendor bump must not leave jolt shadowing a stale copy of irregex in
+  ;; silence.
+  regexdfacheck {:doc "regex-dfa.ss's copies of vendored irregex procedures are not stale"
+                 :depends [deps]
+                 :task (sh "sh host/chez/regex-dfa-check.sh")}
+
+  regexdfacheck-regen {:doc "Regenerate the regex-dfa.ss copies that regexdfacheck compares"
+                       :depends [deps]
+                       :task (sh "sh host/chez/regex-dfa-check.sh --regen")}
+
+  ;; The vendored O(position) compile made anchored patterns quadratic on a whole
+  ;; file (#1062).
+  regexanchor {:doc "One-unit look-behind does not rescan from chunk start, so anchors stay linear"
+               :depends [deps]
+               :task (chez "--script" "test/chez/regex-anchor-test.ss")}
+
+  ;; The SREs stay registered as the primitives' expansions, so the check is
+  ;; differential.
+  regexanchorprims {:doc "`^`, `$` and `\\Z` as zero-width primitives match their SRE expansions"
+                    :depends [deps]
+                    :task (chez "--script" "test/chez/regex-anchor-prims-test.ss")}
+
+  regexanchorcheck {:doc "regex-anchor-sre.scm's copy of the vendored irregex procedure is not stale"
+                    :depends [deps]
+                    :task (sh "sh host/chez/regex-anchor-check.sh")}
+
+  regexanchorcheck-regen {:doc "Regenerate the regex-anchor-sre.scm copy that regexanchorcheck compares"
+                          :task (sh "sh host/chez/regex-anchor-check.sh --regen")}
+
+  regexbacktrack {:doc "The backtracking matcher against JDK 21 on empty-body, nested and union shapes"
+                  :depends [deps]
+                  :task (chez "--script" "test/chez/regex-backtrack-test.ss")}
+
+  regexmatcher {:doc "A Matcher reuses its match vector, and .group reads the last match"
+                :task (chez "--script" "test/chez/regex-matcher-test.ss")}
+
+  ;; re-replace once dropped the replacement text on every zero-width match.
+  regexreplace {:doc "clojure.string/replace emits the replacement for a zero-width match, as JVM"
+                :task (chez "--script" "test/chez/regex-replace-zero-width-test.ss")}
+
+  regexsyntax {:doc "A malformed pattern raises PatternSyntaxException with the JVM's message text"
+               :depends [deps]
+               :task (chez "--script" "test/chez/regex-syntax-test.ss")}
+
+  ;; --- Windows behavior, checked on POSIX --------------------------------------
+
+  ;; The POSIX-only spelling answered /C:/Users/x/a.txt for a drive path on
+  ;; Windows (#991).
+  winpath {:doc "java.io.File/getCanonicalPath's lexical handling per platform, drive paths too"
+           :task (chez "--script" "test/chez/win-path-test.ss")}
+
+  ;; A colon split cut every PATH entry in half on Windows, so fs/which found
+  ;; nothing (#1074).
+  winplatform {:doc "Windows answers a Linux runner cannot see: PATH separator, program resolver"
+               :task (chez "--script" "test/chez/win-platform-test.ss")}
+
+  ;; POSIX checks only the portable half. The Windows rows run in windows-deps or
+  ;; under Wine.
+  winparity {:doc "Windows parity repros (spawn, PushbackReader close, file: URLs, mtimes)"
+             :task (sh "$JOLT_CHEZ --script host/chez/cli.ss test/chez/win-parity-smoke.clj")}
+
+  ;; On Windows, sh is cmd.exe, so mkdir -p made a directory named -p and mv, rm,
+  ;; test do not exist.
+  shelloutcheck {:doc "jolt-core shells out only to git, and the runtime names no program to run"
+                 :task (sh "sh host/chez/shellout-check.sh")}
+
+  ;; --- Gambit ------------------------------------------------------------------
+
+  ;; Always uses brew's gsi, never a bare gsi or gsc, which is Ghostscript here.
+  gambitcheck {:doc "The Gambit adapter and shims verified on native gsi (skipped without Gambit)"
+               :task (sh (gambit-env)
+                         "if [ -x \"$GAMBIT_GSI\" ]; then \\
+\"$GAMBIT_GSI\" host/gambit/gambitcheck.ss; \\
+else \\
+if [ -n \"$JOLT_REQUIRE_GAMBIT\" ]; then echo \"gambitcheck: no gambit at $GAMBIT_PREFIX/bin and JOLT_REQUIRE_GAMBIT is set\" >&2; exit 1; else echo \"gambitcheck: gambit-scheme not installed (GAMBIT_PREFIX=$GAMBIT_PREFIX) — skipped\"; fi; \\
+fi")}
+
+  gambitkernel {:doc "The full booted manifest on native gsi, driven through the real natives"
+                :task (sh (gambit-env)
+                          "if [ -x \"$GAMBIT_GSI\" ]; then \\
+\"$GAMBIT_GSI\" host/gambit/kernel-test.ss; \\
+else \\
+if [ -n \"$JOLT_REQUIRE_GAMBIT\" ]; then echo \"gambitkernel: no gambit at $GAMBIT_PREFIX/bin and JOLT_REQUIRE_GAMBIT is set\" >&2; exit 1; else echo \"gambitkernel: gambit-scheme not installed (GAMBIT_PREFIX=$GAMBIT_PREFIX) — skipped\"; fi; \\
+fi")}
+
+  ;; The only gate running emitted code on gsi end to end, so it sits in ci.
+  gambiteval {:doc "Real jolt source evaluated on gsi, rendered output pinned to Chez captures"
+              :task (sh (gambit-env)
+                        "if [ -x \"$GAMBIT_GSI\" ]; then \\
+\"$GAMBIT_GSI\" host/gambit/eval-test.ss; \\
+else \\
+if [ -n \"$JOLT_REQUIRE_GAMBIT\" ]; then echo \"gambiteval: no gambit at $GAMBIT_PREFIX/bin and JOLT_REQUIRE_GAMBIT is set\" >&2; exit 1; else echo \"gambiteval: gambit-scheme not installed (GAMBIT_PREFIX=$GAMBIT_PREFIX) — skipped\"; fi; \\
+fi")}
+
+  ;; A web REPL once hung at boot for a week while every other gambit gate stayed
+  ;; green.
+  gambitboot {:doc "The full-profile boot comes up on gsi, which the js and gsi targets share"
+              :task (if (tasks.gate/done? 'gambitboot)
+                      (println "gambitboot: already run by the gate runner")
+                      (sh (gambit-env)
+                          "if [ -x \"$GAMBIT_GSI\" ]; then \\
+$JOLT_CHEZ --script host/gambit/gen-boot.ss full; \\
+out=$(cd host/gambit && \"$GAMBIT_GSI\" boot-probe.scm < /dev/null 2>&1); \\
+case \"$out\" in \\
+*BOOT-OK*) echo \"gambitboot: full-profile boot OK on gsi\";; \\
+*) printf '%s\\n' \"$out\" | tail -20; echo \"gambitboot: FAILED — full-profile boot did not reach BOOT-OK\" >&2; exit 1;; \\
+esac; \\
+else \\
+if [ -n \"$JOLT_REQUIRE_GAMBIT\" ]; then echo \"gambitboot: no gambit at $GAMBIT_PREFIX/bin and JOLT_REQUIRE_GAMBIT is set\" >&2; exit 1; else echo \"gambitboot: gambit-scheme not installed (GAMBIT_PREFIX=$GAMBIT_PREFIX) — skipped\"; fi; \\
+fi"))}
+
+  ;; Regenerate after every change to any of the four records files.
+  gambitgen {:doc "Regenerate host/gambit/records-gambit.ss from the four host/chez records files"
+             :task (chez "--script" "host/gambit/gen-records.ss")}
+
+  ;; Runs on Chez alone, so it gates in CI whether or not Gambit is installed.
+  gambitgencheck {:doc "host/gambit/records-gambit.ss is current with its generator"
+                  :task (sh "out=$(mktemp -d)/records-gambit.ss; \\
+GEN_RECORDS_OUT=\"$out\" $JOLT_CHEZ --script host/gambit/gen-records.ss >/dev/null; \\
+if diff -q \"$out\" host/gambit/records-gambit.ss >/dev/null; then \\
+echo \"gambitgencheck: records-gambit.ss is current with the records files\"; \\
+else \\
+echo \"gambitgencheck: host/gambit/records-gambit.ss is STALE — run 'make gambitgen'\" >&2; \\
+diff -u host/gambit/records-gambit.ss \"$out\" | head -40 >&2; \\
+rm -f \"$out\"; exit 1; \\
+fi; \\
+rm -f \"$out\"")}
+
+  gambitseed {:doc "Cross-mint the Gambit seed from the Chez seed, refusing Chez-only spellings"
+              :task (chez "--script" "host/gambit/gen-seed.ss")}
+
+  ;; Fails if the Chez seed was re-minted without make gambitseed.
+  gambitseedcheck {:doc "Re-minting the Gambit seed matches host/gambit/seed/ byte for byte"
+                   :task (sh "out=$(mktemp -d); \\
+if ! GEN_SEED_OUT_DIR=\"$out\" $JOLT_CHEZ --script host/gambit/gen-seed.ss > \"$out/mint.log\" 2>&1; then \\
+tail -20 \"$out/mint.log\" >&2; \\
+echo \"gambitseedcheck: gen-seed.ss FAILED — the gambit seed cannot be minted from current sources\" >&2; \\
+rm -rf \"$out\"; exit 1; \\
+fi; \\
+if diff -q \"$out/prelude.ss\" host/gambit/seed/prelude.ss >/dev/null \\
+&& diff -q \"$out/image.ss\" host/gambit/seed/image.ss >/dev/null; then \\
+echo \"gambitseedcheck: gambit seed is current with the sources\"; \\
+rm -rf \"$out\"; \\
+else \\
+echo \"gambitseedcheck: host/gambit/seed is STALE — run 'make gambitseed'\" >&2; \\
+rm -rf \"$out\"; exit 1; \\
+fi")}
+
+  ;; The boot splices most of host/chez, so a Chez-side name change can leave a
+  ;; hole here.
+  gambitunbound {:doc "Every Scheme global the full-profile boot references is defined"
+                 :depends [gambitboot]
+                 :task (sh (gambit-env)
+                           "if [ -x \"$GAMBIT_GSC\" ]; then \\
+JOLT_GSC=\"$GAMBIT_GSC\" sh host/gambit/unbound-check.sh; \\
+else \\
+if [ -n \"$JOLT_REQUIRE_GAMBIT\" ]; then echo \"gambitunbound: no gambit at $GAMBIT_PREFIX/bin and JOLT_REQUIRE_GAMBIT is set\" >&2; exit 1; else echo \"gambitunbound: gambit-scheme not installed (GAMBIT_PREFIX=$GAMBIT_PREFIX) — skipped\"; fi; \\
+fi")}
+
+  gambitunbound-regen {:doc "Regenerate the expected list gambitunbound compares against"
+                       :task (sh (gambit-env)
+                                 "JOLT_GSC=\"$GAMBIT_GSC\" sh host/gambit/unbound-check.sh --regen")}
+
+  gambitvars {:doc "Every var cell the Gambit boot interned is bound"
+              :task (sh (gambit-env)
+                        "if [ -x \"$GAMBIT_GSI\" ]; then \\
+\"$GAMBIT_GSI\" host/gambit/unbound-vars.ss < /dev/null; \\
+else \\
+if [ -n \"$JOLT_REQUIRE_GAMBIT\" ]; then echo \"gambitvars: no gambit at $GAMBIT_PREFIX/bin and JOLT_REQUIRE_GAMBIT is set\" >&2; exit 1; else echo \"gambitvars: gambit-scheme not installed (GAMBIT_PREFIX=$GAMBIT_PREFIX) — skipped\"; fi; \\
+fi")}
+
+  gambitvars-regen {:doc "Regenerate the expected list gambitvars compares against"
+                    :task (sh (gambit-env)
+                              "JOLT_GAMBITVARS=regen \"$GAMBIT_GSI\" host/gambit/unbound-vars.ss < /dev/null")}
+
+  ;; Nothing else says which of the seed's statics the Gambit target carries.
+  gambitstatics {:doc "Every Class member call and constructor the seed emits resolves on Gambit"
+                 :task (sh (gambit-env)
+                           "if [ -x \"$GAMBIT_GSI\" ]; then \\
+JOLT_GSI=\"$GAMBIT_GSI\" sh host/gambit/seed-statics.sh; \\
+else \\
+if [ -n \"$JOLT_REQUIRE_GAMBIT\" ]; then echo \"gambitstatics: no gambit at $GAMBIT_PREFIX/bin and JOLT_REQUIRE_GAMBIT is set\" >&2; exit 1; else echo \"gambitstatics: gambit-scheme not installed (GAMBIT_PREFIX=$GAMBIT_PREFIX) — skipped\"; fi; \\
+fi")}
+
+  gambitstatics-regen {:doc "Regenerate the expected list gambitstatics compares against"
+                       :task (sh (gambit-env)
+                                 "JOLT_GSI=\"$GAMBIT_GSI\" sh host/gambit/seed-statics.sh --regen")}
+
+  ;; Eval'd code on the Gambit boot cannot see unit macros. Grep only, so it runs
+  ;; in CI.
+  gambittwins {:doc "Every macro the emitter can call has a same-named function in eval-fns.ss"
+               :task (sh "sh host/gambit/eval-twins-check.sh")}
+
+  ;; Ordered after gambitboot, since gen-boot.ss rewrites boot-active.ss and -j
+  ;; would race.
+  gambitprofile {:doc "Build profiles: the reduced repl profile works and excluded features say so"
+                 :depends [gambitboot]
+                 :task (sh (gambit-env)
+                           "if [ -x \"$GAMBIT_GSI\" ]; then \\
+$JOLT_CHEZ --script host/gambit/gen-boot.ss repl; \\
+\"$GAMBIT_GSI\" host/gambit/profile-test.ss; \\
+else \\
+if [ -n \"$JOLT_REQUIRE_GAMBIT\" ]; then echo \"gambitprofile: no gambit at $GAMBIT_PREFIX/bin and JOLT_REQUIRE_GAMBIT is set\" >&2; exit 1; else echo \"gambitprofile: gambit-scheme not installed (GAMBIT_PREFIX=$GAMBIT_PREFIX) — skipped\"; fi; \\
+fi")}
+
+  gambitweb {:doc "Build the Gambit JS target ($GAMBIT_WEB_OUT, profile $PROFILE)"
+             :task (sh (gambit-env)
+                       "if [ -x \"$GAMBIT_GSC\" ]; then \\
+$JOLT_CHEZ --script host/gambit/gen-boot.ss ${PROFILE:-full}; \\
+mkdir -p \"$(dirname \"${GAMBIT_WEB_OUT:-target/gambit/jolt-web.js}\")\"; \\
+out=\"$(cd \"$(dirname \"${GAMBIT_WEB_OUT:-target/gambit/jolt-web.js}\")\" && pwd)/$(basename \"${GAMBIT_WEB_OUT:-target/gambit/jolt-web.js}\")\"; \\
+(cd host/gambit && \"$GAMBIT_GSC\" -target js -exe -o \"$out\" repl-main.ss); \\
+echo \"gambitweb: ${GAMBIT_WEB_OUT:-target/gambit/jolt-web.js} ($(wc -c < \"$out\" | tr -d ' ') bytes,\\
+$(gzip -c \"$out\" | wc -c | tr -d ' ') gzipped)\"; \\
+else \\
+if [ -n \"$JOLT_REQUIRE_GAMBIT\" ]; then echo \"gambitweb: no gambit at $GAMBIT_PREFIX/bin and JOLT_REQUIRE_GAMBIT is set\" >&2; exit 1; else echo \"gambitweb: gambit-scheme not installed (GAMBIT_PREFIX=$GAMBIT_PREFIX) — skipped\"; fi; \\
+fi")}
+
+  ;; These two pairs were kept in step by hand with nothing watching.
+  mirrordrift {:doc "Hand-mirrored host file pairs (rt.ss, rt-core.ss, two hasheq.ss) do not drift"
+               :depends [deps]
+               :task (sh "sh host/chez/mirror-drift-check.sh")}
+
+  mirrordrift-regen {:doc "Regenerate the baseline mirrordrift compares the mirrored host files against"
+                     :depends [deps]
+                     :task (sh "sh host/chez/mirror-drift-check.sh --regen")}
+
+  ;; --- Repository hygiene ------------------------------------------------------
+
+  ;; A session-link trailer is a private URL, and commit messages describe only
+  ;; the change.
+  attributioncheck {:doc "No AI-assistant attribution in the commits this tree adds to origin/main"
+                    :task (sh "sh tools/attributioncheck.sh")}
+
+  noticecheck {:doc "NOTICE names every embedded third-party work, with its license in licenses/"
+               :task (sh "sh tools/noticecheck.sh")}
+
+  ;; The section must end inside the budget, or readers never see what the java.*
+  ;; shims are not.
+  readmecheck {:doc "README's 'Differences from Clojure' ends within its byte ceiling, links exist"
+               :task (sh "end=$(LC_ALL=C awk '/^## Differences from Clojure$/ {seen=1; next} \\
+seen && /^## / {print off; found=1; exit} \\
+{off += length($0) + 1} \\
+END {if (!found) print (seen ? off : -1)}' README.md); \\
+if [ \"$end\" -lt 0 ]; then \\
+echo \"readmecheck: README.md has no '## Differences from Clojure' section\" >&2; exit 1; fi; \\
+if [ \"$end\" -gt 12000 ]; then \\
+echo \"readmecheck: 'Differences from Clojure' ends at byte $end, past the 12000 ceiling.\" >&2; \\
+echo \"  A truncating fetch would cut it. Move it earlier or shorten what precedes it;\" >&2; \\
+echo \"  contributor-facing prose belongs in CONTRIBUTING.md.\" >&2; exit 1; fi; \\
+for f in CONTRIBUTING.md llms.txt; do \\
+[ -f \"$f\" ] || { echo \"readmecheck: $f is missing (README links to it)\" >&2; exit 1; }; \\
+done; \\
+echo \"readmecheck: divergences end at byte $end (ceiling 12000)\"")}
+
+  ;; Its own CI job, because the gate list runs where clj-kondo is not installed.
+  kondocheck {:doc "clj-kondo over what jolt ships, with tools/clj-kondo-ci.edn"
+              :task (sh "clj-kondo --cache false --config tools/clj-kondo-ci.edn --fail-level error \\
+--lint stdlib compatibility jolt-core/jolt tools")}
+
+  ;; Both files are hand-written while both exist, so they can stop agreeing.
+  taskparity {:doc "The Makefile and deps.edn name the same targets and gates, every task grouped"
+              :task (do (load-file "tools/tasks/parity.clj")
+                        (tasks.parity/main! tasks.env/root))}}}
