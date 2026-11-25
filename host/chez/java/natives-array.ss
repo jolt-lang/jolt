@@ -1879,39 +1879,41 @@
       (throw-jvm 'ClassCastException
                  (string-append "native region: a ^boolean parameter got "
                                 (jolt-class-name x)))))
+;; Each array check answers the backing it tested, which the call site hands C:
+;; read once, since another thread's store can widen the array's backing to a
+;; plain vector, and a second read after the check would pass that to C.
 (define (jolt-native-arg-doubles a)
-  (cond
-    ((not (and (jolt-array? a) (eq? (jolt-array-kind a) 'double)))
-     (throw-jvm 'ClassCastException
-                (string-append "native region: a ^doubles parameter got "
-                               (jolt-class-name a))))
-    ((not (flvector? (jolt-array-vec a)))
-     (throw-jvm 'IllegalArgumentException
-                "native region: this double-array holds a value that is not a double"))
-    (else a)))
+  (if (not (and (jolt-array? a) (eq? (jolt-array-kind a) 'double)))
+      (throw-jvm 'ClassCastException
+                 (string-append "native region: a ^doubles parameter got "
+                                (jolt-class-name a)))
+      (let ((v (jolt-array-vec a)))
+        (if (flvector? v)
+            v
+            (throw-jvm 'IllegalArgumentException
+                       "native region: this double-array holds a value that is not a double")))))
 ;; A ^longs parameter: a long-array still backed by an fxvector, which C reads
 ;; and writes as fixnums. jolt widens the backing to a plain vector once a value
 ;; leaves the fixnum range (or a non-number is stored); that array is refused.
 (define (jolt-native-arg-longs a)
-  (cond
-    ((not (and (jolt-array? a) (eq? (jolt-array-kind a) 'long)))
-     (throw-jvm 'ClassCastException
-                (string-append "native region: a ^longs parameter got "
-                               (jolt-class-name a))))
-    ((not (fxvector? (jolt-array-vec a)))
-     (throw-jvm 'IllegalArgumentException
-                "native region: this long-array holds a value outside the fixnum range"))
-    (else a)))
+  (if (not (and (jolt-array? a) (eq? (jolt-array-kind a) 'long)))
+      (throw-jvm 'ClassCastException
+                 (string-append "native region: a ^longs parameter got "
+                                (jolt-class-name a)))
+      (let ((v (jolt-array-vec a)))
+        (if (fxvector? v)
+            v
+            (throw-jvm 'IllegalArgumentException
+                       "native region: this long-array holds a value outside the fixnum range")))))
 ;; A ^bytes parameter: a byte-array, whose backing is always a bytevector of
 ;; signed bytes, which C reads in place and never writes.
 (define (jolt-native-arg-bytes a)
-  (if (and (jolt-array? a) (eq? (jolt-array-kind a) 'byte) (bytevector? (jolt-array-vec a)))
-      a
-      (throw-jvm 'ClassCastException
-                 (string-append "native region: a ^bytes parameter got "
-                                (jolt-class-name a)))))
-;; The flvector, fxvector or bytevector C reads in place. Only after the arg checks.
-(define (jolt-native-flv a) (jolt-array-vec a))
+  (let ((v (and (jolt-array? a) (eq? (jolt-array-kind a) 'byte) (jolt-array-vec a))))
+    (if (bytevector? v)
+        v
+        (throw-jvm 'ClassCastException
+                   (string-append "native region: a ^bytes parameter got "
+                                  (jolt-class-name a))))))
 ;; An owned array result arrives as the region's malloc'd buffer PTR, which the
 ;; stub copies into a fresh Scheme array and frees. Until the copy has freed
 ;; it, a failure (the Scheme heap out of room for the array) frees it first.
@@ -1941,18 +1943,34 @@
 ;; Every region whose call site has loaded, sym -> C source, for jolt build to
 ;; compile and link and for the JIT. Registered when the site's top-level form
 ;; loads, so a build served from the AOT cache sees the same set as one that
-;; macroexpanded.
+;; macroexpanded. Kept for the life of the process, as the JIT's code is: a
+;; program that makes regions at runtime (native-fn) holds each distinct one.
+;; The table answers a lookup; the list keeps the order they loaded in.
 (define jolt-native-regions '())
+(define jolt-native-region-table (make-hashtable string-hash string=?))
 (define jolt-native-regions-mutex (make-mutex))
+;; A name is a hash of the C, so the same name with other C is a collision:
+;; raised, since the second region would otherwise run the first one's code.
 (define (jolt-native-register! sym src)
-  (jolt-with-mutex jolt-native-regions-mutex
-    (unless (assoc sym jolt-native-regions)
-      (set! jolt-native-regions (cons (cons sym src) jolt-native-regions)))))
+  (let ((clash
+         (jolt-with-mutex jolt-native-regions-mutex
+           (let ((had (hashtable-ref jolt-native-region-table sym #f)))
+             (cond
+               ((not had)
+                (hashtable-set! jolt-native-region-table sym src)
+                (set! jolt-native-regions (cons (cons sym src) jolt-native-regions))
+                #f)
+               (else (not (string=? had src))))))))
+    (when clash
+      (throw-jvm 'IllegalStateException
+                 (string-append "native region " sym
+                                ": another region's C has the same name (a hash collision);"
+                                " change either region")))))
 (define (jolt-native-registered)
   (jolt-with-mutex jolt-native-regions-mutex (reverse jolt-native-regions)))
 (define (jolt-native-source sym)
   (jolt-with-mutex jolt-native-regions-mutex
-    (let ((r (assoc sym jolt-native-regions))) (and r (cdr r)))))
+    (hashtable-ref jolt-native-region-table sym #f)))
 
 ;; --- the JIT ------------------------------------------------------------------
 ;; A region not linked into this process (the REPL, jolt run, the build process
