@@ -286,10 +286,70 @@
 (define sre-Z
   '(or #\space #\xA0 #\x1680 (/ #\x2000 #\x200A) #\x2028 #\x2029 #\x202F #\x205F #\x3000))
 
+;; java.lang.Character answers from the Unicode version of its JDK (15 for JDK
+;; 21), and Chez's tables are newer: a code point Unicode assigned since is
+;; UNASSIGNED to the JDK (no letter, no digit), and a few changed category. The
+;; table lists where the two disagree, as start end category flags (4 Uppercase,
+;; 2 Lowercase, 1 Alphabetic), sorted; every classification below reads through
+;; char-jdk-override: java.lang.Character's getType, predicates and digit values
+;; (host-static-methods.ss) and java.util.regex's Unicode classes below.
+;; BEGIN GENERATED char-category-overrides (tools/gen-char-categories.clj, JDK 21.0.13.1) — do not edit.
+(define char-category-overrides '#(
+  661 661 Ll 3 867 879 Mn 0 2191 2191 Cn 0 2199 2199 Cn 0
+  3164 3164 Cn 0 3292 3292 Cn 0 6863 6877 Cn 0 6880 6891 Cn 0
+  6990 6991 Cn 0 7039 7039 Cn 0 7305 7306 Cn 0 7635 7654 Mn 0
+  8385 8385 Cn 0 9255 9257 Cn 0 11158 11158 Cn 0 12284 12287 Cn 0
+  12772 12773 Cn 0 12783 12783 Cn 0 42955 42959 Cn 0 42962 42962 Cn 0
+  42964 42964 Cn 0 42970 42972 Cn 0 42993 42993 Cn 0 64451 64466 Cn 0
+  64912 64913 Cn 0 64968 64974 Cn 0 67008 67059 Cn 0 67904 67929 Cn 0
+  68928 68965 Cn 0 68969 68997 Cn 0 69006 69007 Cn 0 69314 69319 Cn 0
+  69328 69336 Cn 0 69370 69372 Cn 0 70528 70537 Cn 0 70539 70539 Cn 0
+  70542 70542 Cn 0 70544 70581 Cn 0 70583 70592 Cn 0 70594 70594 Cn 0
+  70597 70597 Cn 0 70599 70602 Cn 0 70604 70613 Cn 0 70615 70616 Cn 0
+  70625 70626 Cn 0 71376 71395 Cn 0 71454 71454 Mn 1 72544 72551 Cn 0
+  72640 72673 Cn 0 72688 72697 Cn 0 73136 73179 Cn 0 73184 73193 Cn 0
+  73562 73562 Cn 0 78944 82938 Cn 0 90368 90425 Cn 0 93504 93561 Cn 0
+  93856 93880 Cn 0 93883 93907 Cn 0 94194 94198 Cn 0 100344 100351 Cn 0
+  101631 101631 Cn 0 101641 101662 Cn 0 101760 101874 Cn 0 117760 118012 Cn 0
+  118016 118451 Cn 0 118458 118480 Cn 0 118496 118512 Cn 0 124368 124410 Cn 0
+  124415 124415 Cn 0 124608 124638 Cn 0 124640 124661 Cn 0 124670 124671 Cn 0
+  128728 128728 Cn 0 128887 128890 Cn 0 129202 129211 Cn 0 129216 129217 Cn 0
+  129232 129240 Cn 0 129620 129623 Cn 0 129673 129674 Cn 0 129678 129679 Cn 0
+  129726 129726 Cn 0 129734 129734 Cn 0 129736 129736 Cn 0 129741 129741 Cn 0
+  129756 129756 Cn 0 129759 129759 Cn 0 129769 129770 Cn 0 129775 129775 Cn 0
+  129995 130031 Cn 0 130042 130042 Cn 0 177978 177983 Cn 0 183970 183981 Cn 0
+  191472 192093 Cn 0 205744 210041 Cn 0))
+;; END GENERATED char-category-overrides
+(define char-category-overrides-first
+  (if (> (vector-length char-category-overrides) 0) (vector-ref char-category-overrides 0) #x110000))
+;; The override run (its index in the table) CP falls in, or #f.
+(define (char-jdk-override cp)
+  (and (fixnum? cp) (>= cp char-category-overrides-first)
+       (let loop ((lo 0) (hi (- (quotient (vector-length char-category-overrides) 4) 1)))
+         (and (<= lo hi)
+              (let* ((mid (quotient (+ lo hi) 2)) (b (* mid 4)))
+                (cond ((< cp (vector-ref char-category-overrides b)) (loop lo (- mid 1)))
+                      ((> cp (vector-ref char-category-overrides (+ b 1))) (loop (+ mid 1) hi))
+                      (else b)))))))
+;; The JDK's general category of scalar char C.
+(define (char-jdk-category c)
+  (let ((b (char-jdk-override (char->integer c))))
+    (if b (vector-ref char-category-overrides (+ b 2)) (char-general-category c))))
+;; The JDK's Uppercase / Lowercase / Alphabetic property (BIT 4/2/1) of char C,
+;; where CHEZ? is Chez's answer for it.
+(define (char-jdk-property c bit chez?)
+  (let ((b (char-jdk-override (char->integer c))))
+    (if b
+        (not (= 0 (bitwise-and bit (vector-ref char-category-overrides (+ b 3)))))
+        (chez? c))))
+(define (char-jdk-upper-case? c) (char-jdk-property c 4 char-upper-case?))
+(define (char-jdk-lower-case? c) (char-jdk-property c 2 char-lower-case?))
+(define (char-jdk-alphabetic? c) (char-jdk-property c 1 char-alphabetic?))
 ;; \p{L}/\p{N} used to approximate with a hand-picked range ((/ #\x80
 ;; #\xD7FF) for L), which is nearly the whole BMP above ASCII and so
 ;; wrongly matched symbols/punctuation too, e.g. U+2192 → (#941). Build
-;; the real Unicode ranges from Chez's own char-general-category (and, for
+;; the real Unicode ranges from Chez's own char-general-category, as the JDK
+;; sees it (char-jdk-category above) (and, for
 ;; the binary properties, its R6RS char predicates) instead. ~10ms over the
 ;; full codepoint space, paid once per name and lazily, only if a pattern
 ;; actually uses it.
@@ -299,7 +359,9 @@
       (if start (cons `(/ ,(integer->char start) ,(integer->char (- cp 1))) ranges) ranges))
     (cond
      ((> cp #x10FFFF) (cons 'or (reverse (close-at cp ranges))))
-     ((and (>= cp #xD800) (<= cp #xDFFF)) (loop (+ cp 1) start ranges)) ; surrogates
+     ;; surrogates are no chars: a run open below them closes there (a range
+     ;; across them ended at #\xDFFF, which no char is, for \p{Cn} and \p{C})
+     ((= cp #xD800) (loop #xE000 #f (close-at cp ranges)))
      (else
       (let ((in? (in? (integer->char cp))))
         (cond
@@ -330,23 +392,23 @@
     ("C" Cc Cf Cs Co Cn) ("Cc" Cc) ("Cf" Cf) ("Cs" Cs) ("Co" Co) ("Cn" Cn)))
 
 (define unicode-binary-properties
-  `(("ALPHABETIC" . ,char-alphabetic?)
-    ("LOWERCASE" . ,char-lower-case?)
-    ("UPPERCASE" . ,char-upper-case?)
+  `(("ALPHABETIC" . ,char-jdk-alphabetic?)
+    ("LOWERCASE" . ,char-jdk-lower-case?)
+    ("UPPERCASE" . ,char-jdk-upper-case?)
     ("WHITE_SPACE" . ,char-whitespace?) ("WHITESPACE" . ,char-whitespace?)
-    ("TITLECASE" . ,(lambda (c) (eq? (char-general-category c) 'Lt)))
-    ("LETTER" . ,(lambda (c) (memq (char-general-category c) '(Lu Ll Lt Lm Lo))))
-    ("DIGIT" . ,(lambda (c) (eq? (char-general-category c) 'Nd)))
-    ("ALNUM" . ,(lambda (c) (or (char-alphabetic? c) (eq? (char-general-category c) 'Nd))))
-    ("BLANK" . ,(lambda (c) (or (eq? (char-general-category c) 'Zs) (char=? c #\tab))))
-    ("PUNCTUATION" . ,(lambda (c) (memq (char-general-category c) '(Pc Pd Ps Pe Pi Pf Po))))
-    ("CONTROL" . ,(lambda (c) (eq? (char-general-category c) 'Cc)))
-    ("ASSIGNED" . ,(lambda (c) (not (eq? (char-general-category c) 'Cn))))
+    ("TITLECASE" . ,(lambda (c) (eq? (char-jdk-category c) 'Lt)))
+    ("LETTER" . ,(lambda (c) (memq (char-jdk-category c) '(Lu Ll Lt Lm Lo))))
+    ("DIGIT" . ,(lambda (c) (eq? (char-jdk-category c) 'Nd)))
+    ("ALNUM" . ,(lambda (c) (or (char-jdk-alphabetic? c) (eq? (char-jdk-category c) 'Nd))))
+    ("BLANK" . ,(lambda (c) (or (eq? (char-jdk-category c) 'Zs) (char=? c #\tab))))
+    ("PUNCTUATION" . ,(lambda (c) (memq (char-jdk-category c) '(Pc Pd Ps Pe Pi Pf Po))))
+    ("CONTROL" . ,(lambda (c) (eq? (char-jdk-category c) 'Cc)))
+    ("ASSIGNED" . ,(lambda (c) (not (eq? (char-jdk-category c) 'Cn))))
     ;; UnicodeProp.HEXDIGIT is DIGIT.is(ch) || the ASCII and fullwidth spellings,
     ;; so EVERY Nd digit is a hex digit to java.util.regex — U+1C50, U+0660 and
     ;; U+0966 all answer \p{IsHex_Digit} on the JDK. A wider set than Unicode's
     ;; own Hex_Digit property, and the JVM's is what this has to answer.
-    ("HEX_DIGIT" . ,(lambda (c) (or (eq? (char-general-category c) 'Nd)
+    ("HEX_DIGIT" . ,(lambda (c) (or (eq? (char-jdk-category c) 'Nd)
                                     (and (char<=? #\0 c) (char<=? c #\9))
                                     (and (char<=? #\a c) (char<=? c #\f))
                                     (and (char<=? #\A c) (char<=? c #\F))
@@ -360,19 +422,19 @@
 
 ;; Character.isX for the javaX names, as the JDK defines them.
 (define java-character-predicates
-  `(("javaLowerCase" . ,char-lower-case?)
-    ("javaUpperCase" . ,char-upper-case?)
-    ("javaAlphabetic" . ,char-alphabetic?)
-    ("javaTitleCase" . ,(lambda (c) (eq? (char-general-category c) 'Lt)))
-    ("javaLetter" . ,(lambda (c) (memq (char-general-category c) '(Lu Ll Lt Lm Lo))))
-    ("javaDigit" . ,(lambda (c) (eq? (char-general-category c) 'Nd)))
-    ("javaLetterOrDigit" . ,(lambda (c) (memq (char-general-category c) '(Lu Ll Lt Lm Lo Nd))))
-    ("javaDefined" . ,(lambda (c) (not (eq? (char-general-category c) 'Cn))))
-    ("javaSpaceChar" . ,(lambda (c) (memq (char-general-category c) '(Zs Zl Zp))))
+  `(("javaLowerCase" . ,char-jdk-lower-case?)
+    ("javaUpperCase" . ,char-jdk-upper-case?)
+    ("javaAlphabetic" . ,char-jdk-alphabetic?)
+    ("javaTitleCase" . ,(lambda (c) (eq? (char-jdk-category c) 'Lt)))
+    ("javaLetter" . ,(lambda (c) (memq (char-jdk-category c) '(Lu Ll Lt Lm Lo))))
+    ("javaDigit" . ,(lambda (c) (eq? (char-jdk-category c) 'Nd)))
+    ("javaLetterOrDigit" . ,(lambda (c) (memq (char-jdk-category c) '(Lu Ll Lt Lm Lo Nd))))
+    ("javaDefined" . ,(lambda (c) (not (eq? (char-jdk-category c) 'Cn))))
+    ("javaSpaceChar" . ,(lambda (c) (memq (char-jdk-category c) '(Zs Zl Zp))))
     ;; isWhitespace: a space separator that is not non-breaking, the line and
     ;; paragraph separators, and the ASCII controls \t \n \x0B \f \r \x1C-\x1F.
     ("javaWhitespace" . ,(lambda (c) (let ((n (char->integer c)))
-                                       (or (and (memq (char-general-category c) '(Zs Zl Zp))
+                                       (or (and (memq (char-jdk-category c) '(Zs Zl Zp))
                                                 (not (memv n '(#xA0 #x2007 #x202F))))
                                            (and (>= n 9) (<= n 13))
                                            (and (>= n #x1C) (<= n #x1F))))))
@@ -400,7 +462,7 @@
 (define (prop-class-sre name)
   (define (category-sre nm)
     (let ((e (assoc nm unicode-category-groups)))
-      (and e (unicode-property-sre nm (lambda (c) (memq (char-general-category c) (cdr e)))))))
+      (and e (unicode-property-sre nm (lambda (c) (memq (char-jdk-category c) (cdr e)))))))
   (define (prefixed? pre) (and (> (string-length name) (string-length pre))
                                (string=? (substring name 0 (string-length pre)) pre)))
   (define (after pre) (substring name (string-length pre) (string-length name)))
