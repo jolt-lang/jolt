@@ -64,6 +64,16 @@
                        (chez "--script" "host/chez/build-jolt.ss" "release" bin)
                        (println "testbin: target/release/jolt up to date"))))}
 
+  mirlib {:doc "The native-region JIT for a source checkout: MIR as target/mir/libjoltmir"
+          :task (sh "srcs='vendor/mir/mir.c vendor/mir/mir-gen.c vendor/mir/c2mir/c2mir.c host/chez/stub/jolt_mir.c'; \\
+                     so=target/mir/libjoltmir$([ \"$(uname -s)\" = Darwin ] && echo .dylib || echo .so); cc=${JOLT_CC:-cc}; \\
+                     test -f vendor/mir/c2mir/c2mir.c || { echo 'mirlib: vendor/mir is empty: git submodule update --init vendor/mir'; exit 1; }; \\
+                     if [ -f \"$so\" ] && [ -z \"$(find $srcs vendor/mir -name '*.[ch]' -newer \"$so\" -print -quit)\" ]; then echo \"mirlib: $so up to date\"; exit 0; fi; \\
+                     mkdir -p target/mir; \\
+                     for f in $srcs; do $cc -O2 -DNDEBUG -std=gnu11 -fsigned-char -fPIC -w -Wno-psabi -Ivendor/mir -c $f -o target/mir/$(basename $f .c).o || exit 1; done; \\
+                     $cc -shared -o \"$so\" target/mir/mir.o target/mir/mir-gen.o target/mir/c2mir.o target/mir/jolt_mir.o -lm -lpthread; \\
+                     echo \"mirlib: wrote $so\"")}
+
   ;; Not named install, because jolt runs a file named ./install before a task of
   ;; that name.
   install-local {:doc "Install target/release/jolt into $PREFIX/bin (default ~/.local)"

@@ -11,7 +11,7 @@
     '[info chez-path deps submodules hooks]]
 
    ["Build and install"
-    '[build default testbin install-local jolt jolt-release jolt-debug remint devboot gateboot]]
+    '[build default testbin mirlib install-local jolt jolt-release jolt-debug remint devboot gateboot]]
 
    ["The gate"
     '[test ci bionic-ci ci-shard ci-shard-list gate-status]]
