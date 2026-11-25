@@ -56,6 +56,18 @@
 (defn- native-root [spec plat base]
   (or (get (:jolt.deps/roots spec) plat) (:jolt.deps/root spec) base))
 
+;; A reconciled spec keeps each declaration's :build under the root it was
+;; declared in (:jolt.deps/builds), since a task builds the files ITS deps.edn
+;; names. SPEC as seen by whoever needs the files under ROOT: the task declared
+;; there as its :build (none when that deps.edn declared none), run in ROOT.
+;; A spec that was never reconciled is returned as it is.
+(defn- with-build-for [spec root]
+  (if-let [bs (:jolt.deps/builds spec)]
+    (let [task (get bs root)]
+      (cond-> (dissoc spec :build :jolt.deps/builds)
+        task (assoc :build task :jolt.deps/build-root root)))
+    spec))
+
 ;; A BUILD-TIME path (a :static archive, a -L directory) relative to that root.
 ;; Unlike native-candidate this prefixes a bare filename too: those paths are
 ;; handed to the linker, which reads "libfoo.a" as a file in the current
@@ -146,7 +158,8 @@
 (defn- canonical-dir [d] (.getCanonicalPath (java.io.File. ^String d)))
 
 (defn- native-build-dir [spec base]
-  (when-let [d (or (:jolt.deps/root spec) base)] (canonical-dir d)))
+  (when-let [d (or (:jolt.deps/build-root spec) (:jolt.deps/root spec) base)]
+    (canonical-dir d)))
 
 (defn- ancestor-building? [dir]
   (let [v (jolt.host/getenv native-building-env)]
@@ -394,7 +407,8 @@
                         " (a task may build it)")))))))
 
 (defn- load-native-spec! [spec plat strict? base]
-  (let [cands (native-load-candidates spec plat base)
+  (let [spec (with-build-for spec (native-root spec plat base))
+        cands (native-load-candidates spec plat base)
         ;; Load the native RTLD_LOCAL and register its handle, so the
         ;; spec's defcfns resolve from the handle (isolated from the
         ;; process-global namespace) rather than depending on global
@@ -485,6 +499,12 @@
                                   (fn [ns] (load-dependency-natives! specs strict? base ns)))))))
 
 ;; --- natives in a built binary ---------------------------------------------
+;; The root a spec's :static paths resolve against: the deps.edn that declared
+;; the :static it carries, which reconciliation records when it took :static from
+;; a farther declaration than the one that won the spec.
+(defn- static-root [spec base]
+  (or (get (:jolt.deps/roots spec) :static) (:jolt.deps/root spec) base))
+
 ;; The static-link description of a :jolt/native spec for this platform, or nil.
 ;; :static may be flat ({:archive "…"} / {:lib "z" :libdir "…"}) or per-platform
 ;; ({:darwin {…} :linux {…}}). Returns a vector build.ss reads and wraps in the
@@ -498,7 +518,7 @@
           ;; project's own "native/libfoo.a" only worked when the build happened
           ;; to run from the project dir — which bin/jolt, which cd's to the jolt
           ;; tree, never does (jolt-9a8).
-          root (native-root spec plat base)]
+          root (static-root spec base)]
       (cond
         (:archive s) ["archive" (native-build-path root (:archive s))]
         (:lib s)     ["lib" (:lib s) (if-let [d (:libdir s)]
@@ -512,7 +532,7 @@
 ;; run rather than as a linker error about a missing file.
 (defn- build-static-archives! [natives base]
   (let [plat (current-platform)]
-    (doseq [spec natives
+    (doseq [spec (map #(with-build-for % (static-root % base)) natives)
             :when (and (:build spec) (not (:optional spec)) (not (:process spec)))]
       (let [[kind archive] (static-link-spec spec plat base)
             present #(when (jolt.host/file-exists? archive) archive)]
@@ -539,7 +559,8 @@
 ;; system's to find, and a task cannot be said to have produced it.
 (defn- build-dependency-libraries! [encoded natives base]
   (let [plat (current-platform)]
-    (doseq [[e spec] (map vector encoded natives)
+    (doseq [[e spec] (map vector encoded
+                          (map #(with-build-for % (native-root % plat base)) natives))
             :when (and (= "dep" (first e)) (:build spec) (not (:optional spec)))]
       (let [cands (filterv #(or (str/includes? % "/") (str/includes? % "\\"))
                            (mapv #(native-candidate (native-root spec plat base) %)
