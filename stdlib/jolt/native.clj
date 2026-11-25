@@ -82,22 +82,61 @@
         sym (region-sym (emit/emit-region r "JN_SYM"))]
     {:sym sym :src (emit/emit-region r sym) :region r}))
 
+(defn- specialized-names
+  "The params a region's ^{:specialize [...]} names, checked: scalar params of
+  the region, each once."
+  [params region]
+  (when-let [names (:specialize (meta params))]
+    (let [types (into {} (map (juxt (comp #(with-meta % nil) :name) :type) (:params region)))]
+      (when-not (and (vector? names) (seq names) (every? symbol? names) (apply distinct? names))
+        (throw (ex-info (str "native: :specialize takes a vector of parameter names, got " (pr-str names))
+                        {:jolt.native/error true})))
+      (doseq [n names]
+        (let [t (types n)]
+          (cond
+            (nil? t) (throw (ex-info (str "native: :specialize names " n ", which is not a parameter")
+                                     {:jolt.native/error true}))
+            (not (#{:long :double :bool} t))
+            (throw (ex-info (str "native: :specialize takes ^long ^double or ^boolean parameters; " n
+                                 " is an array (specialize on a long that gives its size)")
+                            {:jolt.native/error true})))))
+      names)))
+
 (defmacro native
   "Run body as native code: linked into a jolt build binary, compiled by the
   JIT elsewhere. params names the locals it reads, each hinted ^long ^double
-  ^boolean ^doubles or ^longs."
+  ^boolean ^doubles ^longs or ^bytes.
+
+  ^{:specialize [n ...]} on params also compiles the region once per distinct
+  value of those scalar parameters the call site sees, with the values as
+  constants, so the range analysis works with real numbers (a fixed size, a
+  constant stride) and more checks drop out. Each variant is compiled by the
+  JIT the first time its values arrive, up to :max-variants of them (8 by
+  default); other values, and a binary jolt build made (which has no JIT), run
+  the region as written. The answers are the same either way."
   [params & body]
   (let [{:keys [sym src region]} (compile-region params body)
-        plain (mapv #(with-meta (:name %) nil) (:params region))]
-    ;; (jolt.native/__region sym src [param-kinds] result-kind [args] raise! mode)
-    ;; the analyzer derives the Chez foreign types from the kinds
-    (list 'jolt.native/__region
-          sym src
-          (mapv (comp param-kind :type) (:params region))
-          (result-kind (:type region))
-          plain
-          'jolt.native.rt/raise!
-          (if (:hold-gc (meta params)) :hold-gc :pinned))))
+        plain (mapv #(with-meta (:name %) nil) (:params region))
+        ;; (jolt.native/__region sym src [param-kinds] result-kind [args] raise! mode)
+        ;; the analyzer derives the Chez foreign types from the kinds
+        generic (list 'jolt.native/__region
+                      sym src
+                      (mapv (comp param-kind :type) (:params region))
+                      (result-kind (:type region))
+                      plain
+                      'jolt.native.rt/raise!
+                      (if (:hold-gc (meta params)) :hold-gc :pinned))
+        spec (specialized-names params region)]
+    (if-not spec
+      generic
+      (let [keep-params (vec (remove (comp (set spec) #(with-meta % nil)) params))
+            f (gensym "variant")]
+        `(let [~f (specialized-variant ~sym '~params '~(vec body) '~spec
+                                       ~(get (meta params) :max-variants 8) '~(ns-name *ns*)
+                                       ~(vec spec))]
+           (if ~f
+             (~f ~@(mapv #(with-meta % nil) keep-params))
+             ~generic))))))
 
 (defn- on-form? [x] (and (seq? x) (= 'on (first x))))
 
@@ -292,6 +331,84 @@
      (compile-region params body)
      (eval (list 'fn* (mapv #(with-meta % nil) params)
                  (list* 'jolt.native/native params body))))))
+
+;; --- specialization -----------------------------------------------------------
+;; site (the generic region's symbol) -> {variant-key {:vals [value ...] :f variant-fn-or-:failed}}
+(def ^:private variants (atom {}))
+(def ^:private variants-lock (Object.))
+
+(defn- specialized-types [params]
+  (into {} (map (fn [p] [(with-meta p nil) (str (:tag (meta p)))]) params)))
+
+(defn- cast-specialized
+  "The values of the specialized params cast as the region casts its arguments
+  (jolt-native-arg-long, -double, -bool), so a variant sees what the region
+  would have."
+  [types names vals]
+  (mapv (fn [n v]
+          (case (types n)
+            "long" (long v)
+            "double" (double v)
+            "boolean" (if (boolean? v) v
+                          (throw (ClassCastException.
+                                  (str "native region: a ^boolean parameter got " (class v)))))))
+        names vals))
+
+(defn- variant-key
+  "The cache key of cast values: a double by its bits, since = treats 0.0 and
+  -0.0 as one value but a variant with either constant can answer differently
+  ((* k x) is -0.0 for one and 0.0 for the other)."
+  [vals]
+  (mapv #(if (double? %) [::bits (Double/doubleToRawLongBits %)] %) vals))
+
+(defn specialized-body
+  "The body of the variant of a region specialized on names (its params) at
+  vals: body with each name bound to its value, the value cast as the region
+  casts the argument. Answers [params-left body]; params-left keeps the
+  region's other options (^:hold-gc)."
+  [params body names vals]
+  (let [cast (cast-specialized (specialized-types params) names vals)
+        keep (with-meta (vec (remove (comp (set names) #(with-meta % nil)) params))
+               (dissoc (meta params) :specialize :max-variants))]
+    [keep (list (list* 'let (vec (interleave names cast)) body))]))
+
+(defn specialized-variant
+  "The variant of the region site, specialized on names at vals: compiled by
+  the JIT on the first call with these values, while the site has fewer than
+  max of them; nil (run the region as written) past that, without a JIT, or
+  when the variant failed to compile, or for an argument the region's cast
+  refuses (so the region raises its own error). Values are keyed after the
+  region's casts, so 2 and 2.0 for a ^double share one variant."
+  [site params body names max ns vals]
+  (let [cast (try (cast-specialized (specialized-types params) names vals)
+                  (catch Throwable _ nil))
+        k (variant-key cast)
+        hit (:f (get-in @variants [site k]))]
+    (cond
+      ;; an argument the region's own cast refuses: the region raises its error
+      (nil? cast) nil
+      (fn? hit) hit
+      (= :failed hit) nil
+      :else
+      (locking variants-lock
+        (let [known (get @variants site)
+              hit (:f (get known k))]
+          (cond
+            (fn? hit) hit
+            (= :failed hit) nil
+            (or (>= (count known) max) (not (jit?))) nil
+            :else
+            (let [f (try (let [[keep b] (specialized-body params body names cast)]
+                           (native-fn keep b ns))
+                         (catch Throwable _ :failed))]
+              (swap! variants assoc-in [site k] {:vals cast :f f})
+              (when (fn? f) f))))))))
+
+(defn specializations
+  "Each specialized region site that has compiled a variant, as a map of its
+  symbol to the value vectors it has variants for."
+  []
+  (into {} (map (fn [[site m]] [site (vec (keep #(when (fn? (:f %)) (:vals %)) (vals m)))])) @variants))
 
 (defn linked-regions
   "Each native region whose call site has loaded in this process, as a map of

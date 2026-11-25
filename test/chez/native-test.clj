@@ -1104,6 +1104,86 @@
                (catch Throwable e (boolean (re-find #"one of :u8" (.getMessage e)))))
           true)
 
+;; --- specialization: a variant per value of a ^{:specialize [...]} parameter -------
+;; The variant has the value as a constant, so the range analysis can prove what
+;; it could not for an unknown n; the answers must not change.
+
+(def msum-params '[^long n ^doubles m])
+(def msum-body '((loop [i 0 s 0.0]
+                   (if (< i n)
+                     (recur (inc i) (loop [j 0 s s] (if (< j n) (recur (inc j) (+ s (aget m (+ (* i n) j)))) s)))
+                     s))))
+
+(let [generic (c-of msum-params msum-body)
+      [keep b] (jolt.native/specialized-body msum-params msum-body '[n] [4])
+      fast (fast-copy (c-of keep b))]
+  (check-eq "for an unknown n, even the fast copy checks i * n + j for overflow"
+            (boolean (re-find #"__builtin_mul_overflow" (or (fast-copy generic) generic))) true)
+  (check-eq "specialized on n = 4, a fast copy guards on 16 elements"
+            (boolean (and fast (str/includes? fast ".len > 15LL"))) true)
+  (check-eq "the specialized fast copy keeps no overflow, cast or bounds check"
+            (when fast (re-find #"overflow|INT32_MIN|jn_tls\.code = 1" fast)) nil))
+
+(defn spec-msum [^long n ^doubles m]
+  (jolt.native/native ^{:specialize [n] :max-variants 3} [^long n ^doubles m]
+    (loop [i 0 s 0.0]
+      (if (< i n)
+        (recur (inc i) (loop [j 0 s s] (if (< j n) (recur (inc j) (+ s (aget m (+ (* i n) j)))) s)))
+        s))))
+(defn plain-msum [^long n ^doubles m]
+  (loop [i 0 s 0.0]
+    (if (< i n)
+      (recur (inc i) (loop [j 0 s s] (if (< j n) (recur (inc j) (+ s (aget m (+ (* i n) j)))) s)))
+      s)))
+
+(doseq [n [0 1 2 3 4 5 2 3 6]]
+  (let [m (double-array (map #(* 0.5 %) (range (* n n))))]
+    (check-eq (str "a specialized region answers as written, n = " n) (spec-msum n m) (plain-msum n m))))
+(let [site (some (fn [[k v]] (when (some #{[2]} v) k)) (jolt.native/specializations))]
+  (check-eq "a variant is compiled per value, up to :max-variants"
+            (sort (map first (get (jolt.native/specializations) site))) [0 1 2]))
+(check-eq "a value past :max-variants runs the region as written, and fails as it does"
+          (outcome (fn [_] (spec-msum 3 (double-array 4))) nil)
+          {:throw "java.lang.ArrayIndexOutOfBoundsException" :msg "Index 4 out of bounds for length 4"})
+(check-eq "a variant fails as the region does"
+          (outcome (fn [_] (spec-msum 2 (double-array 3))) nil)
+          {:throw "java.lang.ArrayIndexOutOfBoundsException" :msg "Index 3 out of bounds for length 3"})
+
+(defn spec-scale [^double k ^boolean neg ^doubles xs]
+  (jolt.native/native ^{:specialize [k neg]} [^double k ^boolean neg ^doubles xs]
+    (dotimes [i (alength xs)] (aset xs i (if neg (- (* k (aget xs i))) (* k (aget xs i)))))
+    (aget xs 0)))
+(check-eq "double and boolean parameters specialize" [(spec-scale 2.0 false (double-array [1 2]))
+                                                     (spec-scale 2 true (double-array [1 2]))
+                                                     (spec-scale 2.0 false (double-array [3]))]
+          [2.0 -2.0 6.0])
+(check-eq "a long argument to a specialized ^double is cast as the region casts it"
+          (some #{[2.0 true]} (mapcat val (jolt.native/specializations))) [2.0 true])
+
+;; The key is the cast value, not the argument: an unhinted caller passing 2 and
+;; 2.0 gets one variant. A double is keyed by its bits, since 0.0 = -0.0 but a
+;; variant with k = 0.0 would answer 0.0 where the region answers -0.0.
+(defn spec-k [k ^doubles xs]
+  (jolt.native/native ^{:specialize [k]} [^double k ^doubles xs] (* k (aget xs 0))))
+(defn plain-k [k ^doubles xs] (* (double k) (aget xs 0)))
+(check-eq "0.0 and -0.0 get their own variants, each answering as the region does"
+          (mapv #(str (spec-k % (double-array [1.0]))) [0.0 -0.0 2 2.0])
+          (mapv #(str (plain-k % (double-array [1.0]))) [0.0 -0.0 2 2.0]))
+(check-eq "2 and 2.0 for a ^double share a variant"
+          (some (fn [[_ v]] (when (some #{[-0.0]} v) (count v))) (jolt.native/specializations))
+          3)
+(check-eq "an argument the region's cast refuses raises the region's own error"
+          (outcome (fn [_] (spec-k "x" (double-array [1.0]))) nil)
+          (outcome (fn [_] (let [k "x"] (jolt.native/native [^double k] k))) nil))
+
+(doseq [[label params msg] [["an array" '^{:specialize [xs]} [^doubles xs] #"is an array"]
+                            ["a non-parameter" '^{:specialize [q]} [^long n] #"not a parameter"]
+                            ["not a vector" '^{:specialize n} [^long n] #"vector of parameter names"]]]
+  (check-eq (str ":specialize refuses " label)
+            (try (macroexpand (list 'jolt.native/native params 1)) :expanded
+                 (catch Throwable e (boolean (re-find msg (.getMessage e)))))
+            true))
+
 ;; --- random programs ----------------------------------------------------------
 ;; A generator builds well-typed region programs and tracks ownership with its
 ;; own model of the rules (moves in let bindings, returns and recur; borrows in
