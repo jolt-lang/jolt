@@ -385,9 +385,17 @@
 
 ;; A required library none of whose candidates loaded: an error when strict?,
 ;; otherwise a warning (or nothing, under the auto-build that is producing it).
+(defn- bare-name? [c] (not (or (str/includes? c "/") (str/includes? c "\\"))))
+
+(defn- discover-note [cands]
+  (when (and (some bare-name? cands)
+             (not= "0" (jolt.host/getenv "JOLT_NATIVE_DISCOVER")))
+    "; autodiscovery found no other copy (set its path in deps.local.edn, or run a jolt.configure task)"))
+
 (defn- report-missing-native! [spec plat cands dir result buildable? strict?]
   (let [msg (str (native-missing-msg spec plat cands)
-                 (when dir (native-build-note spec dir result cands)))]
+                 (when dir (native-build-note spec dir result cands))
+                 (discover-note cands))]
     (cond
       strict?
       (throw (ex-info msg {:native spec}))
@@ -406,16 +414,42 @@
                       (when (and buildable? (not dir))
                         " (a task may build it)")))))))
 
+;; A bare filename ("libcrypto.3.dylib") names a library, not a place, so it is
+;; looked for: first beside the deps.edn that declared it — a project that ships
+;; or builds the library into its own folder gets that copy — then wherever the
+;; platform's loader finds it, and when neither opens it, autodiscovery
+;; (jolt.configure/locate): pkg-config's libdirs, Homebrew, the linker's
+;; configured directories and the usual system ones, read without running
+;; anything. Discovery runs only after every candidate failed, so a library the
+;; loader already finds costs nothing extra. JOLT_NATIVE_DISCOVER=0 turns the
+;; discovery step off; `jolt run configure` records what it finds in
+;; deps.local.edn instead, for a machine that wants it pinned.
+
+(defn- project-first [cands root]
+  (if root
+    (vec (mapcat #(if (bare-name? %) [(str root "/" %) %] [%]) cands))
+    cands))
+
+(defn- discover-native [spec cands root]
+  (when-not (= "0" (jolt.host/getenv "JOLT_NATIVE_DISCOVER"))
+    (when-let [locate (try (requiring-resolve 'jolt.configure/locate)
+                           (catch Exception _ nil))]
+      (some #(locate spec % root) (distinct (filter bare-name? cands))))))
+
 (defn- load-native-spec! [spec plat strict? base]
   (let [spec (with-build-for spec (native-root spec plat base))
-        cands (native-load-candidates spec plat base)
+        root (native-root spec plat base)
+        declared (native-load-candidates spec plat base)
+        cands (project-first declared root)
         ;; Load the native RTLD_LOCAL and register its handle, so the
         ;; spec's defcfns resolve from the handle (isolated from the
         ;; process-global namespace) rather than depending on global
         ;; foreign-entry search order. load-native returns #t on success
         ;; (a handle, or Windows-global), #f when no candidate opens.
         load! #(some (fn [c] (when (jolt.ffi/load-native c) c)) cands)
-        hit (load!)
+        hit (or (load!)
+                (when (and (not (:static spec)) (seq declared))
+                  (discover-native spec declared root)))
         ;; a task may build a library it declared candidates for, but
         ;; not one already on disk that failed to load. A :static
         ;; spec's declared shared object is built the same way; only a

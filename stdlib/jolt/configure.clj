@@ -168,6 +168,7 @@
 (defn- pc-lib-dirs [{:keys [name] :as spec}]
   (for [pkg (distinct (concat (names (:pkg-config spec) name)
                               (when-not (:pkg-config spec) [(str "lib" name)])))
+        :when (and pkg (not= "lib" pkg))
         :let [{:keys [libdir libs]} (pkg-config pkg)]
         d (concat [libdir] (keep #(second (re-matches #"-L(.+)" %)) libs))
         :when (dir? d)]
@@ -177,6 +178,17 @@
   (when (= :darwin (platform))
     (for [formula (names (:brew spec) name)
           prefix ["/opt/homebrew" "/usr/local"]
+          :let [d (str prefix "/opt/" formula "/lib")]
+          :when (dir? d)]
+      d)))
+
+(defn- brew-all-dirs
+  "Every Homebrew formula's lib directory (macOS): a library whose formula is not
+  named after it — libcrypto.3.dylib is openssl@3's — is still found."
+  []
+  (when (= :darwin (platform))
+    (for [prefix ["/opt/homebrew" "/usr/local"]
+          formula (sort (list-dir (str prefix "/opt")))
           :let [d (str prefix "/opt/" formula "/lib")]
           :when (dir? d)]
       d)))
@@ -260,10 +272,33 @@
                   (for [d (brew-dirs spec)] [:brew (files-in d pat preferred)])
                   (for [d (map #(under root %) (when (:search spec) (names (:search spec) nil)))]
                     [:search (files-in d pat preferred)])
-                  (for [d (system-dirs)] [:system (files-in d pat preferred)]))]
+                  (for [d (system-dirs)] [:system (files-in d pat preferred)])
+                  (for [d (brew-all-dirs)] [:brew (files-in d pat preferred)]))]
      (some (fn [[via files]]
              (some (fn [f] (when (ok? f) {:path f :via via})) files))
            sources))))
+
+(defn locate
+  "The path of the exact library file FILENAME (\"libcrypto.3.dylib\") that
+  opens, or nil — what jolt.main.natives falls back to when a :jolt/native
+  spec's bare filename does not load as the platform's loader finds it. Looks
+  in ROOT (the deps.edn that declared the spec) first, then where find-library
+  looks: the spec's :search directories, its pkg-config libdirs, Homebrew, the
+  library-path variables, the linker's configured directories and the system
+  ones, and finally every Homebrew formula's lib. SPEC is the :jolt/native map
+  (or a library name) whose hints steer the search."
+  ([spec filename] (locate spec filename nil))
+  ([spec filename root]
+   (let [spec (if (string? spec) {:name spec} spec)
+         dirs (distinct
+               (concat (when root [root])
+                       (map #(under root %) (when (:search spec) (names (:search spec) nil)))
+                       (when (library-name? (:name spec)) (pc-lib-dirs spec))
+                       (when (library-name? (:name spec)) (brew-dirs spec))
+                       (system-dirs)
+                       (brew-all-dirs)))]
+     (some (fn [d] (let [f (str d "/" filename)] (when (and (file? f) (loads? f)) f)))
+           dirs))))
 
 (defn- declared-loads?
   "Does one of the candidates SPEC already declares for PLAT open?"

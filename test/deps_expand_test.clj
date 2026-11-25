@@ -600,6 +600,21 @@
        {:path (str lib "/libjoltfake.so.3") :via :search}
        (jolt.configure/find-library {:name "joltfake" :search ["lib"] :jolt.deps/root root}
                                     {:verify? false}))
+  ;; locate opens what it returns, so it needs a real library under the name:
+  ;; a copy of the zlib the runtime already links, where one is on disk.
+  (when-let [z (first (filter #(.isFile (java.io.File. ^String %))
+                              ["/lib/x86_64-linux-gnu/libz.so.1" "/usr/lib/x86_64-linux-gnu/libz.so.1"
+                               "/usr/lib/libz.so.1" "/usr/lib64/libz.so.1" "/usr/lib/libz.dylib"]))]
+    (let [named (str lib "/libjoltlocate.so.1")]
+      (with-open [in (java.io.FileInputStream. ^String z)
+                  out (java.io.FileOutputStream. ^String named)]
+        (.transferTo in out))
+      (is= "locate finds a bare filename under the declaring root's :search dirs"
+           named (jolt.configure/locate {:name "joltlocate" :search ["lib"]} "libjoltlocate.so.1" root))
+      (is= "and beside the declaring deps.edn first"
+           named (jolt.configure/locate {:name "joltlocate"} "libjoltlocate.so.1" lib))
+      (is= "a bare filename nowhere is nil"
+           nil (jolt.configure/locate {:name "joltlocate"} "libjoltlocate.so.9" root))))
   (is= "a library found nowhere is nil"
        nil (jolt.configure/find-library {:name "joltfake-absent"} {:verify? false}))
   (jolt.host/delete-tree! root))

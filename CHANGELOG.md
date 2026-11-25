@@ -29,6 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `:pkg-config`, `:brew` and `:search`. `--all`, `--dry-run`, `--no-verify`,
   `--file` and library names limit or redirect it; `find-library`, `discover`
   and `pkg-config` are callable directly.
+- **A bare `:jolt/native` filename is looked for.** A candidate with no path
+  in it, like `"libcrypto.3.dylib"`, is tried beside the deps.edn that declared
+  it first, then wherever the platform's loader finds it, and when neither
+  opens it, autodiscovery searches the places `jolt.configure` does (pkg-config
+  libdirs, Homebrew, including every formula's `opt/*/lib`, the linker's
+  configured directories, the library-path variables, the system directories)
+  for that exact file. Discovery runs only after every candidate has failed, so
+  a library that already loads costs nothing more. `JOLT_NATIVE_DISCOVER=0`
+  turns it off. A built binary loads its candidates as before.
 
 - The JIT compiles a native region for the CPU it runs on: it defines the C
   macro of each feature the machine has (`__AVX2__`, `__FMA__`, `__ARM_NEON`
