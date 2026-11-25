@@ -3130,12 +3130,12 @@
   {:suite "vars / var-set targets the thread binding" :label "and restores the root the binding was hiding" :expected "1" :actual "(do (def ^:dynamic *vsh* 1) (binding [*vsh* 5] (with-redefs [*vsh* 2] nil)) *vsh*)" :portability :common}
   {:suite "vars / var-set targets the thread binding" :label "the root really moved under the binding" :expected "[2 1]" :actual "(do (def ^:dynamic *vsg* 1) [(binding [*vsg* 5] (with-redefs [*vsg* 2] (.getRawRoot (var *vsg*)))) *vsg*])" :portability :jvm}
   {:suite "vars / var-set targets the thread binding" :label "a redef is visible to a thread that did not inherit it" :expected "[42 42]" :actual "(do (defn vsi [] 1) (with-redefs [vsi (fn [] 42)] [(vsi) (deref (future (vsi)))]))" :portability :common}
-  {:suite "core / with-open" :label "body result" :expected ":r" :actual "(let [log (atom [])] (with-open [c {:close (fn [] (swap! log conj :closed))}] :r))" :portability :common}
-  {:suite "core / with-open" :label "close runs" :expected "[:closed]" :actual "(let [log (atom [])] (with-open [c {:close (fn [] (swap! log conj :closed))}] :r) (deref log))" :portability :common}
-  {:suite "core / with-open" :label "close on throw" :expected "[]" :actual "(let [log (atom [])] (try (with-open [c {:close (fn [] (swap! log conj :closed))}] (throw (ex-info \"boom\" {}))) (catch Exception e nil)) (deref log))" :portability :common}
-  {:suite "core / with-open" :label "nested close order" :expected "[:inner :outer]" :actual "(let [log (atom [])] (with-open [a {:close (fn [] (swap! log conj :outer))} b {:close (fn [] (swap! log conj :inner))}] :r) (deref log))" :portability :common}
+  {:suite "core / with-open" :label "body result" :expected ":r" :actual "(let [log (atom [])] (with-open [c {:close (fn [] (swap! log conj :closed))}] :r))" :portability :jvm}
+  {:suite "core / with-open" :label "close runs" :expected "[:closed]" :actual "(let [log (atom [])] (with-open [c {:close (fn [] (swap! log conj :closed))}] :r) (deref log))" :portability :jvm}
+  {:suite "core / with-open" :label "close on throw" :expected "[]" :actual "(let [log (atom [])] (try (with-open [c {:close (fn [] (swap! log conj :closed))}] (throw (ex-info \"boom\" {}))) (catch Exception e nil)) (deref log))" :portability :jvm}
+  {:suite "core / with-open" :label "nested close order" :expected "[:inner :outer]" :actual "(let [log (atom [])] (with-open [a {:close (fn [] (swap! log conj :outer))} b {:close (fn [] (swap! log conj :inner))}] :r) (deref log))" :portability :jvm}
   {:suite "core / with-open" :label "zero bindings" :expected ":r" :actual "(with-open [] :r)" :portability :common}
-  {:suite "core / with-open" :label "binding visible" :expected "5" :actual "(with-open [c {:close (fn [] nil) :v 5}] (:v c))" :portability :common}
+  {:suite "core / with-open" :label "binding visible" :expected "5" :actual "(with-open [c {:close (fn [] nil) :v 5}] (:v c))" :portability :jvm}
   {:suite "core / with-precision" :label "body evaluates" :expected "3.14" :actual "(with-precision 3 3.14)" :portability :common}
   {:suite "core / with-precision" :label "multiple body forms" :expected "2" :actual "(with-precision 10 1 2)" :portability :common}
   {:suite "core / with-precision" :label "rounding arg accepted" :expected "1.5" :actual "(with-precision 4 :rounding :half-up 1.5)" :portability :common}

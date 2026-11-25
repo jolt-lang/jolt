@@ -170,13 +170,15 @@
     (fail form "dotimes takes [name count]"))
   (let [[i n] bv
         lim (gensym "lim")]
-    ;; plain lists, not syntax-quote: the dispatch matches unqualified let/loop
+    ;; plain lists, not syntax-quote, so i and lim keep their names; the heads
+    ;; are clojure.core's, as the dispatch reads them, so a local named let or
+    ;; inc does not shadow them (it would not in clojure.core/dotimes either)
     (let [r (analyze env
                      (with-meta
-                       (list 'let [lim n]
-                             (list 'loop [i 0]
-                                   (list 'if (list '< i lim)
-                                         (concat ['do] body [(list 'recur (list 'inc i))])
+                       (list 'clojure.core/let [lim n]
+                             (list 'clojure.core/loop [i 0]
+                                   (list 'if (list 'clojure.core/< i lim)
+                                         (concat ['do] body [(list 'recur (list 'clojure.core/inc i))])
                                          nil)))
                        (meta form))
                      tail)]
@@ -432,6 +434,10 @@
 (def ^:private special-heads
   '#{let let* if when when-not do loop loop* recur dotimes and or})
 
+(def ^:private clojure-specials
+  "Heads Clojure never lets a local shadow."
+  '#{if do recur let* loop*})
+
 (defn- norm-head
   "A clojure.core-qualified head (what a syntax-quoting macro emits) read as
   the unqualified name the region language uses."
@@ -461,6 +467,11 @@
       (node :local (:type b) form :name form :binding (:id b))
       (fail form (str "unknown name " form
                       " (a region sees only its parameters and its own locals)")))
+    ;; a local shadows the builtin, helper or macro of its name, as in Clojure,
+    ;; where the call would invoke the local's value; only the special forms
+    ;; cannot be shadowed
+    (and (seq? form) (contains? env (first form)) (not (clojure-specials (first form))))
+    (fail form (str (first form) " is a local here, not a function: a region has no function values"))
     (and (seq? form) (user-macro? env (norm-head (first form))))
     (analyze env (macroexpand-1 form) tail)
     (seq? form)
@@ -472,7 +483,7 @@
         let* (analyze-let env form tail)
         if (analyze-if env form tail)
         when (analyze-if env (with-meta (list 'if (first more) (cons 'do (rest more))) (meta form)) tail)
-        when-not (analyze-if env (with-meta (list 'if (list 'not (first more)) (cons 'do (rest more))) (meta form)) tail)
+        when-not (analyze-if env (with-meta (list 'if (list 'clojure.core/not (first more)) (cons 'do (rest more))) (meta form)) tail)
         do (analyze-body env more tail form)
         (loop loop*) (analyze-loop env form)
         recur (analyze-recur env form tail)

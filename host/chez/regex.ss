@@ -526,10 +526,29 @@
                     (jolt-throw (jolt-host-throwable
                                  "java.lang.IllegalArgumentException"
                                  (string-append "No group with name <" arg ">")))))
-              (let ((s (irregex-match-substring last (->idx arg))))
+              (let ((s (irregex-match-substring last (matcher-group-index last arg))))
                 (if s s jolt-nil))))
         (jolt-matcher-no-match))))
 (define (jolt-matcher-group-count m) (irregex-num-submatches (matcher-t-irx m)))
+;; A group number as the index irregex takes, or the JVM's IndexOutOfBounds
+;; ("No group N") when it is negative or past the match's group count. Every
+;; numbered-group read on a Matcher (group/start/end) goes through here.
+(define (matcher-group-index mm n)
+  (let ((i (->idx n)))
+    (if (and (fixnum? i) (fx>=? i 0) (fx<=? i (irregex-match-num-submatches mm)))
+        i
+        (jolt-throw (jolt-host-throwable
+                     "java.lang.IndexOutOfBoundsException"
+                     (string-append "No group " (jolt-str-render-one i)))))))
+;; .start(g)/.end(g) of the last match: -1 for a group that took no part in it,
+;; as the JVM answers (irregex says #f).
+(define (jolt-matcher-bound m n end?)
+  (let ((mm (matcher-t-last m)))
+    (if mm
+        (let* ((i (matcher-group-index mm n))
+               (b (if end? (irregex-match-end-index mm i) (irregex-match-start-index mm i))))
+          (if b b -1))
+        (jolt-matcher-no-match))))
 ;; .lookingAt: anchored at the region START, matching a PREFIX — the middle ground
 ;; between .matches (the whole region) and .find (anywhere). It does NOT resume
 ;; from the find cursor: on the JVM both .matches and .lookingAt anchor at the
