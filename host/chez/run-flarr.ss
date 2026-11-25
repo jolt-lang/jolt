@@ -180,6 +180,17 @@
 (gate-check "(8) ^doubles read past the int range is RT.intCast's overflow"
             (ev "(try (let [^doubles a (double-array 4)] (aget a 9223372036854775807)) (catch ArithmeticException e (ex-message e)))")
             "integer overflow")
+;; an index that is not a long reads as RT.intCast's longCast does, hinted or
+;; not (JDK 21): NaN is 0, a ratio truncates, a double past the long range is
+;; longCast's own refusal, named by the double
+(gate-check "(8) aget with a NaN index reads index 0"
+            (ev "(pr-str [(aget (double-array [7.0 8.0]) (identity ##NaN)) (let [^doubles a (double-array [7.0 8.0])] (aget a (identity ##NaN)))])")
+            "[7.0 7.0]")
+(gate-check "(8) aset with a ratio index truncates it"
+            (ev "(let [a (long-array 3)] (aset a (identity 3/2) 7) (pr-str (vec a)))") "[0 7 0]")
+(gate-check "(8) an index past the long range is longCast's IllegalArgumentException"
+            (ev "(try (aget (double-array 3) (identity -1e19)) (catch IllegalArgumentException e (ex-message e)))")
+            "Value out of range for long: -1.0E19")
 (gate-check "(8) get on an array stays non-throwing OOB (returns default)"
             (ev "(get (int-array 3) 99 :d)") (keyword #f "d"))
 ;; --- the array kind survives the optimizing passes ---------------------------

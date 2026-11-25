@@ -1092,6 +1092,20 @@
            :jvm "throws ArithmeticException"
            :jolt "-294967296"}
    :note "Same for a deftype or proxy hashCode. A body that returns a value in int range agrees on both."}
+  ;; aget/aset narrow the index with (int i). The JVM compiler picks
+  ;; RT.intCast(double) for a primitive double index, which refuses one past
+  ;; the int range with its own IllegalArgumentException, and RT.intCast(Object)
+  ;; for a boxed one, which goes through longCast to Math.toIntExact's
+  ;; ArithmeticException. jolt has no primitive/boxed distinction to choose on,
+  ;; so every double index takes the boxed rule, as (int x) splits for nothing.
+  {:category :integer-box-model
+   :behavior "(aget (double-array 3) 5e9)"
+   :jvm "throws IllegalArgumentException (Value out of range for int: 5.0E9, RT.intCast of a primitive double)"
+   :jolt "throws ArithmeticException (integer overflow), as (aget a (identity 5e9)) does on the JVM"
+   :check {:expr "(aget (double-array 3) 5e9)"
+           :jvm "throws IllegalArgumentException"
+           :jolt "throws ArithmeticException"}
+   :note "A long index, and a boxed double, agree on both: integer overflow past the int range."}
   ;; Thread.getStackTrace names the frames jolt can reconstruct: the live
   ;; continuation, plus callers TCO erased that the compile-time callsite tables
   ;; name (a static tail edge, or the one most recent tail site bridging a gap).

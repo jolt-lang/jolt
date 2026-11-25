@@ -88,8 +88,12 @@
   [layout & {:as opts}]
   (let [{:keys [fields]} (layout-fields layout)
         e (endian-of opts)]
-    (list (concat (list 'let ['out (list 'long-array (count fields))])
-                  (map-indexed (fn [i f] (list 'aset 'out i (read-form f 'off e))) fields)
+    ;; an off far past the array (or far below it) would overflow the index
+    ;; arithmetic, an ArithmeticException; read from the array's end instead,
+    ;; which raises the ArrayIndexOutOfBoundsException a read past it does
+    (list (concat (list 'let ['o '(if (and (>= off -2147483648) (<= off (alength buf))) off (alength buf))
+                              'out (list 'long-array (count fields))])
+                  (map-indexed (fn [i f] (list 'aset 'out i (read-form f 'o e))) fields)
                   ['out]))))
 
 (defn parser

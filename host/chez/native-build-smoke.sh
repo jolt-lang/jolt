@@ -43,6 +43,7 @@ Index 1 out of bounds for length 1
 6
 [0 1 4 9]
 9.0
+[1 11 21 1 21]
 gc during region true"
 
 ran="$(cd "$app" && JOLT_PWD="$app" "$joltabs" run -m app.main 2>&1)"
@@ -56,8 +57,8 @@ echo "native-build smoke: building"
 if ! JOLT_PWD="$app" "$jolt" build -m app.main -o "$out" >"$work/build.log" 2>&1; then
   echo "  FAIL: jolt build exited non-zero"; cat "$work/build.log"; exit 1
 fi
-grep -q "compiled 7 native region(s)" "$work/build.log" || {
-  echo "  FAIL: the build did not compile the seven regions"; cat "$work/build.log"; exit 1; }
+grep -q "compiled 8 native region(s)" "$work/build.log" || {
+  echo "  FAIL: the build did not compile the eight regions"; cat "$work/build.log"; exit 1; }
 got="$(cd / && "$out" 2>&1)"
 if [ "$got" != "$want_results
 linked (:linked)" ]; then
