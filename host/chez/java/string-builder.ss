@@ -109,27 +109,55 @@
 ;; carry their bodies inline (no second call per append) while the locked table
 ;; expands the very same text.
 (define (%sb-materialize! st)
-  (let* ((n (vector-ref st 1)) (pend (vector-ref st 5)) (out (make-string n))
-         (fl (vector-ref st 6)))
-    (sa-string-copy-range! out 0 (vector-ref st 0) 0 fl)
-    (%sb-copy-pending! out n pend)
-    (vector-set! st 3 out)
-    ;; The joined text stands in for everything before it: nothing writes to out,
-    ;; so it is a pending piece like any other, and the next toString copies it as
-    ;; one block instead of walking every piece again.
-    (vector-set! st 5 (list out))
-    (vector-set! st 6 0)
-    out))
+  (let ((n (vector-ref st 1)) (pend (vector-ref st 5)))
+    (if (null? pend)
+        ;; All of the text is in buf (chars appended in place, %sb-push!): one
+        ;; copy out, and buf stays the store, so appends after this toString
+        ;; keep going in place.
+        (let ((out (substring (vector-ref st 0) 0 n)))
+          (vector-set! st 3 out)
+          out)
+        (let ((out (make-string n)) (fl (vector-ref st 6)))
+          (sa-string-copy-range! out 0 (vector-ref st 0) 0 fl)
+          (%sb-copy-pending! out n pend)
+          (vector-set! st 3 out)
+          ;; The joined text stands in for everything before it: nothing writes
+          ;; to out, so it is a pending piece like any other, and the next
+          ;; toString copies it as one block instead of walking every piece again.
+          (vector-set! st 5 (list out))
+          (vector-set! st 6 0)
+          out))))
 (define-syntax %sb-str
   (syntax-rules () ((_ st) (let ((s st)) (or (vector-ref s 3) (%sb-materialize! s))))))
+;; Room in buf for one more char after its N, grown to the logical capacity
+;; (which the caller has already raised past N).
+(define (%sb-buf-room! st n)
+  (let ((b (vector-ref st 0)))
+    (if (fx<? n (string-length b))
+        b
+        (let ((nb (make-string (fxmax (vector-ref st 7) (fx+ n 1)))))
+          ;; a fresh builder's first char has nothing to carry over, and the
+          ;; library copy's argument checks were a third of that append
+          (unless (fx=? n 0) (sa-string-copy-range! nb 0 b 0 n))
+          (vector-set! st 0 nb)
+          nb))))
+;; A one-char piece appended while nothing is pending (so buf holds the whole
+;; text, flushed = len) is written into buf in place (#1713): a reader appends
+;; a token a char at a time, and a cons per char plus a walk of the list at
+;; toString was most of what its StringBuilder cost. Any other piece, or a
+;; char once something is pending, is consed onto pend as before.
 (define-syntax %sb-push!
   (syntax-rules ()
     ((_ st* piece*)
      (let* ((st st*) (piece piece*) (pn (string-length piece)))
        (unless (fx=? pn 0)
-         (let ((nn (fx+ (vector-ref st 1) pn)))
+         (let* ((n (vector-ref st 1)) (nn (fx+ n pn)))
            (when (fx>? nn (vector-ref st 7)) (%sb-grow-cap! st nn))
-           (vector-set! st 5 (cons piece (vector-ref st 5)))
+           (if (and (fx=? pn 1) (null? (vector-ref st 5)))
+               (begin
+                 (string-set! (%sb-buf-room! st n) n (string-ref piece 0))
+                 (vector-set! st 6 nn))
+               (vector-set! st 5 (cons piece (vector-ref st 5))))
            (vector-set! st 1 nn)
            (sb-wrote! st)))))))
 ;; A piece is a string, or a surrogate unit (values.ss jsurr: a (char 0xD83D),
@@ -150,8 +178,13 @@
     (vector-set! st 8 #f)
     (cond
       ((jsurr-high? u)
-       (let ((f (string jolt-replacement-char)))
-         (%sb-push! st f)
+       ;; pending, never in place: a low unit pairs with this piece by finding
+       ;; it at the head of pend
+       (let ((f (string jolt-replacement-char)) (nn (fx+ (vector-ref st 1) 1)))
+         (when (fx>? nn (vector-ref st 7)) (%sb-grow-cap! st nn))
+         (vector-set! st 5 (cons f pend))
+         (vector-set! st 1 nn)
+         (sb-wrote! st)
          (vector-set! st 8 (cons f (jsurr-unit u)))))
       ((and h (jsurr-low? u) (pair? pend) (eq? (car pend) (car h)))
        (set-car! pend (string (surrogates->char (cdr h) (jsurr-unit u))))
