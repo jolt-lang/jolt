@@ -1137,7 +1137,7 @@ $(MIR-SO): $(MIR-SRCS) $(wildcard vendor/mir/*.h vendor/mir/c2mir/*.h vendor/mir
 	@for f in $(MIR-SRCS); do \
 	  $(MIR-CC) -O2 -DNDEBUG -std=gnu11 -fsigned-char -fPIC -w -Wno-psabi -Ivendor/mir -c $$f -o target/mir/$$(basename $$f .c).o || exit 1; \
 	done
-	@$(MIR-CC) -shared -o $@ $(patsubst %.c,target/mir/%.o,$(notdir $(MIR-SRCS))) -lm -lpthread
+	@$(MIR-CC) -shared -o $@ $(patsubst %.c,target/mir/%.o,$(notdir $(MIR-SRCS))) -lm -lpthread $(if $(filter Linux,$(shell uname -s)),-ldl)
 	@echo "mirlib: wrote $@"
 
 # Native regions (stdlib/jolt/native): every accepted program compiled with a

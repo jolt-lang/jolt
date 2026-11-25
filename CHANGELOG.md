@@ -117,6 +117,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   region name registered again with different C raises.
 - The JIT checks a region's imports before linking it, so an undefined symbol
   no longer abandons the JIT's context and leaks every region compiled in it.
+- The JIT resolves the C functions a region calls (`calloc`, `free`, ...) in
+  the process's global scope first, where a linked region's calls bind. It
+  answered by whichever shared object was loaded last, so with an allocator
+  interposed (an `LD_PRELOAD`ed ASan or jemalloc) regions compiled at
+  different times could pair one allocator's `calloc` with the other's `free`
+  and crash.
 
 ## [0.8.30] - 2026-11-24
 

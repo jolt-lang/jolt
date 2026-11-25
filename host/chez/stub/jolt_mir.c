@@ -20,7 +20,11 @@
      jolt_mir_frame        an address in the caller's frame, for the helper's
                            check against that limit.
    Everything else a region calls (malloc, sqrt, a defextern's function) is
-   resolved by the resolver Chez passes in, which is Chez's own foreign-entry. */
+   resolved in the process's global scope, then by the resolver Chez passes
+   in, which is Chez's own foreign-entry (jolt_mir_resolve). */
+#if !defined(_WIN32) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE /* RTLD_DEFAULT, on glibc */
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,6 +45,7 @@
 #define JOLT_MIR_EXPORT __declspec(dllexport)
 #else
 #include <pthread.h>
+#include <dlfcn.h>
 #define JOLT_MIR_EXPORT __attribute__((visibility("default")))
 #endif
 
@@ -114,8 +119,22 @@ static void MIR_NO_RETURN jolt_mir_on_error(MIR_error_type_t type, const char *f
   abort();
 }
 
+/* A name first resolves in the process's global scope, which is where a call
+   from a region jolt build linked in binds: an interposed definition (an
+   LD_PRELOADed ASan or jemalloc) wins there. Chez's foreign-entry walks its
+   shared objects newest first, each in its own local scope, so it answered by
+   whichever object was loaded last: with libjoltmir newest, glibc's free (it
+   does not link the interposer); with a sanitized object newest, ASan's calloc.
+   MIR keeps the first answer for a name in the context, so regions compiled
+   at different points paired one allocator's calloc with the other's free.
+   Chez's list stays the fallback, for a name only a library ffi/load-library
+   opened (RTLD_LOCAL, so not in the global scope) defines. */
 static void *jolt_mir_resolve(const char *name) {
-  void *p = jolt_mir_resolver ? jolt_mir_resolver(name) : NULL;
+  void *p = NULL;
+#if !defined(_WIN32)
+  p = dlsym(RTLD_DEFAULT, name);
+#endif
+  if (p == NULL && jolt_mir_resolver) p = jolt_mir_resolver(name);
   /* MIR's link raises on a NULL: name the symbol rather than its message */
   if (p == NULL) {
     snprintf(jolt_mir_msg, sizeof jolt_mir_msg, "undefined symbol %s", name);
