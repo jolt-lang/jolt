@@ -457,7 +457,7 @@
 #define JN_MIRC_DECLS
 #define JN_UNUSED
 void *calloc(size_t, size_t); void *malloc(size_t); void free(void *);
-void *memcpy(void *, const void *, size_t);
+void *memcpy(void *, const void *, size_t); void *memset(void *, int, size_t);
 double sqrt(double); double sin(double); double cos(double); double tan(double);
 double exp(double); double log(double); double floor(double); double ceil(double);
 double pow(double, double); double atan2(double, double); double fabs(double);

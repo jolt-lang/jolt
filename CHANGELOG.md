@@ -74,6 +74,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a foreign-callable whose fn returns a number for a `:bool` result. Code
   that passed `1` for true has to change too.
 
+### Fixed
+
+- On macOS arm64, a JIT'd native region that zeroes a stack array (one it
+  allocated itself and indexes with a runtime value) no longer faults with
+  `invalid memory reference`. The JIT's prelude didn't declare `memset`, so
+  MIR compiled the call as variadic, and Apple's arm64 ABI passes variadic
+  arguments on the stack where `memset` reads registers. The native gate now
+  checks that the prelude declares every C library function a region calls.
+
 ## [0.8.30] - 2026-11-24
 
 `jolt.native` regions: blocks of hinted numeric code that `jolt build` compiles
