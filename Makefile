@@ -1153,7 +1153,9 @@ native: mirlib
 # if it would fire. jolt is not instrumented, so the ASan runtime is preloaded
 # (cc names its own: clang's on macOS, gcc's libasan on Linux). Needs cc.
 nativesan: mirlib
-	@rt=""; for n in libclang_rt.asan_osx_dynamic.dylib libasan.so \
+	@if [ -n "$${TERMUX_VERSION:-}$${ANDROID_ROOT:-}" ]; then \
+	  echo "nativesan: skipped on bionic (no preloadable ASan runtime for a termux process)"; exit 0; fi; \
+	rt=""; for n in libclang_rt.asan_osx_dynamic.dylib libasan.so \
 	  libclang_rt.asan-$$(uname -m).so libclang_rt.asan.so; do \
 	  p=$$(cc -print-file-name=$$n); case "$$p" in /*) [ -f "$$p" ] && { rt=$$p; break; } ;; esac; \
 	done; \
