@@ -1037,7 +1037,7 @@
                      (base (substring file 0 (- (string-length file) 2)))
                      (o (string-append dir "/" base ".o")))
                 (unless (and (file-exists? o)
-                             (time<=? (file-modification-time src) (file-modification-time o)))
+                             (<= (sa-file-mtime-ms src) (sa-file-mtime-ms o)))
                   (display (string-append "build-jolt: compiling " src "\n"))
                   (bld-system (string-append
                                (bld-cc) " " (bld-arch-flag)

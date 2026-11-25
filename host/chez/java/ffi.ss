@@ -1919,3 +1919,16 @@
         (else jolt-nil))))
   ffi-stack-args-answer)
 (def-var! "jolt.ffi" "stack-args-correct?" ffi-stack-args-correct?)
+
+;; The native-region JIT's name resolver (java/natives-array.ss jolt-mir-find!):
+;; the C entry point of a callable answering the address of a C name, by Chez's
+;; own foreign-entry, or 0. Made here because sa-foreign-callable expands to
+;; jolt-ffi-callable-body above. It lives as long as the process: MIR keeps no
+;; pointer to it past a compile, but every compile passes it.
+(define (jolt-mir-resolver-entry)
+  (let ((resolver (sa-foreign-callable
+                   (lambda (name)
+                     (if (sa-foreign-entry? name) (sa-foreign-entry-address name) 0))
+                   (string) uptr)))
+    (sa-lock-object resolver)
+    (sa-foreign-callable-entry-point resolver)))

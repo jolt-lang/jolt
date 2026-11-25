@@ -1958,9 +1958,9 @@
     (if (and env (not (string=? env "")))
         env
         (string-append "target/mir/libjoltmir"
-                       (case (machine-type)
-                         ((ta6osx tarm64osx a6osx arm64osx) ".dylib")
-                         ((ta6nt a6nt tarm64nt arm64nt) ".dll")
+                       (case (sa-os-family)
+                         ((macos) ".dylib")
+                         ((windows) ".dll")
                          (else ".so"))))))
 
 ;; #(compile lookup error resolver-entry) once MIR is found, 'none when it is not
@@ -1974,17 +1974,11 @@
   (if (sa-foreign-entry? "jolt_mir_compile")
       ;; by address, not by name: a named foreign reference is a load-time
       ;; relocation on Windows, which aborts the boot when the symbol is absent
-      (let ((resolver (foreign-callable
-                       (lambda (name)
-                         (if (sa-foreign-entry? name) (sa-foreign-entry-address name) 0))
-                       (string) uptr)))
-        ;; the callable lives as long as the process: MIR keeps no pointer to it
-        ;; past a compile, but every compile passes it
-        (lock-object resolver)
-        (vector (foreign-procedure (sa-foreign-entry-address "jolt_mir_compile") (string uptr) uptr)
-                (foreign-procedure (sa-foreign-entry-address "jolt_mir_lookup") (uptr string) uptr)
-                (foreign-procedure (sa-foreign-entry-address "jolt_mir_error") () string)
-                (foreign-callable-entry-point resolver)))
+      (vector (sa-foreign-procedure (sa-foreign-entry-address "jolt_mir_compile") (string uptr) uptr)
+              (sa-foreign-procedure (sa-foreign-entry-address "jolt_mir_lookup") (uptr string) uptr)
+              (sa-foreign-procedure (sa-foreign-entry-address "jolt_mir_error") () string)
+              ;; java/ffi.ss, which loads after this file and before any region runs
+              (jolt-mir-resolver-entry))
       'none))
 
 ;; base sym -> MIR module address, or a string: why the region has no code here
