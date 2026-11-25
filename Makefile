@@ -185,7 +185,7 @@ CI-GATES := submodules values flonumprint recordinline corpus nsaudit unit docum
   inline inline-body guardedinline dcerefs shakelocal manifestcheck readmecheck portcheck mirrordrift regexdfacheck regexdfa regexanchor regexanchorprims regexanchorcheck regexreplace regexsyntax regexbacktrack deadhost recordshadow emittedheads adaptercheck hostprops normalizecheck hostregistry hostarity enummodel imagecoverage lazyshims foreignhandles dispatchalloc hostsite regexmatcher winpath winplatform winparity statlayout lockcheck mmepochcheck parkcheck shelloutcheck errnocheck irvalidate seeddefs devbootsmoke \
   gatebootsmoke aotcachesmoke aotworkersmoke aotcachepathsmoke aotcachesourcepathsmoke aotcachestarfilesmoke aotfingerprint vfaslceiling vfaslstrings buildscaling buildnatives buildsegments compilepathsmoke makefilesmoke versionsmoke attributioncheck noticecheck \
   systemstreams closedstdout stderrsplit filelock deleteonclose userdirpaths mimetypes utf8decode \
-  certify gambitcheck gambitkernel gambitgencheck gambitseedcheck gambitboot gambiteval gambitunbound gambitvars gambitstatics gambittwins gambitprofile grenadinecheck fibers fiberspoll gosm asynctimer ticks interruptnest monitorescape windescape threadsafety maskedacquire ioerrno cas flow native nativebuild
+  certify gambitcheck gambitkernel gambitgencheck gambitseedcheck gambitboot gambiteval gambitunbound gambitvars gambitstatics gambittwins gambitprofile grenadinecheck fibers fiberspoll gosm asynctimer ticks interruptnest monitorescape windescape threadsafety maskedacquire ioerrno cas flow native nativesan nativebuild
 TEST-GATES := submodules selfhost ci
 
 GATE-RECEIPT := target/gate-receipt
@@ -1147,6 +1147,35 @@ $(MIR-SO): $(MIR-SRCS) $(wildcard vendor/mir/*.h vendor/mir/c2mir/*.h vendor/mir
 # live block or bad free; the rejected programs must fail to compile. Needs cc.
 native: mirlib
 	@bin/jolt run test/chez/native-test.clj
+
+# The native gate with cc's regions built under AddressSanitizer and UBSan, and
+# with JN_VERIFY_FACTS: every check a range fact dropped is put back, raising
+# if it would fire. jolt is not instrumented, so the ASan runtime is preloaded
+# (cc names its own: clang's on macOS, gcc's libasan on Linux). Needs cc.
+nativesan: mirlib
+	@rt=""; for n in libclang_rt.asan_osx_dynamic.dylib libasan.so \
+	  libclang_rt.asan-$$(uname -m).so libclang_rt.asan.so; do \
+	  p=$$(cc -print-file-name=$$n); case "$$p" in /*) [ -f "$$p" ] && { rt=$$p; break; } ;; esac; \
+	done; \
+	[ -n "$$rt" ] || { echo "nativesan: cc has no ASan runtime"; exit 1; }; \
+	if [ "$$(uname -s)" = Darwin ]; then pre="JOLT_DYLD_INSERT_LIBRARIES=$$rt"; else pre="LD_PRELOAD=$$rt"; fi; \
+	env $$pre ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 NATIVE_SANITIZE=1 \
+	  bin/jolt run test/chez/native-test.clj
+
+# What each native region emits, compared between this checkout and BASE (a
+# path to another built checkout, e.g. a worktree of main): the same harness
+# (this one's) runs in both with NATIVE_EMIT_DUMP, and tools/native-emit-diff.clj
+# fails on a region whose C differs unless ALLOW (a regex over the region's
+# source) names it. A change that must not touch the emitted C proves it here.
+nativeemitgate: mirlib
+	@[ -n "$(BASE)" ] || { echo "nativeemitgate: BASE=<path to the other checkout>"; exit 1; }
+	@$(MAKE) --no-print-directory -C "$(BASE)" mirlib >/dev/null
+	@rm -rf target/native-emit && mkdir -p target/native-emit
+	@NATIVE_EMIT_DUMP=$(CURDIR)/target/native-emit/candidate bin/jolt run test/chez/native-test.clj \
+	  > target/native-emit/candidate.log 2>&1 || true
+	@cd "$(BASE)" && NATIVE_EMIT_DUMP=$(CURDIR)/target/native-emit/base bin/jolt run $(CURDIR)/test/chez/native-test.clj \
+	  > $(CURDIR)/target/native-emit/base.log 2>&1 || true
+	@bin/jolt run tools/native-emit-diff.clj target/native-emit/base target/native-emit/candidate '$(ALLOW)'
 
 # A program with native regions: C in a jolt build binary, JIT'd under jolt
 # run, same output, every region linked in the binary and JIT'd under run.

@@ -20,4 +20,7 @@
     8 (throw (StackOverflowError.))
     ;; mod by zero: clojure.core/mod takes Objects, so Numbers' message
     9 (throw (ArithmeticException. "Divide by zero"))
+    ;; JN_VERIFY_FACTS (the native gate's sanitizer lane): a check a range fact
+    ;; dropped would have fired, so the fact is wrong
+    10 (throw (IllegalStateException. "native region: a range fact did not hold"))
     (throw (IllegalStateException. (str "native region: unknown failure code " code)))))
