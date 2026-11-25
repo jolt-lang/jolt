@@ -830,7 +830,7 @@
   call until every status field is read: the status is per OS thread, so a
   fiber switched in on this carrier could run another region and overwrite it.
   Pinned, the borrowed BACKINGS are locked around the call too. An owned array
-  result is taken (copied into a jolt array, its buffer freed) before
+  result is taken, copied into a jolt array and its buffer freed, before
   interrupts are back on, so no asynchronous throw can land while only a C
   pointer holds it; its wrap frees the buffer itself if it fails. Answers a
   `(values v code info)`: v is the jolt result on success, info #(a b d) for
