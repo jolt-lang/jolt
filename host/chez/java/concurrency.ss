@@ -4735,8 +4735,8 @@
 
 ;; whenComplete: the action sees what handle's function sees; the dependent
 ;; keeps the source's result, unless the action throws over a NORMAL result,
-;; which then fails the dependent. (The JVM also records the action's throw as
-;; suppressed on an earlier failure; jolt throwables carry no suppressed list.)
+;; which then fails the dependent. Over a failure the action's throw is added to
+;; that failure as suppressed, as the JDK does.
 (define (cf-when-complete src exec f)
   (cf-require! f)
   (let ((d (make-cf)))
@@ -4749,6 +4749,9 @@
                                 (cf-fn-call f "accept" jolt-nil (cf-alt-ex r))
                                 (cf-fn-call f "accept" r jolt-nil))
                             cf-pending)))
+              (when (and (cf-alt? r) (not (eq? thrown cf-pending))
+                         (not (eq? thrown (cf-alt-ex r))))
+                (throwable-add-suppressed! (cf-alt-ex r) thrown))
               (cf-settle! d
                           (if (or (eq? thrown cf-pending) (cf-alt? r))
                               (cf-encode-relay r)

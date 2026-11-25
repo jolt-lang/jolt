@@ -39,6 +39,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `bit-shift-right` and `unsigned-bit-shift-right`, with the JVM's masked
   shift counts. A mask by a non-negative constant bounds an index for the
   range analysis, so `(aget xs (bit-and i 3))` drops its bounds check.
+- `Throwable.addSuppressed` and `getSuppressed` on every throwable, as in JDK 21.
+  `getSuppressed` returns a fresh `Throwable[]` in the order they were added, adding
+  `nil` throws `NullPointerException` ("Cannot suppress a null exception.") and adding
+  a throwable to itself throws `IllegalArgumentException` ("Self-suppression not
+  permitted") with that throwable as its cause. `printStackTrace` prints each
+  suppressed throwable after the frames, as a `Suppressed:` line one tab in with its
+  own frames and suppressed beneath it. `CompletableFuture.whenComplete` now adds a
+  throwable from its action to the failure it was handed, so that known divergence
+  is gone.
 
 ### Changed
 
