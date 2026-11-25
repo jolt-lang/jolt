@@ -457,18 +457,83 @@
 (define (jolt-throwable-tostring v)
   (if (condition? v) (condition->message-string v) (jolt-str-render-one v)))
 
+;; Suppressed throwables live beside the throwable, not in it: a table from the
+;; throwable to its list, newest first. The record has no slot for them, and a
+;; new field changes the record's uid, which means a re-mint and a state-image
+;; layout bump. The same table also covers a raw Chez condition, which has no
+;; fields to extend. Several threads can add to one throwable, so every access
+;; takes the mutex. The table is an ephemeron one, so a throwable's list goes
+;; with it: a weak table holds its values strongly, so a list that reaches back
+;; to its own key (a suppresses o, o suppresses a) would never go.
+(define throwable-suppressed-tbl (make-ephemeron-eq-hashtable))
+(define throwable-suppressed-mu (make-mutex))
+(define (throwable-suppressed-list v)
+  (reverse (jolt-with-mutex throwable-suppressed-mu
+             (hashtable-ref throwable-suppressed-tbl v '()))))
+;; Throwable.addSuppressed: the self check comes first, as in the JDK, and its
+;; IllegalArgumentException carries the throwable as its cause.
+(define (throwable-cast-fail from)
+  (throw-jvm 'ClassCastException
+             (string-append
+              "class " from " cannot be cast to class java.lang.Throwable ("
+              (if (and (fx>? (string-length from) 5) (string=? (substring from 0 5) "java."))
+                  (string-append from " and java.lang.Throwable are in module java.base of loader 'bootstrap'")
+                  (string-append from " is in unnamed module of loader 'app'; java.lang.Throwable is in module java.base of loader 'bootstrap'"))
+              ")")))
+(define (throwable-add-suppressed! v other)
+  (cond
+    ((not (or (jolt-nil? other) (instance-check throwable-type-sym other)))
+     (throwable-cast-fail (let ((n (guard (e (#t #f)) (jolt-class-name other))))
+                            (if (string? n) n "java.lang.Object"))))
+    ((eq? other v)
+     (jolt-throw (jolt-host-throwable "java.lang.IllegalArgumentException"
+                                      "Self-suppression not permitted" other)))
+    ((jolt-nil? other)
+     (throw-jvm 'NullPointerException "Cannot suppress a null exception."))
+    (else
+     (jolt-with-mutex throwable-suppressed-mu
+       (hashtable-set! throwable-suppressed-tbl v
+                       (cons other (hashtable-ref throwable-suppressed-tbl v '()))))))
+  jolt-nil)
+
 ;; Throwable.printStackTrace: the header line, then the same Clojure backtrace the
-;; uncaught reporter prints. Called from a catch clause the throw's captured
+;; uncaught reporter prints, then each suppressed throwable laid out as the JDK
+;; does: "Suppressed: <toString>" one tab in, its frames and its own suppressed
+;; one tab further. jolt prints no "Caused by" chain and elides no common frames,
+;; so neither appears here. A throwable already printed anywhere in the walk, a
+;; cycle or a second branch, ends in the JDK's CIRCULAR REFERENCE line.
+;; Called from a catch clause the throw's captured
 ;; continuation is still live (the emitted catch runs jolt-catch-complete! only
 ;; AFTER the body), so the trace is the one that led to this throwable.
 ;; jolt-backtrace-string lives in source-registry.ss, which loads after this file —
 ;; a top-level forward reference, resolved at call time.
 (define (jolt-throwable-print-stack-trace v port)
+  ;; SEEN is one set for the whole walk, as the JDK's dejaVu is: a throwable
+  ;; printed on one branch is a circular reference on every later one.
+  (jolt-throwable-print-enclosed v port "" "" (box (list v)))
+  jolt-nil)
+(define (jolt-throwable-print-enclosed v port prefix caption seen)
+  (display prefix port) (display caption port)
   (display (jolt-throwable-tostring v) port)
   (newline port)
   (let ((bt (guard (e (#t #f)) (jolt-throwable-backtrace-string v))))
-    (when bt (display bt port)))
-  jolt-nil)
+    (when bt
+      (let loop ((i 0) (start 0))
+        (cond ((= i (string-length bt))
+               (when (< start i) (display prefix port) (display (substring bt start i) port)))
+              ((char=? (string-ref bt i) #\newline)
+               (display prefix port) (display (substring bt start (+ i 1)) port)
+               (loop (+ i 1) (+ i 1)))
+              (else (loop (+ i 1) start))))))
+  (let ((p (string-append prefix "\t")))
+    (for-each
+      (lambda (x)
+        (if (memq x (unbox seen))
+            (begin (display p port) (display "Suppressed: [CIRCULAR REFERENCE: " port)
+                   (display (jolt-throwable-tostring x) port) (display "]" port) (newline port))
+            (begin (set-box! seen (cons x (unbox seen)))
+                   (jolt-throwable-print-enclosed x port p "Suppressed: " seen))))
+      (throwable-suppressed-list v))))
 
 ;; The target of a 1-arg .printStackTrace — a PrintStream / PrintWriter shim. Route
 ;; through the target's own .write, so any writer (io.ss's, a library's) works.
@@ -537,9 +602,10 @@
     ;; A StackTraceElement[], as the JVM's is (jolt-ref-array).
     ((string=? name "getStackTrace")
      (list (jolt-ref-array (jolt-throwable-stack-trace obj) "java.lang.StackTraceElement")))
-    ;; jolt never suppresses: an empty array is the JVM's own answer for a
-    ;; throwable with nothing suppressed, so this is exact rather than a stand-in.
-    ((string=? name "getSuppressed") (list (jolt-ref-array '() "java.lang.Throwable")))
+    ((string=? name "getSuppressed")
+     (list (jolt-ref-array (throwable-suppressed-list obj) "java.lang.Throwable")))
+    ((and (string=? name "addSuppressed") (pair? args))
+     (list (throwable-add-suppressed! obj (car args))))
     ;; JVM contract is "returns this"; jolt has no stack to refill.
     ((string=? name "fillInStackTrace") (list obj))
     ((string=? name "printStackTrace")

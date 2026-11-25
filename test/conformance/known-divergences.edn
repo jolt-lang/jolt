@@ -187,14 +187,7 @@
            :jolt "\"java.util.concurrent.FutureTask\""}}
   ;; CompletableFuture. The stage graph, its exception wrapping and its waits are
   ;; certified by the corpus rows under "interop / completable future"; these are
-  ;; the two details of it jolt does not reproduce.
-  {:category :host-model
-   :behavior "whenComplete whose action throws over a stage that already failed"
-   :jvm "the stage keeps its own failure and the action's throwable is added to it with addSuppressed"
-   :jolt "the stage keeps its own failure; jolt throwables carry no suppressed list (getSuppressed is always empty), so the action's throwable is dropped"
-   :check {:expr "(let [c (.whenComplete (java.util.concurrent.CompletableFuture/failedFuture (RuntimeException. \"boom\")) (fn [v e] (throw (IllegalStateException. \"wc\"))))] (try (.join c) (catch Throwable e (count (.getSuppressed (.getCause e))))))"
-           :jvm "1"
-           :jolt "0"}}
+  ;; the detail of it jolt does not reproduce.
   {:category :host-model
    :behavior "the thread an async stage runs on"
    :jvm "a ForkJoinPool.commonPool worker (\"ForkJoinPool.commonPool-worker-N\"), and orTimeout/completeOnTimeout fire on the \"CompletableFutureDelayScheduler\" thread"

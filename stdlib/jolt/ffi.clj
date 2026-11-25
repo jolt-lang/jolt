@@ -27,6 +27,17 @@
   other value sends 1 — a C predicate answers true/false rather than the truthy
   number 0.
 
+  A NUMBER in a :bool position throws IllegalArgumentException. 0 is truthy in
+  jolt, so C's habit of 0 for false would send true:
+
+    (set-enabled 0)            ; throws, where it would have sent true
+    (set-enabled (if on? 1 0)) ; throws; pass on? itself, or (boolean on?)
+
+  The same goes for a :bool written with write or into a layout field, and for
+  a foreign-callable whose fn returns a number for a :bool result. On the way
+  back a :bool is true or false, never 1 or 0, so test it with `if` rather
+  than (= 1 ...).
+
   :string carries NULL as nil in both directions: nil as an argument reaches C
   as a null char*, which is how APIs like setlocale spell \"query instead of
   set\", and a function returning NULL reads as nil. ffi/null stays the

@@ -75,7 +75,14 @@
  '(("bool true round-trips" #t "(width-rw :bool true)")
    ("bool false round-trips" #f "(width-rw :bool false)")
    ("bool nil stores false" #f "(width-rw :bool nil)")
-   ("bool truthy value stores true" #t "(width-rw :bool 0)")))
+   ("bool truthy value stores true" #t "(width-rw :bool :yes)")))
+;; A number is rejected rather than stored: 0 is truthy, so a C-style 0 for
+;; false would otherwise store true.
+(for-each
+ (lambda (source)
+   (ok (string-append "bool write rejects a number: " source)
+       (raises? (lambda () (ev source)))))
+ '("(width-rw :bool 0)" "(width-rw :bool 1)" "(width-rw :bool 1.0)"))
 (for-each
  (lambda (entry)
    (ok (car entry) (= (cadr entry) (jnum->exact (ev (caddr entry))))))
@@ -120,6 +127,13 @@
     (equal? '(42 -42 -42 42)
             (map (lambda (source) (jnum->exact (ev source)))
                  '("(w-bool true)" "(w-bool false)" "(w-bool nil)" "(w-bool :yes)"))))
+(ok "a bool argument rejects a number, 0 included"
+    (and (raises? (lambda () (ev "(w-bool 0)")))
+         (raises? (lambda () (ev "(w-bool 1)")))))
+(ok "the bool rejection names the number and the fix"
+    (let ((msg (ev "(try (w-bool 0) nil (catch IllegalArgumentException e (ex-message e)))")))
+      (and (string? msg)
+           (string=? msg "jolt.ffi: :bool got the number 0, and 0 is truthy, so pass true or false"))))
 (ok "bool results come back as true and false"
     (equal? '(#t #f) (list (ev "(r-bool-true)") (ev "(r-bool-false)"))))
 
@@ -154,7 +168,7 @@
     (equal? '(10 1 11 0)
             (map (lambda (source) (jnum->exact (ev source)))
                  '("(bool-struct-call true nil)" "(bool-struct-call false :yes)"
-                   "(bool-struct-call 0 1)" "(bool-struct-call nil false)"))))
+                   "(bool-struct-call :a :b)" "(bool-struct-call nil false)"))))
 (ev "(defn bool-struct-made [flag field] (let [p (jolt.ffi/alloc (:size bool-struct-layout))] (try (make-bool-struct p flag) (jolt.ffi/read p :bool (get (:jolt.ffi/offsets bool-struct-layout) [field])) (finally (jolt.ffi/free p)))))")
 (ok "by-value struct bool fields come back as booleans"
     (equal? '(#t #f #f #t)
