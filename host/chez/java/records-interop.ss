@@ -457,14 +457,14 @@
 (define (jolt-throwable-tostring v)
   (if (condition? v) (condition->message-string v) (jolt-str-render-one v)))
 
-;; Suppressed throwables live beside the throwable, not in it: a weak table from
-;; the throwable to its list, newest first. The record has no slot for them, and a
+;; Suppressed throwables live beside the throwable, not in it: a table from the
+;; throwable to its list, newest first. The record has no slot for them, and a
 ;; new field changes the record's uid, which means a re-mint and a state-image
 ;; layout bump. The same table also covers a raw Chez condition, which has no
-;; fields to extend. Weak, so a throwable's list goes with it. Several threads
-;; can add to one throwable, so every access takes the mutex.
-;; Ephemeron, not weak: a weak table holds its values strongly, so a list that
-;; reaches back to its own key (a suppresses o, o suppresses a) would never go.
+;; fields to extend. Several threads can add to one throwable, so every access
+;; takes the mutex. The table is an ephemeron one, so a throwable's list goes
+;; with it: a weak table holds its values strongly, so a list that reaches back
+;; to its own key (a suppresses o, o suppresses a) would never go.
 (define throwable-suppressed-tbl (make-ephemeron-eq-hashtable))
 (define throwable-suppressed-mu (make-mutex))
 (define (throwable-suppressed-list v)
