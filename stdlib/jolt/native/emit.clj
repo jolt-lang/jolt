@@ -78,7 +78,7 @@
   (case t
     :long "int64_t" :double "double" :bool "int" :unit "int" :never "int"
     (if (ast/array-type? t)
-      (if (= :double (ast/elem-type t)) "jn_arr_d" "jn_arr_l")
+      (case (ast/elem-type t) :double "jn_arr_d" :long "jn_arr_l" :byte "jn_arr_b")
       (throw (ex-info "no C type" {:type t})))))
 
 (defn- var-name [id] (str "x" id))
@@ -213,6 +213,16 @@
       :pos? (str "(" (first one) " > 0)")
       :neg? (str "(" (first one) " < 0)")
       :not (str "(!" (first one) ")")
+      ;; two's complement on int64_t, as the JVM's long ops; a shift count is
+      ;; masked to 0..63 as the JVM masks it (C leaves 64 and up undefined), and
+      ;; a left shift goes through uint64_t, where C defines the wrap
+      (:bit-and :bit-or :bit-xor)
+      (str "(" (str/join (case p :bit-and " & " :bit-or " | " :bit-xor " ^ ") (map first args)) ")")
+      :bit-not (str "(~" (first one) ")")
+      :bit-shift-left (str "((int64_t)((uint64_t)" (ffirst args) " << (" (first (second args)) " & 63)))")
+      :bit-shift-right (str "(" (ffirst args) " >> (" (first (second args)) " & 63))")
+      :unsigned-bit-shift-right
+      (str "((int64_t)((uint64_t)" (ffirst args) " >> (" (first (second args)) " & 63)))")
       :to-double (as-double (first one) (second one))
       :to-long (if (= :long (second one))
                  (first one)
@@ -475,6 +485,7 @@ static const union { uint64_t u; double d; } jn_inf_bits = {0x7ff0000000000000UL
 #define JN_PRELUDE
 typedef struct { int64_t len; double *data; } jn_arr_d;
 typedef struct { int64_t len; int64_t *data; } jn_arr_l;
+typedef struct { int64_t len; int8_t *data; } jn_arr_b;
 typedef struct { int64_t code; int64_t a; int64_t b; double d; int64_t len;
                  uintptr_t stack_lo; uintptr_t stack_thr; } jn_out;
 /* The status of the region this thread ran last: code 0, or a failure and its
@@ -553,6 +564,9 @@ __attribute__((unused)) static inline uintptr_t jn_stack_limit(void) {
 /* Chez's 64-bit flvector layout (scheme.h Sflvector_length / Sflvector_ref) */
 #define JN_FLV_LEN(x) ((int64_t)((uintptr_t)(*((intptr_t *)((uintptr_t)(x) + 1))) >> 4))
 #define JN_FLV_DATA(x) ((double *)((uintptr_t)(x) + 9))
+/* a bytevector: its length is shifted 3 where an flvector's is shifted 4 */
+#define JN_BV_LEN(x) ((int64_t)((uintptr_t)(*((intptr_t *)((uintptr_t)(x) + 1))) >> 3))
+#define JN_BV_DATA(x) ((int8_t *)((uintptr_t)(x) + 9))
 /* Math.pow is Java's, not C's: a NaN exponent, or a base of magnitude 1 to an
    infinite power, is NaN where C's pow answers 1 */
 static inline JN_UNUSED double jn_pow(double x, double y) {
@@ -745,8 +759,10 @@ static inline JN_UNUSED double jn_pow(double x, double y) {
               (when (ast/borrowed? (:type p))
                 ;; an fxvector has the flvector's layout (length at +1, slots at +9)
                 (swap! *decls* assoc (var-name (:id p))
-                       (str (ctype (:type p)) " " (var-name (:id p)) " = { JN_FLV_LEN(p" (:id p) "), "
-                            (if (fx-borrowed? (:type p)) "(int64_t *)" "") "JN_FLV_DATA(p" (:id p) ") };"))))
+                       (if (ast/byte-array-type? (:type p))
+                         (str "jn_arr_b " (var-name (:id p)) " = { JN_BV_LEN(p" (:id p) "), JN_BV_DATA(p" (:id p) ") };")
+                         (str (ctype (:type p)) " " (var-name (:id p)) " = { JN_FLV_LEN(p" (:id p) "), "
+                              (if (fx-borrowed? (:type p)) "(int64_t *)" "") "JN_FLV_DATA(p" (:id p) ") };")))))
           _ (when (seq *recursive*) (line! "jn_stack_limit();"))
           v (emit-versioned (:body region) (:entry *ranges*))
           body @*lines*

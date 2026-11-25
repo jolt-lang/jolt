@@ -18,7 +18,7 @@
   (and (form-sym? head) (= "jolt.native" (form-sym-ns head))
        (= "__region" (form-sym-name head))))
 
-(def ^:private native-param-kinds #{"doubles" "longs" "long" "double" "bool"})
+(def ^:private native-param-kinds #{"doubles" "longs" "bytes" "long" "double" "bool"})
 (def ^:private native-result-kinds #{"doubles" "longs" "long" "double" "bool" "unit"})
 
 (defn- native-region-sym? [s]

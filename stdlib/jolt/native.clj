@@ -15,11 +15,13 @@
 
   The vector names the locals the region reads, each with its type: ^long,
   ^double, ^boolean, ^doubles or ^longs (an array the region borrows: it reads
-  and writes the caller's array in place, and cannot keep it). A borrowed
+  and writes the caller's array in place, and cannot keep it), or ^bytes (a
+  byte-array the region only reads, each element a signed byte as a long). A borrowed
   long-array holds fixnums, so storing a value outside -2^60..2^60-1 into one
   raises; widen it outside the region first. The body is a
   subset of Clojure: let, if, when, do, loop/recur, dotimes, and/or/not,
-  arithmetic and comparisons, quot/rem/mod, long/double, aget/aset/alength,
+  arithmetic and comparisons, quot/rem/mod, bit-and/bit-or/bit-xor/bit-not and
+  the three shifts, long/double, aget/aset/alength,
   double-array/long-array/aclone (arrays the region owns), and Math/sqrt, sin,
   cos, tan, exp, log, floor, ceil, pow, atan2. It returns a long, double,
   boolean, nil, or an array it owns, which arrives as a fresh double-array or
@@ -65,7 +67,7 @@
   (str "jn_" (format "%08x%08x" (fnv32 src 2166136261) (fnv32 src 84696351))))
 
 (defn- param-kind [t]
-  (cond (= t [:ref :double]) :doubles (= t [:ref :long]) :longs
+  (cond (= t [:ref :double]) :doubles (= t [:ref :long]) :longs (= t [:ref :byte]) :bytes
         (= t :long) :long (= t :double) :double (= t :bool) :bool))
 
 (defn- result-kind [t]
@@ -257,6 +259,38 @@
                (fn ~args (extern-call ~raw ~kinds ~args)))))
       `(jolt.ffi/defcfn ~(vary-meta name assoc :jolt.native/extern info)
          ~c ~(mapv ffi-types ps) ~(ffi-types ret)))))
+
+(defn jit?
+  "Whether this process can compile a native region itself: true in jolt (the
+  REPL, jolt run) on a machine MIR supports; false in a binary jolt build made,
+  which runs only the regions linked into it."
+  []
+  (boolean (jolt.scheme/call "jolt-native-jit?")))
+
+(defn native-fn
+  "Compile a native region at runtime, from data: params is the vector native
+  takes (hinted symbols) and body a seq of forms. Answers a fn of the params
+  that runs the region as native code, compiled by the JIT before native-fn
+  returns, so a program can generate a region from what it learns at runtime
+  (a schema, a record layout, a size) and run it with no interpretation left.
+  A region's compile error throws here. Names in body (defnative helpers,
+  defexterns, macros) resolve in ns, by default the current namespace.
+
+      (def sq (native-fn '[^long n] '((* n n))))
+      (sq 7) ;=> 49
+
+  Needs the JIT (jit?): a binary jolt build made has none, and raises
+  UnsupportedOperationException."
+  ([params body] (native-fn params body *ns*))
+  ([params body ns]
+   (when-not (jit?)
+     (throw (UnsupportedOperationException.
+             "jolt.native/native-fn: this process has no JIT (a jolt build binary runs only the regions linked into it)")))
+   ;; checked first, so a bad program throws the region's own error
+   (compile-region params body)
+   (binding [*ns* (the-ns ns)]
+     (eval (list 'fn* (mapv #(with-meta % nil) params)
+                 (list* 'jolt.native/native params body))))))
 
 (defn linked-regions
   "Each native region whose call site has loaded in this process, as a map of
