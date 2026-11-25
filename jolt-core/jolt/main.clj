@@ -122,6 +122,7 @@
                  [:config-files (:config-files env)]
                  [:config-user (:config-user env)]
                  [:config-project (:config-project env)]
+                 [:config-local (:config-local env)]
                  [:gitlibs-dir (:gitlibs-dir env)]
                  [:mvn-local-repo (:mvn-local-repo env)]
                  [:repro (:repro env)]
@@ -139,6 +140,7 @@
       (println (str "project_dir    = " (:project-dir env)))
       (println (str "user_deps      = " (or (:config-user env) "(skipped)")))
       (println (str "project_deps   = " (:config-project env)))
+      (println (str "local_deps     = " (or (:config-local env) "(skipped)")))
       (println (str "gitlibs_dir    = " (:gitlibs-dir env)))
       (println (str "mvn_local_repo = " (:mvn-local-repo env))))))
 

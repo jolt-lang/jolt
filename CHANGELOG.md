@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`deps.local.edn`: per-machine overrides merged over deps.edn.** A project's
+  `deps.local.edn` (or the file `$JOLT_DEPS_LOCAL` names, relative to the
+  project) merges over its deps.edn the way deps.edn merges over the user's,
+  and is meant to stay out of version control. Its `:jolt/native` specs are the
+  closest declarations of all: `{:name "sqlite3" :linux ["/opt/sqlite/lib/libsqlite3.so.0"]}`
+  overrides just that path for a library the project or any dependency
+  declares, and keeps the rest of the spec, including loading on the
+  dependency's first require. `-Srepro` leaves the file out; `-Sdescribe` and
+  `-Sverbose` name it.
+- **`jolt.configure` finds native libraries on this machine.** A task
+  `configure {:exec-fn jolt.configure/configure!}` (`jolt run configure`) looks
+  for each `:jolt/native` library the project resolves to whose declared
+  candidates do not open, and records the paths it finds in `deps.local.edn`,
+  like `./configure`. It reads pkg-config `.pc` files, Homebrew's `opt/` links,
+  the dynamic linker's `/etc/ld.so.conf`, the library-path variables and the
+  usual system directories itself, without running pkg-config, ldconfig or
+  brew, and takes a file only if it opens. A spec can steer it with
+  `:pkg-config`, `:brew` and `:search`. `--all`, `--dry-run`, `--no-verify`,
+  `--file` and library names limit or redirect it; `find-library`, `discover`
+  and `pkg-config` are callable directly.
+- **A bare `:jolt/native` filename is looked for.** A candidate with no path
+  in it, like `"libcrypto.3.dylib"`, is tried beside the deps.edn that declared
+  it first, then wherever the platform's loader finds it, and when neither
+  opens it, autodiscovery searches the places `jolt.configure` does (pkg-config
+  libdirs, Homebrew, including every formula's `opt/*/lib`, the linker's
+  configured directories, the library-path variables, the system directories)
+  for that exact file. Discovery runs only after every candidate has failed, so
+  a library that already loads costs nothing more. `JOLT_NATIVE_DISCOVER=0`
+  turns it off. A built binary loads its candidates as before.
+
 - The JIT compiles a native region for the CPU it runs on: it defines the C
   macro of each feature the machine has (`__AVX2__`, `__FMA__`, `__ARM_NEON`
   ...), so a `defnative` with `(on "defined(__AVX2__)" ...)` and
@@ -50,6 +80,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is gone.
 
 ### Changed
+
+- **What a dependency declares is overridden by what depends on it.** The
+  project's declarations win over library A's, and A's over those of the library
+  B it depends on, key by key: a `:jolt/native` spec that sets only `:linux`
+  keeps the dependency's other platforms, its `:static` archive and its `:build`
+  task, which used to be dropped with everything else the closer spec left out
+  (each `:build` still runs only for the files its own deps.edn declares). A
+  project's `:jolt/provides` claim on a class takes it from a dependency's, and
+  a library's from the libraries it depends on, instead of being refused as a
+  conflict; two unrelated libraries claiming one class are still refused. The
+  resolved libraries are ordered so each precedes the libraries it depends on,
+  which also changes the source-root order when a project names B ahead of A.
 
 - `jolt.native` regions always run as native code. Outside a `jolt build`
   binary (the REPL, `jolt run`) a region is now compiled in process by MIR's C

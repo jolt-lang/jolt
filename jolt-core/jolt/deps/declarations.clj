@@ -31,24 +31,39 @@
                                                    :jolt.deps/paths))))])))
 
 ;; Reconcile two declarations of the same library instead of dropping the second.
-;; dedup-by is winner-takes-all, and the project's own specs come first — so an
-;; app that only wanted to ADD the :windows candidates a dependency is missing
-;; had to restate that dependency's :darwin and :linux lists verbatim, or break
-;; those platforms instead (jolt-lang/jolt#989). The winner still wins every key
-;; it declares; a later spec only fills in the platform keys the winner is
-;; silent about, and the root those filled-in candidates resolve against travels
-;; with them, so a dependency's relative "native/libfoo.so" still resolves
-;; against that dependency rather than against whoever won the identity.
+;; Specs arrive closest-first (the project's own, then each dependency before the
+;; libraries IT depends on — jolt.deps orders them so), and the closer declaration
+;; wins every key it declares while a farther one fills in the keys it is silent
+;; about: an app that only wanted to ADD the :windows candidates a dependency is
+;; missing used to have to restate that dependency's :darwin and :linux lists
+;; verbatim (jolt-lang/jolt#989), and one that only pinned the :linux path of a
+;; library lost the dependency's :static archive and :build task with it.
+;;
+;; A value that names a FILE resolves against the deps.edn that wrote it, so the
+;; root travels with every path-valued key it is taken from: the platform
+;; candidates and :static under :jolt.deps/roots, keyed like the spec. A :build
+;; task builds the files its OWN deps.edn declares, so each one is kept under the
+;; root it was declared in (:jolt.deps/builds {root task}): the task that runs for
+;; a missing library is the one that produces the candidates this platform took,
+;; never a dependency's task re-run for a path the app pinned somewhere else.
+(def ^:private native-path-keys (conj native-platform-keys :static))
+
+(defn- native-builds [spec]
+  (or (:jolt.deps/builds spec)
+      (when (contains? spec :build) {(:jolt.deps/root spec) (:build spec)})))
+
 (defn- overlay-native [a b]
-  (reduce (fn [acc k]
-            (if (or (contains? acc k) (not (contains? b k)))
-              acc
-              (let [acc (assoc acc k (get b k))]
-                (if-let [r (:jolt.deps/root b)]
-                  (assoc acc :jolt.deps/roots (assoc (:jolt.deps/roots acc) k r))
-                  acc))))
-          a
-          native-platform-keys))
+  (let [r (:jolt.deps/root b)
+        acc (reduce-kv
+             (fn [acc k v]
+               (cond
+                 (or (contains? acc k) (= "jolt.deps" (namespace k)) (= :build k)) acc
+                 (and r (some #{k} native-path-keys))
+                 (-> acc (assoc k v) (assoc-in [:jolt.deps/roots k] r))
+                 :else (assoc acc k v)))
+             a b)
+        builds (merge (native-builds b) (native-builds a))]
+    (if (seq builds) (assoc acc :jolt.deps/builds builds) acc)))
 
 (defn- lazy-native? [spec] (boolean (and (seq (:jolt.deps/paths spec)) (not (:eager spec)))))
 
@@ -57,10 +72,20 @@
 ;; — the union of their roots — and a declaration that has to be there at
 ;; startup (the project's own, or :eager) makes the whole spec eager.
 (defn- overlay-native-roots [a b]
-  (if (and (lazy-native? a) (lazy-native? b))
+  (cond
+    ;; a project's local overrides (deps.local.edn) say WHERE a library is,
+    ;; not WHEN it loads: overriding a dependency's library keeps it loading on
+    ;; that dependency's first require, rather than making it the project's own
+    ;; and opening it at startup.
+    (:jolt.deps/local a)
+    (cond-> (dissoc a :jolt.deps/local :jolt.deps/paths)
+      (lazy-native? b) (assoc :jolt.deps/paths (:jolt.deps/paths b))
+      (:jolt.deps/lib b) (assoc :jolt.deps/lib (:jolt.deps/lib b)))
+
+    (and (lazy-native? a) (lazy-native? b))
     (assoc a :jolt.deps/paths (vec (distinct (concat (:jolt.deps/paths a)
                                                      (:jolt.deps/paths b)))))
-    (dissoc a :jolt.deps/paths)))
+    :else (dissoc a :jolt.deps/paths)))
 
 (defn reconcile-natives
   "dedup-by native-key, but folding each dropped spec's unclaimed platform keys
@@ -99,6 +124,8 @@
   [edn]
   (mapv str (:allow-dynamic (:jolt/tree-shake edn))))
 
+(declare drop-overridden-claims host-class-providers*)
+
 (defn host-class-providers
   "Reconcile the :jolt/provides declarations (RFC 0014) into the provider table
   the runtime autoloads from, as [install-ns lib class-name ...].
@@ -110,7 +137,32 @@
   shape of bug this table exists to stop being possible, so it is an error at
   resolve time, where both claimants can be named.
 
-  Entries are [install-ns lib class ...]; lib is nil for the project's own."
+  Entries are [install-ns lib class ...]; lib is nil for the project's own.
+
+  With OVERRIDES? — (overrides? lib-a lib-b), true when lib-a's declaration is
+  closer to the project than lib-b's, the project (nil) being closest to every
+  dependency and a library closer than the ones it depends on — a claim is not a
+  conflict with a farther one: the closer claim takes the class and the farther
+  row drops it. That is the same precedence every other declaration resolves
+  with, and it is how an app swaps a library's shim for its own. Two claimants
+  neither of which is closer (two unrelated libraries) are still refused."
+  ([entries] (host-class-providers entries nil))
+  ([entries overrides?]
+   (host-class-providers* (if overrides? (drop-overridden-claims entries overrides?) entries))))
+
+(defn- drop-overridden-claims [entries overrides?]
+  (let [owners (reduce (fn [acc [install-ns lib & classes]]
+                         (reduce #(update %1 %2 (fnil conj #{}) [install-ns lib]) acc classes))
+                       {} entries)
+        lost? (fn [install-ns lib c]
+                (some (fn [[ns2 lib2]] (and (not= ns2 install-ns) (overrides? lib2 lib)))
+                      (get owners c)))]
+    (vec (keep (fn [[install-ns lib & classes]]
+                 (when-let [cs (seq (remove #(lost? install-ns lib %) classes))]
+                   (into [install-ns lib] cs)))
+               entries))))
+
+(defn- host-class-providers*
   [entries]
   (let [claims (reduce (fn [acc [install-ns lib & classes]]
                          (reduce (fn [a c] (update a c (fnil conj #{}) [install-ns lib]))
@@ -128,3 +180,34 @@
                 {:jolt/class c
                  :jolt/claimed-by (vec (sort (map who owners)))}))))
     (vec (distinct entries))))
+
+;; --- precedence ---------------------------------------------------------------
+;; jolt.deps orders the selected libraries with these so every first-wins
+;; reconciliation above reads closest-first.
+
+(defn dependents-first
+  "ORDER re-ordered so each library precedes every library it depends on, the
+  original order breaking ties. A dependency cycle is broken at its earliest
+  member rather than dropped."
+  [order children]
+  (let [parents (reduce-kv (fn [acc p cs] (reduce #(update %1 %2 (fnil conj #{}) p) acc cs))
+                           {} children)]
+    (loop [remaining (vec order) out []]
+      (if (empty? remaining)
+        out
+        (let [left (set remaining)
+              ready? #(not-any? left (get parents %))
+              pick (or (first (filter ready? remaining)) (first remaining))]
+          (recur (filterv #(not= pick %) remaining) (conj out pick)))))))
+
+(defn descendants-by-lib
+  "\"lib\" -> #{\"lib\" …} every library it transitively depends on, as the
+  strings :jolt/provides rows carry."
+  [children]
+  (letfn [(walk [seen lib]
+            (reduce (fn [seen c] (if (seen c) seen (walk (conj seen c) c)))
+                    seen (get children lib)))]
+    (into {} (for [lib (keys children)
+                   :let [ds (disj (walk #{} lib) lib)]
+                   :when (seq ds)]
+               [(str lib) (into #{} (map str) ds)]))))
