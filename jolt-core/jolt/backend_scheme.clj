@@ -13,7 +13,7 @@
   jolt.backend-scheme.* namespaces it requires, and those of them that need to
   lower a child take `emit` as an argument."
   (:require [clojure.string :as str]
-            [jolt.host :refer [protocol-call-key form-char? form-literal? record-shapes]]
+            [jolt.host :refer [protocol-call-key form-char? form-literal?]]
             [jolt.passes.types :as types]
             [jolt.passes.numeric :as numeric]
             [jolt.op-registry :as op-registry]
@@ -41,7 +41,7 @@
                      emit-rec-type-check emit-record-ctor emit-seed-callable-invoke
                      ifn-kind lookup-restore native-op node-inline-chain ordered-call
                      plain-call record-ctor-shape site-literal site-restore
-                     sited-tail-call stdlib-var? struct-field-index]]
+                     sited-tail-call stdlib-var? struct-field-index kw-site-head]]
             [jolt.backend-scheme.literals :as literals :refer [emit-const]]
             [jolt.backend-scheme.once :refer [once-clear-stmts with-once-clears]]
             [jolt.backend-scheme.fnsrc :as fnsrc
@@ -422,27 +422,6 @@
              " (keep-live " *dbg-scope* ") (" *recur-target* " " (str/join " " tmps) "))"))
       (ordered-call arg-nodes (mapv emit arg-nodes)
                     (fn [as] (str "(" *recur-target* " " (str/join " " as) ")"))))))
-
-;; The keyword-site head for key KW (#1713). Chez open-codes the record-cache hit
-;; (rt.ss jolt-kw-get-site/i), which saves a defrecord field read ~12 ns but costs
-;; every other receiver -- a map, nil, a vector -- ~2 ns for the test, so it is
-;; emitted only for a key some defrecord declares as a field. The host's shapes
-;; map is cached until a type is defined, so the field set is rebuilt only when
-;; the map is a new one. A record defined after this site was compiled leaves the
-;; site on the procedure, whose own record cache still serves it.
-(def ^:private record-field-kws (atom nil))
-(defn- record-field-kw? [kw]
-  (let [m (record-shapes nil) memo @record-field-kws]
-    (contains? (if (and memo (identical? m (nth memo 0)))
-                 (nth memo 1)
-                 (let [s (into #{} (comp (filter :record) (mapcat :fields)) (vals m))]
-                   (reset! record-field-kws [m s])
-                   s))
-               kw)))
-(defn- kw-site-head [kw]
-  (if (and (not= :gambit (session/target)) (record-field-kw? kw))
-    "(jolt-kw-get-site/i "
-    "(jolt-kw-get-site "))
 
 ;; (get m k [default]) specialized by what the receiver and key are.
 (defn- emit-get-call [tail? arg-nodes order-args]
