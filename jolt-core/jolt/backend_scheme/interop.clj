@@ -235,6 +235,8 @@
   (cond (or (nil? p) (= p "java.lang.Object")) a
         (get array-kinds p) (str "(jolt-checkcast-kind '" (get array-kinds p) " " (chez-str-lit p) " " a ")")
         (or (str/includes? p ".") (str/starts-with? p "[")) (checkcast-emit p a)
+        ;; an int or long literal in range is already the unboxed value
+        (and (#{"int" "long"} p) (re-matches #"-?[0-9]{1,9}" a)) a
         (get unbox-entries p) (str "(" (get unbox-entries p) " " a ")")
         :else a))
 (defn- cast-args [node args]
