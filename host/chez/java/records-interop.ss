@@ -589,8 +589,8 @@
 ;; method from the receiver alone and reflects.
 ;; #t when the arguments fit several overloads and none is the most specific,
 ;; which the JVM compiler refuses: "More than one matching method found".
-(define (method-param-classes cls method arg-classes)
-  (let ((m (method-sig-pick cls method #f arg-classes)))
+(define (method-param-classes cls method arg-classes . static?)
+  (let ((m (method-sig-pick cls method (and (pair? static?) (jolt-truthy? (car static?))) arg-classes)))
     (cond ((eq? m 'tie) #t)
           (m (apply jolt-vector (vector-ref m 2)))
           (else jolt-nil))))
@@ -950,6 +950,8 @@
           '("java.lang.Object" "[C" "boolean" "char" "int" "long" "float" "double"))
 (register-static-method! "java.lang.String" "valueOf" '("[C" "int" "int") "java.lang.String")
 (register-static-method! "java.lang.String" "format" '("java.lang.String" "[Ljava.lang.Object;") "java.lang.String")
+(register-static-method! "java.lang.String" "join" '("java.lang.CharSequence" "[Ljava.lang.CharSequence;") "java.lang.String")
+(register-static-method! "java.lang.String" "join" '("java.lang.CharSequence" "java.lang.Iterable") "java.lang.String")
 (register-static-method! "java.lang.String" "format" '("java.util.Locale" "java.lang.String" "[Ljava.lang.Object;") "java.lang.String")
 ;; the boxed numbers and Character
 (for-each (lambda (c p)

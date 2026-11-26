@@ -50,7 +50,7 @@
             [jolt.analyzer.hints :refer [jvm-boolean-prim? jvm-non-boolean-class hint-of
                                          init-proves-hint add-hint tag->nkind ahint-of
                                          tag-class sym-tag-class node-jclass add-jclass
-                                         host-call-arg-casts
+                                         host-call-arg-casts check-static-call!
                                          with-ret-nhint fi-tag-class fi-adapt-form
                                          parse-params strip-arglist-meta arglist-ret-nkind arglist-type-method? arglist-meta
                                          str-target-type kw-target-type sb-target-type]]
@@ -1220,8 +1220,9 @@
         (invoke (var-ref "jolt.host" "static-member")
                 [(const class-target) (const (form-sym-name member))])
       (and class-target (form-sym? member))
-        (invoke (host-static class-target (form-sym-name member))
-                (mapv #(analyze ctx % env) (drop 3 items)))
+        (let [args (mapv #(analyze ctx % env) (drop 3 items))]
+          (check-static-call! ctx (tag-class ctx class-target) (form-sym-name member) args env)
+          (invoke (host-static class-target (form-sym-name member)) args))
       (form-sym? member)
         {:op :host-call
          :method (form-sym-name member)
@@ -1626,8 +1627,11 @@
     ;; analyze-symbol, which applies the same check.
     (let [_ (when (and (form-sym? head) (form-sym-ns head))
               (deny-private head (resolve-global ctx head) true))
-          n (invoke (analyze ctx head env)
-                    (mapv #(analyze ctx % env) (rest items)))
+          f (analyze ctx head env)
+          args (mapv #(analyze ctx % env) (rest items))
+          _ (when (= :host-static (:op f))
+              (check-static-call! ctx (tag-class ctx (:class f)) (:member f) args env))
+          n (invoke f args)
           p (or (form-position form) (current-form-position))]
       (if p (assoc n :pos p) n))))
 

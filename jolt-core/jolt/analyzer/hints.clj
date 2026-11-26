@@ -192,6 +192,13 @@
 ;; runtime's signature table picks the method as the JVM compiler does, and
 ;; refuses as it does when the arguments fit two overloads equally well (a nil
 ;; literal where one takes a byte[] and another a ByteBuffer).
+;; A static call the same way: its arguments may fit two overloads equally
+;; well, which the JVM compiler refuses (String/join "," nil).
+(defn check-static-call! [ctx cls method args env]
+  (when cls
+    (when (true? (method-param-classes cls method (mapv #(arg-jclass ctx % env) args) true))
+      (analysis-error :analyze/ambiguous-method
+                      (str "More than one matching method found: " method)))))
 (defn host-call-arg-casts [ctx cls method args env]
   (when cls
     (let [ps (method-param-classes cls method (mapv #(arg-jclass ctx % env) args))]
@@ -203,7 +210,19 @@
     :local (get (:jclasses env) (:name node))
     :host-new (tag-class ctx (:class node))
     :const (let [v (:val node)]
-             (cond (string? v) "java.lang.String" (keyword? v) "clojure.lang.Keyword" :else nil))
+             (cond (string? v) "java.lang.String" (keyword? v) "clojure.lang.Keyword"
+                   ;; a constant collection is the JVM's ConstantExpr, typed
+                   ;; by its concrete class
+                   (vector? v) "clojure.lang.PersistentVector"
+                   (set? v) "clojure.lang.PersistentHashSet" :else nil))
+    ;; one with an element computed at run time is a VectorExpr/SetExpr/MapExpr,
+    ;; typed by its interface; all-constant elements make it a constant
+    :vector (if (every? #(= :const (:op %)) (:items node))
+              "clojure.lang.PersistentVector" "clojure.lang.IPersistentVector")
+    :set (if (every? #(= :const (:op %)) (:items node))
+           "clojure.lang.PersistentHashSet" "clojure.lang.IPersistentSet")
+    :map "clojure.lang.IPersistentMap"
+    :quote (when (form-list? (:form node)) "clojure.lang.PersistentList")
     :bigdec "java.math.BigDecimal"
     :do (node-jclass ctx (:ret node) env)
     :host-call (call-return-class ctx (:target-class node) (:method node) false (:args node) env)
