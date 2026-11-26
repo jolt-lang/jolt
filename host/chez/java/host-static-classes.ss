@@ -2475,6 +2475,78 @@
         (cons "hasMoreElements" st-more?)
         (cons "nextElement" st-next!)))
 
+;; ---- StringJoiner -----------------------------------------------------------
+;; state: #(delimiter prefix suffix empty-value parts-reversed count body-length)
+;; editscript's :clj string patch (sreplace-character) builds its result through
+;; one, a part per edit, so add is O(1) (a cons, plus a running body length that
+;; makes length O(1) as on the JDK) and toString fills ONE preallocated string
+;; back to front from the reversed parts -- no intermediate strings and no
+;; apply over a list as long as the edit script.
+;; empty-value is #f until setEmptyValue; until then an empty joiner renders
+;; prefix+suffix, as the JDK does.
+(define (sj-arg x) (if (string? x) x (if (eq? x jolt-nil) "null" (jolt-str-render-one x))))
+(define-syntax sj-st (syntax-rules () ((_ self i) (vector-ref (jhost-state self) i))))
+(define (sj-count self) (sj-st self 5))
+;; delimiters + parts, without prefix/suffix
+(define (sj-body-length self)
+  (let ((n (sj-count self)))
+    (if (fx=? n 0)
+        0
+        (fx+ (sj-st self 6) (fx* (fx- n 1) (string-length (sj-st self 0)))))))
+(define (sj-empty-value? self) (and (fx=? (sj-count self) 0) (sj-st self 3)))
+(define (sj-length self)
+  (or (and (sj-empty-value? self) (string-length (sj-st self 3)))
+      (fx+ (string-length (sj-st self 1)) (sj-body-length self)
+           (string-length (sj-st self 2)))))
+;; Copy the body into OUT ending at index END, back to front.
+(define (sj-fill-body! self out end)
+  (let ((delim (sj-st self 0)) (dl (string-length (sj-st self 0))))
+    (let loop ((ps (sj-st self 4)) (end end))
+      (unless (null? ps)
+        (let* ((p (car ps)) (pl (string-length p)) (at (fx- end pl)))
+          (string-copy! p 0 out at pl)
+          (unless (null? (cdr ps))
+            (string-copy! delim 0 out (fx- at dl) dl)
+            (loop (cdr ps) (fx- at dl))))))))
+(define (sj-body self)
+  (let* ((n (sj-body-length self)) (out (make-string n)))
+    (sj-fill-body! self out n)
+    out))
+(define (sj-render self)
+  (if (sj-empty-value? self)
+      (sj-st self 3)
+      (let* ((pre (sj-st self 1)) (suf (sj-st self 2))
+             (total (sj-length self)) (out (make-string total))
+             (sl (string-length suf)))
+        (string-copy! pre 0 out 0 (string-length pre))
+        (sj-fill-body! self out (fx- total sl))
+        (string-copy! suf 0 out (fx- total sl) sl)
+        out)))
+(define (sj-add! self x)
+  (let ((st (jhost-state self)) (s (sj-arg x)))
+    (vector-set! st 4 (cons s (vector-ref st 4)))
+    (vector-set! st 5 (fx+ (vector-ref st 5) 1))
+    (vector-set! st 6 (fx+ (vector-ref st 6) (string-length s)))
+    self))
+(define (sj-make delim prefix suffix)
+  (make-jhost "string-joiner"
+    (vector (sj-arg delim) (sj-arg prefix) (sj-arg suffix) #f '() 0 0)))
+(register-class-ctor! "StringJoiner"
+  (case-lambda
+    ((delim) (sj-make delim "" ""))
+    ((delim prefix suffix) (sj-make delim prefix suffix))))
+(register-host-methods! "string-joiner"
+  (list (cons "add" sj-add!)
+        (cons "toString" sj-render)
+        (cons "length" (lambda (self) (->num (sj-length self))))
+        (cons "setEmptyValue"
+              (lambda (self v) (vector-set! (jhost-state self) 3 (sj-arg v)) self))
+        ;; merge adds OTHER's joined parts, without its prefix/suffix, as one
+        ;; element -- and nothing at all when other has no parts
+        (cons "merge"
+              (lambda (self other)
+                (if (fx>? (sj-count other) 0) (sj-add! self (sj-body other)) self)))))
+
 ;; ---- String / BigInteger / MapEntry constructors ----------------------------
 ;; (String. bytes [charset]) decodes bytes (a bytevector OR a jolt byte-array)
 ;; with the named charset (UTF-8 default; ISO-8859-1/latin1/ascii = one byte per
