@@ -628,23 +628,29 @@
    "isLowerCase" "lower" "isLetter" "letter" "isLetterOrDigit" "letter-or-digit"})
 
 ;; A host static method call, through a per-site cache inside a pool.
-(defn emit-host-static-call [tail? fnode order-args]
-  (if (do (note-tail-call! tail?) (and *const-pool* (var-cache?)))
-    (let [site (hoist-const-per-site "(host-static-site-make)")
-          proc (fn [n] (str "(" (if (= :gambit (session/target)) "host-static-proc-site" "host-static-proc-site/i")
-                            " " site " " (chez-str-lit (:class fnode)) " "
-                            (chez-str-lit (:member fnode)) " " n ")"))
-          intrinsic (and (not= :gambit (session/target))
-                         (#{"Character" "java.lang.Character"} (:class fnode))
-                         (char-pred-intrinsics (:member fnode)))]
+;; A host static method call, through a per-site cache inside a pool. A call the
+;; analyzer resolved to one overload casts its arguments first (:arg-casts,
+;; interop.clj cast-args, handed in: this namespace loads before that one) and calls the overload's own member when it has one
+;; (:entry on the head).
+(defn emit-host-static-call [tail? fnode order-args node cast-args]
+  (let [member (or (:entry fnode) (:member fnode))
+        order-args (fn [f] (order-args (fn [as] (f (cast-args node as)))))]
+    (if (do (note-tail-call! tail?) (and *const-pool* (var-cache?)))
+      (let [site (hoist-const-per-site "(host-static-site-make)")
+            proc (fn [n] (str "(" (if (= :gambit (session/target)) "host-static-proc-site" "host-static-proc-site/i")
+                              " " site " " (chez-str-lit (:class fnode)) " "
+                              (chez-str-lit member) " " n ")"))
+            intrinsic (and (not= :gambit (session/target))
+                           (#{"Character" "java.lang.Character"} (:class fnode))
+                           (char-pred-intrinsics member))]
+        (order-args (fn [as]
+                      (if (and intrinsic (= 1 (count as)))
+                        (str "(jolt-char-pred/i " intrinsic " " (first as) " " (proc 1) ")")
+                        (str "(" (proc (count as))
+                             (if (empty? as) "" (str " " (str/join " " as))) ")")))))
       (order-args (fn [as]
-                    (if (and intrinsic (= 1 (count as)))
-                      (str "(jolt-char-pred/i " intrinsic " " (first as) " " (proc 1) ")")
-                      (str "(" (proc (count as))
-                           (if (empty? as) "" (str " " (str/join " " as))) ")")))))
-    (order-args (fn [as]
-                  (str "(host-static-call " (chez-str-lit (:class fnode)) " " (chez-str-lit (:member fnode))
-                       (if (empty? as) "" (str " " (str/join " " as))) ")")))))
+                    (str "(host-static-call " (chez-str-lit (:class fnode)) " " (chez-str-lit member)
+                         (if (empty? as) "" (str " " (str/join " " as))) ")"))))))
 
 ;; jolt.host/rec-type?, answered from the record type the inference proved.
 (defn emit-rec-type-check [node arg-nodes order-args]

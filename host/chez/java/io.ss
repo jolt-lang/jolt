@@ -3988,6 +3988,8 @@
 (register-class-ctor! "File" jolt-file-ctor)
 ;; File statics: the platform separators plus createTempFile / listRoots.
 (define (file-create-temp prefix suffix . dir)
+  (when (jolt-nil? prefix)
+    (throw-jvm (quote NullPointerException) "Cannot invoke \"String.length()\" because \"prefix\" is null"))
   ;; the JVM rejects a prefix under three characters, so a caller that works here
   ;; works there too
   (when (< (string-length (jolt-str-render-one prefix)) 3)
@@ -4730,7 +4732,11 @@
     (if (uri-error? r)
         (throw-jvm (quote IllegalArgumentException) (uri-error-message s r))
         r)))
-(register-class-statics! "java.net.URI" (list (cons "create" (lambda (s) (uri-create (jolt-str-render-one s))))))
+(register-class-statics! "java.net.URI"
+  (list (cons "create" (lambda (s)
+                         (when (jolt-nil? s)
+                           (throw-jvm (quote NullPointerException) "Cannot invoke \"String.length()\" because \"this.input\" is null"))
+                         (uri-create (jolt-str-render-one s))))))
 (register-host-methods! "uri"
   ;; The getX / getRawX pairs answer DIFFERENT strings: raw is the substring the
   ;; parse produced, getX is that percent-decoded. They used to share one field,

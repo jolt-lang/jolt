@@ -502,6 +502,12 @@
                                                         (jolt-str-render-one x)))))))))
         ((or (number? x) (jfloat? x) (jbigdec? x)) (jolt-int-cast x))
         (else (jolt-checkcast-fail x "java.lang.Number"))))
+(define (jolt-unbox-char x)
+  (cond ((or (char? x) (jsurr? x)) x)
+        ((jolt-nil? x)
+         (throw-jvm 'NullPointerException
+                    "Cannot invoke \"java.lang.Character.charValue()\" because \"null\" is null"))
+        (else (jolt-checkcast-fail x "java.lang.Character"))))
 (define (jolt-unbox-long x)
   (cond ((fixnum? x) x)
         ((jolt-nil? x)
@@ -568,8 +574,21 @@
 ;; An instance method, and optionally the class it returns.
 (define (register-method-params! cls method params . ret)
   (register-method-sig! cls method #f params (if (pair? ret) (car ret) #f)))
-(define (register-static-method! cls method params ret)
-  (register-method-sig! cls method #t params ret))
+(define (register-static-method! cls method params ret . entry)
+  (register-method-sig! cls method #t params ret)
+  (when (pair? entry) (hashtable-set! method-overload-entries (sig-entry-key cls method params) (car entry))))
+;; A static overload that behaves differently from the shim its name reaches
+;; (String.valueOf(char[]) refusing nil) registers its own member; a call the
+;; compiler resolves to that overload calls it (analyzer hints.clj).
+(define method-overload-entries (make-hashtable string-hash string=?))
+(define (sig-entry-key cls method params)
+  (apply string-append cls "/" method (map (lambda (p) (string-append " " p)) params)))
+(define (method-overload-entry cls method arg-classes)
+  (let ((m (method-sig-pick cls method #t arg-classes)))
+    (or (and (vector? m)
+             (hashtable-ref method-overload-entries (sig-entry-key cls method (vector-ref m 2)) #f))
+        jolt-nil)))
+(def-var! "jolt.host" "method-overload-entry" method-overload-entry)
 ;; The methods cls has under that name and arity. A static method belongs to
 ;; the class it is called on; an instance method is found through the class's
 ;; supers.
@@ -1044,7 +1063,10 @@
           '("toUpperCase" "toLowerCase" "trim" "strip" "stripLeading" "stripTrailing" "intern"))
 (register-method-params! "java.lang.String" "concat" '("java.lang.String") "java.lang.String")
 (for-each (lambda (p) (register-static-method! "java.lang.String" "valueOf" (list p) "java.lang.String"))
-          '("java.lang.Object" "[C" "boolean" "char" "int" "long" "float" "double"))
+          '("java.lang.Object" "boolean" "char" "int" "long" "float" "double"))
+(register-static-method! "java.lang.String" "valueOf" '("[C") "java.lang.String" "valueOf([C)")
+(register-static-method! "java.lang.String" "copyValueOf" '("[C") "java.lang.String")
+(register-static-method! "java.lang.String" "copyValueOf" '("[C" "int" "int") "java.lang.String")
 (register-static-method! "java.lang.String" "valueOf" '("[C" "int" "int") "java.lang.String")
 (register-static-method! "java.lang.String" "format" '("java.lang.String" "[Ljava.lang.Object;") "java.lang.String")
 (register-static-method! "java.lang.String" "join" '("java.lang.CharSequence" "[Ljava.lang.CharSequence;") "java.lang.String")

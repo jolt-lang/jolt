@@ -8,8 +8,9 @@
                                form-coll-meta form-list? form-vec? form-elements
                                record-type? record-ctor-key resolve-global
                                resolve-class-hint method-return-class
-                               method-param-classes]]
-            [jolt.analyzer.diagnostics :refer [analysis-error]]))
+                               method-param-classes method-overload-entry]]
+            [jolt.analyzer.diagnostics :refer [analysis-error]]
+            [jolt.ir :refer [invoke]]))
 
 ;; --- the JVM's primitive boolean loop locals --------------------------------
 ;; The reference compiler gives a loop local the JVM type of its init, and a local
@@ -193,16 +194,22 @@
 ;; refuses as it does when the arguments fit two overloads equally well (a nil
 ;; literal where one takes a byte[] and another a ByteBuffer).
 ;; A static call the same way: its arguments may fit two overloads equally
-;; well, which the JVM compiler refuses (String/join "," nil).
-(defn check-static-call! [ctx cls method args env]
-  (when cls
-    (when (true? (method-param-classes cls method (mapv #(arg-jclass ctx % env) args) true))
+;; well, which the JVM compiler refuses (String/join "," nil). One it resolves
+;; to a single overload casts and unboxes its arguments as a resolved instance
+;; call does (:arg-casts), and calls the overload's own member when the runtime
+;; registers one for it (String.valueOf(char[]) refusing a nil the shim named
+;; valueOf would print).
+(defn static-invoke [ctx f args env]
+  (let [cls (when (= :host-static (:op f)) (tag-class ctx (:class f)))
+        acs (when cls (mapv #(arg-jclass ctx % env) args))
+        ps (when cls (method-param-classes cls (:member f) acs true))]
+    (when (true? ps)
       (analysis-error :analyze/ambiguous-method
-                      (str "More than one matching method found: " method)))))
-;; (f args) whose f is a Class/staticMethod: the same tie check
-(defn check-static-invoke! [ctx f args env]
-  (when (= :host-static (:op f))
-    (check-static-call! ctx (tag-class ctx (:class f)) (:member f) args env)))
+                      (str "More than one matching method found: " (:member f))))
+    (if (some? ps)
+      (let [entry (method-overload-entry cls (:member f) acs)]
+        (assoc (invoke (if (string? entry) (assoc f :entry entry) f) args) :arg-casts (vec ps)))
+      (invoke f args))))
 (defn host-call-arg-casts [ctx cls method args env]
   (when cls
     (let [ps (method-param-classes cls method (mapv #(arg-jclass ctx % env) args))]
@@ -257,7 +264,14 @@
                 (form-list? raw) (form-coll-meta raw)
                 :else nil)
         tag (when (map? m) (get m :tag))]
-    (if tag (tag-class ctx tag) (node-jclass ctx target env))))
+    (if tag
+      (tag-class ctx tag)
+      (let [c (node-jclass ctx target env)] (when-not (= c "null") c)))))
+;; A let or loop local's class from its init: a nil literal gives the local the
+;; null type, which picks an overload as the literal would (String/valueOf of
+;; such a local is the char[] one).
+(defn init-jclass [ctx init env]
+  (if (and (= :const (:op init)) (nil? (:val init))) "null" (node-jclass ctx init env)))
 (defn add-jclass [env nm c]
   (if c (assoc env :jclasses (assoc (:jclasses env) nm c)) env))
 

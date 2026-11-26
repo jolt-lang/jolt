@@ -499,6 +499,9 @@
   ;; JVM returns 0.050.
   (list (cons "valueOf"
               (lambda (x . rest)
+                ;; nil fits neither valueOf(long) nor valueOf(double)
+                (when (jolt-nil? x)
+                  (throw-jvm (quote IllegalArgumentException) "No matching method valueOf found taking 1 args"))
                 (if (null? rest)
                     (jolt-bigdec x)
                     (make-jbigdec (jnum->exact x) (jnum->exact (car rest))))))

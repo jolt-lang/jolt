@@ -420,6 +420,12 @@
 (check "(try (.compareTo \"a\" 1) (catch ClassCastException c (ex-message c)))"
        "\"class java.lang.Long cannot be cast to class java.lang.String (java.lang.Long and java.lang.String are in module java.base of loader 'bootstrap')\"")
 
+;; instance? on jolt's own collections answers from the class graph, which a
+;; resolved call's argument cast relies on ((String/join "," [...]) casts the
+;; vector to Iterable)
+(check "[(mapv #(instance? % [1]) [java.util.List clojure.lang.IPersistentVector java.util.Collection Iterable java.util.RandomAccess]) (mapv #(instance? Iterable %) [(list 1) {:a 1} #{1} (seq [1]) (range 3)])]"
+       "[[true true true true true] [true true true true true]]")
+
 ;; The JDK signature table's methods (records-interop.ss) dispatch here too:
 ;; String.compareTo and the strip family, a number's compareTo, the boxed
 ;; numbers' and Character's valueOf, String/valueOf, and java.util.UUID's

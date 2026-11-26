@@ -218,10 +218,27 @@
 (register-class-statics! "Character"
   (list (cons "valueOf" (lambda (ch) (if (or (char? ch) (jsurr? ch)) ch (jolt-char ch))))))
 (register-class-statics! "String"
-  (list (cons "valueOf" (lambda (x) (if (jolt-nil? x) "null" (jolt-str-render-one x))))))
+  (list (cons "valueOf" (lambda (x) (if (jolt-nil? x) "null" (jolt-str-render-one x))))
+        ;; the char[] overload a nil literal resolves to (records-interop.ss)
+        (cons "valueOf([C)" (lambda (x)
+                              (if (jolt-nil? x)
+                                  (throw-jvm (quote NullPointerException)
+                                             "Cannot read the array length because \"value\" is null")
+                                  (jolt-str-render-one x))))))
 (register-class-statics! "java.util.UUID"
   (list (cons "randomUUID" (lambda () (jolt-random-uuid)))
         (cons "fromString" uuid-from-string-jvm)))
+;; instance? over jolt's own values by the class graph: Chez answers a
+;; collection's interfaces from per-kind tables in files this boot leaves out, so
+;; here (instance? Iterable [1]) and (instance? java.util.List [1]) asked the
+;; class graph nothing and answered false. The value's class and the graph are
+;; both shared; a record, reify or throwable has passed to its own arms already.
+(register-instance-check-arm!
+  (lambda (ts val)
+    (if (and (symbol-t? ts) (not (jolt-nil? val)))
+        (let ((n (guard (e (#t #f)) (jolt-class-name val))))
+          (if (and (string? n) (jch-isa? n (symbol-t-name ts))) #t 'pass))
+        'pass)))
 ;; a UUID is a java.util.UUID, as Chez's io.ss registers it
 (register-class-arm! juuid? (lambda (x) "java.util.UUID"))
 ;; ...and the instance methods: a number's compareTo (records-interop.ss, the

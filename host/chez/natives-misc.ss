@@ -101,6 +101,8 @@
              (loop (fx+ i 1) (fx+ i 1) (cons (substring s start i) acc)))
             (else (loop (fx+ i 1) start acc))))))
 (define (uuid-from-string-jvm s0)
+  (when (jolt-nil? s0)
+    (throw-jvm (quote NullPointerException) "Cannot invoke \"String.length()\" because \"name\" is null"))
   (let ((s (jolt-str-render-one s0)))
     (define (bad!)
       (throw-jvm (quote IllegalArgumentException) (string-append "Invalid UUID string: " s)))

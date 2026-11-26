@@ -222,7 +222,7 @@
 ;; file the two hosts share.
 (def ^:private checkcast-preds
   {"java.lang.String" "string?" "java.lang.Long" "fixnum?" "java.lang.Double" "flonum?"})
-(def ^:private unbox-entries {"int" "jolt-unbox-int" "long" "jolt-unbox-long"})
+(def ^:private unbox-entries {"int" "jolt-unbox-int" "long" "jolt-unbox-long" "char" "jolt-unbox-char"})
 (defn- checkcast-emit [cls e]
   (let [lit (chez-str-lit cls)]
     (if-let [p (get checkcast-preds cls)]
@@ -237,7 +237,7 @@
         (or (str/includes? p ".") (str/starts-with? p "[")) (checkcast-emit p a)
         (get unbox-entries p) (str "(" (get unbox-entries p) " " a ")")
         :else a))
-(defn- cast-args [node args]
+(defn cast-args [node args]
   (let [ps (:arg-casts node)]
     (if (and (seq ps) (= (count ps) (count args)))
       (mapv arg-cast-emit ps args)

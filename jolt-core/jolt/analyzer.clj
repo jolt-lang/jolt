@@ -49,8 +49,8 @@
                                                current-form-position]]
             [jolt.analyzer.hints :refer [jvm-boolean-prim? jvm-non-boolean-class hint-of
                                          init-proves-hint add-hint tag->nkind ahint-of
-                                         tag-class sym-tag-class node-jclass add-jclass
-                                         host-call-arg-casts check-static-call! check-static-invoke! host-call-target-class
+                                         tag-class sym-tag-class node-jclass init-jclass add-jclass
+                                         host-call-arg-casts static-invoke host-call-target-class
                                          with-ret-nhint fi-tag-class fi-adapt-form
                                          parse-params strip-arglist-meta arglist-ret-nkind arglist-type-method? arglist-meta
                                          str-target-type kw-target-type sb-target-type]]
@@ -288,7 +288,7 @@
           ;; programmer wrote nothing.
           (recur (+ i 2) (let [e (-> (add-locals env [nm])
                                      (add-hint nm (or (hint-of ctx bsym) (init-proves-hint init)))
-                                     (add-jclass nm (or (sym-tag-class ctx bsym) (node-jclass ctx init env))))]
+                                     (add-jclass nm (or (sym-tag-class ctx bsym) (init-jclass ctx init env))))]
                            (if (jvm-boolean-prim? init env)
                              (assoc-in e [:jprims nm] :boolean)
                              e))
@@ -1213,9 +1213,8 @@
         (invoke (var-ref "jolt.host" "static-member")
                 [(const class-target) (const (form-sym-name member))])
       (and class-target (form-sym? member))
-        (let [args (mapv #(analyze ctx % env) (drop 3 items))]
-          (check-static-call! ctx (tag-class ctx class-target) (form-sym-name member) args env)
-          (invoke (host-static class-target (form-sym-name member)) args))
+        (static-invoke ctx (host-static class-target (form-sym-name member))
+                       (mapv #(analyze ctx % env) (drop 3 items)) env)
       (form-sym? member)
         {:op :host-call
          :method (form-sym-name member)
@@ -1622,8 +1621,7 @@
               (deny-private head (resolve-global ctx head) true))
           f (analyze ctx head env)
           args (mapv #(analyze ctx % env) (rest items))
-          _ (check-static-invoke! ctx f args env)
-          n (invoke f args)
+          n (static-invoke ctx f args env)
           p (or (form-position form) (current-form-position))]
       (if p (assoc n :pos p) n))))
 
