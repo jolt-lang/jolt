@@ -164,6 +164,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A float prints with the JDK's shortest digits at a power of two, where the
+  shortest decimal that reads back can lie on the far side of the float:
+  `(str (float (Math/pow 2 -96)))` is `1.2621775E-29`, not `1.26217745E-29`
+  (also 2^87 and 2^90).
 - `Math/log10` and `clojure.math/log10` give the JDK's digits: they are
   fdlibm's, as the JDK's are, so `(Math/log10 1000.0)` is `3.0` rather than
   `2.9999999999999996`.
