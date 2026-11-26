@@ -7,7 +7,8 @@
   (:require [jolt.host :refer [form-sym? form-sym-name form-sym-ns form-sym-meta
                                form-coll-meta form-list? form-vec? form-elements
                                record-type? record-ctor-key resolve-global
-                               resolve-class-hint]]
+                               resolve-class-hint method-return-class
+                               method-param-classes]]
             [jolt.analyzer.diagnostics :refer [analysis-error]]))
 
 ;; --- the JVM's primitive boolean loop locals --------------------------------
@@ -170,15 +171,55 @@
         (if (= :class (:kind r)) (:name r) (resolve-class-hint nm))))))
 (defn sym-tag-class [ctx sym]
   (let [m (form-sym-meta sym)] (when m (tag-class ctx (get m :tag)))))
+(declare node-jclass)
+;; An argument's class as the JVM compiler matches it against a method's
+;; parameters: node-jclass's, or a literal's own JVM type ("long" for 1, "null"
+;; for nil). nil is an untyped argument, which the compiler takes as an Object.
+(defn- arg-jclass [ctx node env]
+  (or (node-jclass ctx node env)
+      (when (= :const (:op node))
+        (let [c (const-jvm-class (:val node))]
+          (cond (= :null c) "null" (string? c) c :else nil)))))
+;; The class a host method's result has: the runtime's signature table
+;; (jolt.host/method-return-class) decides from the receiver class and the
+;; arguments' classes, as the JVM compiler picks the method it compiles against.
+(defn- call-return-class [ctx cls method static? args env]
+  (when cls
+    (let [r (method-return-class cls method static? (mapv #(arg-jclass ctx % env) args))]
+      (when (string? r) r))))
+;; The parameter classes a resolved call (receiver class cls) casts its
+;; arguments to, or nil when the call is not resolved to one method — the
+;; runtime's signature table picks the method as the JVM compiler does, and
+;; refuses as it does when the arguments fit two overloads equally well (a nil
+;; literal where one takes a byte[] and another a ByteBuffer).
+(defn host-call-arg-casts [ctx cls method args env]
+  (when cls
+    (let [ps (method-param-classes cls method (mapv #(arg-jclass ctx % env) args))]
+      (cond (true? ps) (analysis-error :analyze/ambiguous-method
+                                       (str "More than one matching method found: " method))
+            (some? ps) (vec ps)))))
 (defn node-jclass [ctx node env]
   (case (:op node)
     :local (get (:jclasses env) (:name node))
     :host-new (tag-class ctx (:class node))
     :const (let [v (:val node)]
              (cond (string? v) "java.lang.String" (keyword? v) "clojure.lang.Keyword" :else nil))
+    :bigdec "java.math.BigDecimal"
     :do (node-jclass ctx (:ret node) env)
-    :invoke (let [c (invoke-jvm-class (:fn node))]
-              (when (and (string? c) (not= c "Object")) (tag-class ctx c)))
+    :host-call (call-return-class ctx (:target-class node) (:method node) false (:args node) env)
+    :invoke (let [f (:fn node)]
+              (cond
+                (= :host-static (:op f))
+                (call-return-class ctx (tag-class ctx (:class f)) (:member f) true (:args node) env)
+                ;; (Class/member) with no arguments: a static field or a no-arg
+                ;; static method, decided at run time (jolt.host/static-member)
+                (and (= :var (:op f)) (= "jolt.host" (str (:ns f))) (= "static-member" (str (:name f)))
+                     (every? #(= :const (:op %)) (:args node)))
+                (let [[c m] (map :val (:args node))]
+                  (when (and (string? c) (string? m)) (call-return-class ctx (tag-class ctx c) m true [] env)))
+                :else
+                (let [c (invoke-jvm-class f)]
+                  (when (and (string? c) (not= c "Object")) (tag-class ctx c)))))
     nil))
 (defn add-jclass [env nm c]
   (if c (assoc env :jclasses (assoc (:jclasses env) nm c)) env))

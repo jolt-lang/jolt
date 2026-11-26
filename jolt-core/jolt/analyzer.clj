@@ -50,6 +50,7 @@
             [jolt.analyzer.hints :refer [jvm-boolean-prim? jvm-non-boolean-class hint-of
                                          init-proves-hint add-hint tag->nkind ahint-of
                                          tag-class sym-tag-class node-jclass add-jclass
+                                         host-call-arg-casts
                                          with-ret-nhint fi-tag-class fi-adapt-form
                                          parse-params strip-arglist-meta arglist-ret-nkind arglist-type-method? arglist-meta
                                          str-target-type kw-target-type sb-target-type]]
@@ -1122,15 +1123,18 @@
       (str "Malformed member expression, expecting (.method target ...): " hname)))
   (let [raw (nth items 1)
         target (analyze ctx raw env)
-        cls (host-call-target-class ctx raw target env)]
+        cls (host-call-target-class ctx raw target env)
+        args (mapv #(analyze ctx % env) (drop 2 items))
+        casts (host-call-arg-casts ctx cls (subs hname 1) args env)]
     (cond-> {:op :host-call
              :method (subs hname 1)
              :target target
-             :args (mapv #(analyze ctx % env) (drop 2 items))}
+             :args args}
       (str-target-type raw target) (assoc :target-type :str)
       (kw-target-type raw target) (assoc :target-type :kw)
       (sb-target-type raw target) (assoc :target-type (sb-target-type raw target))
-      cls (assoc :target-class cls))))
+      cls (assoc :target-class cls)
+      casts (assoc :arg-casts casts))))
 
 ;; `(Class. args*)` and `(new Class args*)` -> a :host-new node carrying the class
 ;; token and the analyzed args. The Chez back end lowers it to a runtime

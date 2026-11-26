@@ -152,6 +152,12 @@
  "A host interop form that does not parse: (. target member ...), (.method
   target ...) or (.-field target) with a missing or non-symbol member."
 
+ :analyze/ambiguous-method
+ "A host method call on a receiver whose class the compiler knows, with
+  arguments that fit two of its overloads and neither more specifically: `More
+  than one matching method found: update` for `(.update crc nil)`, as the JVM's
+  Compiler.getMatchingParams refuses it."
+
  :analyze/invalid-macro-value
  "A macro's var used as a value. Macros exist only at compile time."
 

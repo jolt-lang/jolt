@@ -65,16 +65,23 @@
         ((and (flonum? a) (flonum? b)) (jolt-compare a b))
         ((or (jolt-nil? a) (jolt-nil? b)) (throw-jvm 'NullPointerException jolt-nil))
         ((not (tm-comparable? a))
-         (throw-jvm 'ClassCastException
-                    (string-append "class " (tm-class-name a)
-                                   " cannot be cast to class java.lang.Comparable")))
+         (jolt-checkcast-fail a "java.lang.Comparable"))
         ((and (number? a) (number? b))
          (let ((ca (tm-number-class a)) (cb (tm-number-class b)))
            (if (or (string=? ca cb) (string=? ca "clojure.lang.Ratio"))
                (jolt-compare a b)
-               (throw-jvm 'ClassCastException
-                          (string-append "class " cb " cannot be cast to class " ca)))))
+               (jvm-cast-fail-named cb ca))))
+        ;; a String, Keyword, Symbol, Character or Boolean casts its argument to
+        ;; its own class inside compareTo (a Long's or Double's is the number arm
+        ;; above, where a Ratio takes any Number)
+        ((and (or (string? a) (keyword? a) (jolt-symbol? a) (char? a) (boolean? a)
+                  (number? a))
+              (not (string=? (tm-key-class a) (tm-key-class b))))
+         (jvm-cast-fail-named (tm-key-class b)
+                              (let ((ca (tm-key-class a)))
+                                (if (string=? ca "clojure.lang.Ratio") "java.lang.Number" ca))))
         (else (jolt-compare a b))))
+(define (tm-key-class x) (if (number? x) (tm-number-class x) (tm-class-name x)))
 
 ;; A comparator object as a 3-way procedure (natives-seq.ss)
 (define (tm-comparator->cmpf c) (jolt-comparator->cmp c))

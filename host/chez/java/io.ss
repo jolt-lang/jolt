@@ -2312,7 +2312,6 @@
            #t))))))
 
 ;; --- File method surface (record-method-dispatch arm) -----------------------
-(register-method-params! "java.io.File" "compareTo" '("java.io.File"))
 (define (jfile-method f name args)        ; -> boxed result, or #f to fall through
   ;; Lexical methods use the held path. Resolving a relative name here would
   ;; ask for the process cwd even for getName or a conversion to a NIO Path.
@@ -4125,7 +4124,6 @@
 ;; longs (natives-misc.ss); timestamp/clockSequence/node are v1-only, like the
 ;; JVM. Unknown names 'pass so the base still answers toString/equals/getClass.
 (define (uuid-version-of u) (uuid-hexv (string-ref (juuid-s u) 14)))
-(register-method-params! "java.util.UUID" "compareTo" '("java.util.UUID"))
 (define (uuid-method u m args)
   (define (need-v1!)
     (unless (= 1 (uuid-version-of u))
@@ -4190,6 +4188,10 @@
         (else #f)))
 (register-class-ctor! "Boolean" boolean-ctor)
 (register-class-ctor! "java.lang.Boolean" boolean-ctor)
+;; new Character(char): the char itself, jolt's Character
+(let ((char-ctor (lambda (c) (if (or (char? c) (jsurr? c)) c (jolt-checkcast-fail c "java.lang.Character")))))
+  (register-class-ctor! "Character" char-ctor)
+  (register-class-ctor! "java.lang.Character" char-ctor))
 
 ;; --- java.net.URI -----------------------------------------------------------
 ;; An RFC-2396 parse that follows java.net.URI's, because the single-argument
@@ -4724,7 +4726,6 @@
         (throw-jvm (quote IllegalArgumentException) (uri-error-message s r))
         r)))
 (register-class-statics! "java.net.URI" (list (cons "create" (lambda (s) (uri-create (jolt-str-render-one s))))))
-(register-method-params! "java.net.URI" "compareTo" '("java.net.URI"))
 (register-host-methods! "uri"
   ;; The getX / getRawX pairs answer DIFFERENT strings: raw is the substring the
   ;; parse produced, getX is that percent-decoded. They used to share one field,

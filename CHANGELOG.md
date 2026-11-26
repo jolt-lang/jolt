@@ -150,6 +150,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   String, Character, File, UUID, URI and BigDecimal. `Keyword` and `Symbol`
   have `compareTo`, `Character.compareTo` answers the code unit difference, and
   `cast` and `Class.cast` name both classes.
+- The class a host call's result has now counts too: a static method's or a
+  method's declared return (`(UUID/randomUUID)`, `(Long/valueOf 1)`,
+  `(.getAbsoluteFile f)`) and a BigDecimal literal type the receiver of the
+  next call, the way the JVM picks the method it compiles against. The
+  java.util.zip methods take their arguments both ways too, an int or long
+  parameter included (RT.intCast when resolved, Number.intValue when not),
+  and the Gambit target emits the same casts.
+- `Throwable.initCause` exists, with the JDK's refusals; `(Character. \a)`
+  constructs; BigDecimal `min`/`max` take only a BigDecimal; a TreeMap's
+  natural-order ClassCastException names both classes' modules.
 - `Math/log10` and `clojure.math/log10` give the JDK's digits: they are
   fdlibm's, as the JDK's are, so `(Math/log10 1000.0)` is `3.0` rather than
   `2.9999999999999996`.

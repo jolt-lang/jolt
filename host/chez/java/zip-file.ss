@@ -609,7 +609,7 @@
           ((jfile? x) (jfile-path x))
           (else (no-ctor))))
   (define (mode-arg x)
-    (let ((m (zip-int-arg x)))
+    (let ((m (zip-ctor-int-arg x)))
       (unless (or (= m zip-open-read) (= m (bitwise-ior zip-open-read zip-open-delete)))
         (zip-throw "java.lang.IllegalArgumentException"
                    (string-append "Illegal mode: 0x" (number->string m 16))))
@@ -619,7 +619,7 @@
           ((zip-charset? x)
            (let ((name (charset-canonical-down (charset-arg-name x))))
              (and (not (string=? name "utf-8")) name)))
-          (else (zip-class-cast x "java.nio.charset.Charset"))))
+          (else (zip-ctor-class-cast x "java.nio.charset.Charset"))))
   (let-values (((name coder)
                 (case (length args)
                   ((1) (values (file-arg (car args)) #f))
@@ -1032,7 +1032,7 @@
   (define (verify-arg x) (unless (boolean? x) (no-ctor)))
   (define (mode-arg x)
     (unless (zip-long? x) (no-ctor))
-    (let ((mode (zip-int-arg x)))
+    (let ((mode (zip-ctor-int-arg x)))
       (unless (or (= mode zip-open-read) (= mode (bitwise-ior zip-open-read zip-open-delete)))
         (zip-throw "java.lang.IllegalArgumentException"
                    (string-append "Illegal mode: 0x" (number->string mode 16))))

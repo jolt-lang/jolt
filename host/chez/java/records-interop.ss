@@ -451,36 +451,204 @@
      ")")))
 (define (jolt-cast-class-name x)
   (let ((n (guard (e (#t #f)) (jolt-class-name x)))) (if (string? n) n "java.lang.Object")))
+(define (jvm-cast-fail-named from to)
+  (throw-jvm 'ClassCastException (jvm-checkcast-message from to)))
 (define (jolt-checkcast-fail x to)
   (throw-jvm 'ClassCastException (jvm-checkcast-message (jolt-cast-class-name x) to)))
 (define (jolt-reflect-cast-fail x to)
   (throw-jvm 'ClassCastException
              (string-append "Cannot cast " (jolt-cast-class-name x) " to " to)))
 (define (jolt-checkcast to x)
-  (if (or (jolt-nil? x) (instance-check to x)) x (jolt-checkcast-fail x to)))
+  (if (or (jolt-nil? x)
+          (if (and (fx>? (string-length to) 0) (char=? (string-ref to 0) #\[))
+              (equal? (jolt-cast-class-name x) to)
+              (instance-check to x)))
+      x
+      (jolt-checkcast-fail x to)))
 
-;; The parameter classes of a host method, for the casts above: by method name,
-;; a list of (declaring-class . parameter-classes). Only a method that is its
-;; class's one method of that name and arity belongs here — with an overload the
-;; JVM compiler cannot pick a method from the receiver alone and reflects. Filled
-;; at load, before any thread can read it.
-(define method-params-tbl (make-hashtable string-hash string=?))
-(define (register-method-params! cls method params)
-  (hashtable-set! method-params-tbl method
-                  (cons (cons cls params) (hashtable-ref method-params-tbl method '()))))
-;; The compiler's question: the parameter classes (cls).method takes at argc
-;; arguments, as a vector of class names, or nil when no registered method fits.
-(define (method-param-classes cls method argc)
-  (let loop ((es (hashtable-ref method-params-tbl method '())))
-    (cond ((null? es) jolt-nil)
-          ((and (fx=? (length (cdar es)) argc) (jch-isa? cls (caar es)))
-           (apply jolt-vector (cdar es)))
-          (else (loop (cdr es))))))
+;; A primitive parameter's argument, both ways. A resolved call unboxes it as the
+;; compiler does (HostExpr.emitUnboxArg: a checkcast to Number, then RT.intCast
+;; or RT.longCast, which check the range); the back end emits jolt-unbox-int /
+;; jolt-unbox-long for it. An unresolved one goes through Reflector.boxArg, which
+;; takes any Number's intValue/longValue (a double saturates, a long wraps) and
+;; refuses anything else by name; the method's own code calls jolt-box-int /
+;; jolt-box-long, since only an unresolved call reaches it unconverted.
+(define (jolt-unbox-int x)
+  (cond ((and (fixnum? x) (fx>=? x -2147483648) (fx<=? x 2147483647)) x)
+        ((jolt-nil? x)
+         (throw-jvm 'NullPointerException
+                    "Cannot invoke \"java.lang.Character.charValue()\" because \"x\" is null"))
+        ((flonum? x)
+         (cond ((nan? x) 0)
+               ((infinite? x)
+                (throw-jvm 'IllegalArgumentException
+                           (if (> x 0)
+                               "Value out of range for long: Infinity"
+                               "Value out of range for long: -Infinity")))
+               (else
+                (let ((n (exact (truncate x))))
+                  (cond ((<= -2147483648 n 2147483647) n)
+                        ((and (>= n -9223372036854775808) (< n 9223372036854775808))
+                         (jolt-int-overflow-throw))
+                        (else (throw-jvm 'IllegalArgumentException
+                                         (string-append "Value out of range for long: "
+                                                        (jolt-str-render-one x)))))))))
+        ((or (number? x) (jfloat? x) (jbigdec? x)) (jolt-int-cast x))
+        (else (jolt-checkcast-fail x "java.lang.Number"))))
+(define (jolt-unbox-long x)
+  (cond ((fixnum? x) x)
+        ((jolt-nil? x)
+         (throw-jvm 'NullPointerException
+                    "Cannot invoke \"java.lang.Number.doubleValue()\" because \"x\" is null"))
+        ((jfloat? x) (jolt-long-cast (jfloat-fl x)))
+        ((or (number? x) (jbigdec? x)) (jolt-long-cast x))
+        (else (jolt-checkcast-fail x "java.lang.Number"))))
+(define (jvm-wrap n bits)
+  (let* ((m (bitwise-arithmetic-shift-left 1 bits))
+         (u (modulo n m)))
+    (if (>= u (bitwise-arithmetic-shift-right m 1)) (- u m) u)))
+;; Number.intValue / longValue: an integer wraps, a double saturates (NaN is
+;; 0), a Ratio truncates (intValue through its double, longValue through its
+;; BigInteger), a BigDecimal wraps its integer part.
+(define (jvm-number-value x bits)
+  (let ((d (cond ((flonum? x) x) ((jfloat? x) (jfloat-fl x)) (else #f))))
+    (cond (d (cond ((nan? d) 0)
+                   ((fl>= d (inexact (- (expt 2 (- bits 1)) 1))) (- (expt 2 (- bits 1)) 1))
+                   ((fl<= d (inexact (- (expt 2 (- bits 1))))) (- (expt 2 (- bits 1))))
+                   (else (exact (truncate d)))))
+          ((jbigdec? x) (jvm-wrap (jbd->integer x) bits))
+          ((and (exact? x) (not (integer? x)))
+           (if (= bits 32) (jvm-number-value (inexact x) 32) (jvm-wrap (truncate x) bits)))
+          (else (jvm-wrap x bits)))))
+(define (jolt-box-arg x kind bits)
+  (cond ((and (fixnum? x) (= bits 64)) x)
+        ((jolt-nil? x)
+         (throw-jvm 'NullPointerException
+                    "Cannot invoke \"Object.getClass()\" because \"arg\" is null"))
+        ((or (number? x) (jfloat? x) (jbigdec? x)) (jvm-number-value x bits))
+        (else (throw-jvm 'IllegalArgumentException
+                         (string-append "Unexpected param type, expected: " kind
+                                        ", given: " (jolt-cast-class-name x))))))
+(define (jolt-box-int x) (jolt-box-arg x "int" 32))
+(define (jolt-box-long x) (jolt-box-arg x "long" 64))
+
+;; The signatures of host methods, for the casts above and for the class a
+;; call's result has: by method name, a list of #(declaring-class static?
+;; parameter-classes return-class). A parameter class is a JVM name, "long"
+;; and the like for a primitive; the return class is #f for a void or primitive
+;; result, which the JVM compiler does not type as a class. Filled at load,
+;; before any thread can read it.
+(define method-sigs-tbl (make-hashtable string-hash string=?))
+(define (register-method-sig! cls method static? params ret)
+  (hashtable-set! method-sigs-tbl method
+                  (cons (vector cls static? params ret) (hashtable-ref method-sigs-tbl method '()))))
+;; An instance method, and optionally the class it returns.
+(define (register-method-params! cls method params . ret)
+  (register-method-sig! cls method #f params (if (pair? ret) (car ret) #f)))
+(define (register-static-method! cls method params ret)
+  (register-method-sig! cls method #t params ret))
+;; The methods cls has under that name and arity. A static method belongs to
+;; the class it is called on; an instance method is found through the class's
+;; supers.
+;; filter, spelled out: this file is shared with the Gambit host
+(define (sig-keep keep? xs)
+  (let loop ((xs xs) (acc '()))
+    (cond ((null? xs) (reverse acc))
+          ((keep? (car xs)) (loop (cdr xs) (cons (car xs) acc)))
+          (else (loop (cdr xs) acc)))))
+(define (method-sig-candidates cls method static? argc)
+  (sig-collapse-overrides
+   (sig-keep (lambda (e)
+             (and (eq? static? (vector-ref e 1))
+                  (fx=? argc (length (vector-ref e 2)))
+                  (if static? (string=? cls (vector-ref e 0)) (jch-isa? cls (vector-ref e 0)))))
+           (hashtable-ref method-sigs-tbl method '()))))
+;; An override declares the same parameters again; it is one method, and its
+;; return class (which may be narrower) is the most derived declarer's.
+(define (sig-collapse-overrides es)
+  (let loop ((es es) (out '()))
+    (if (null? es)
+        (reverse out)
+        (let* ((e (car es))
+               (same (let find ((os out))
+                       (cond ((null? os) #f)
+                             ((equal? (vector-ref (car os) 2) (vector-ref e 2)) (car os))
+                             (else (find (cdr os)))))))
+          (cond ((not same) (loop (cdr es) (cons e out)))
+                ((jch-isa? (vector-ref e 0) (vector-ref same 0))
+                 (loop (cdr es) (cons e (sig-keep (lambda (o) (not (eq? o same))) out))))
+                (else (loop (cdr es) out)))))))
+;; The compiler's argument-cast question: the parameter classes (cls).method
+;; takes at argc arguments, as a vector of class names, or nil unless exactly
+;; one registered method fits — with an overload the JVM compiler cannot pick a
+;; method from the receiver alone and reflects.
+;; #t when the arguments fit several overloads and none is the most specific,
+;; which the JVM compiler refuses: "More than one matching method found".
+(define (method-param-classes cls method arg-classes)
+  (let ((m (method-sig-pick cls method #f arg-classes)))
+    (cond ((eq? m 'tie) #t)
+          (m (apply jolt-vector (vector-ref m 2)))
+          (else jolt-nil))))
 (def-var! "jolt.host" "method-param-classes" method-param-classes)
-;; Character's compareTo lives in records-dispatch.ss and surrogates.ss, which
-;; load on either side of this table; the other registrations sit beside their
-;; methods.
-(register-method-params! "java.lang.Character" "compareTo" '("java.lang.Character"))
+;; Does an argument the compiler types as A (a JVM class name, "long"/"double"
+;; for a numeric literal, "null" for nil, nil when it has no type and so is an
+;; Object) fit parameter P? Clojure's Compiler.paramArgTypeMatch, for the
+;; classes jolt registers.
+(define (sig-arg-fits? p a)
+  (let ((a (if (jolt-nil? a) "java.lang.Object" a)))
+    (cond ((member p '("long" "int" "short" "byte"))
+           (and (member a '("long" "int" "java.lang.Long" "java.lang.Integer")) #t))
+          ((member p '("double" "float"))
+           (and (member a '("double" "float" "java.lang.Double" "java.lang.Float")) #t))
+          ((string=? p "char") (string=? a "java.lang.Character"))
+          ((string=? p "boolean") (string=? a "java.lang.Boolean"))
+          ((string=? a "null") #t)
+          ((member a '("long" "int" "double" "float")) #f)
+          (else (or (string=? p a) (string=? p "java.lang.Object") (jch-isa? a p))))))
+;; The compiler's result-class question: the class (cls).method (or the static
+;; cls/method) returns, given the compiler's classes for the arguments, or nil.
+;; One method of that arity is the one the JVM compiles against whatever the
+;; arguments; among overloads, the ones the arguments fit decide, and only when
+;; they agree on what they return.
+;; The methods a call compiles against: the one method of its arity, whatever
+;; the arguments; among overloads, the ones the arguments' classes fit.
+(define (method-sig-fit cls method static? arg-classes)
+  (let* ((args (seq->list (jolt-seq arg-classes)))
+         (cs (method-sig-candidates cls method static? (length args))))
+    (if (and (pair? cs) (null? (cdr cs)))
+        cs
+        (sig-keep (lambda (e) (let loop ((ps (vector-ref e 2)) (as args))
+                              (or (null? ps)
+                                  (and (sig-arg-fits? (car ps) (car as))
+                                       (loop (cdr ps) (cdr as))))))
+                cs))))
+(define (sig-ref-class? c) (or (memv #\. (string->list c)) (char=? (string-ref c 0) #\[)))
+;; Compiler.subsumes: every parameter of P is Q's or more specific (a class
+;; under Q's, or any class where Q has a primitive), and one differs.
+(define (sig-subsumes? ps qs)
+  (let loop ((ps ps) (qs qs) (better #f))
+    (cond ((null? ps) better)
+          ((string=? (car ps) (car qs)) (loop (cdr ps) (cdr qs) better))
+          ((or (and (sig-ref-class? (car ps)) (not (sig-ref-class? (car qs))))
+               (and (sig-ref-class? (car ps)) (sig-ref-class? (car qs)) (jch-isa? (car ps) (car qs))))
+           (loop (cdr ps) (cdr qs) #t))
+          (else #f))))
+;; The one method a call compiles against, Compiler.getMatchingParams' way: of
+;; the overloads the arguments fit, the most specific; 'tie when two fit and
+;; neither is; #f when none does.
+(define (method-sig-pick cls method static? arg-classes)
+  (let ((fit (method-sig-fit cls method static? arg-classes)))
+    (if (null? fit)
+        #f
+        (let loop ((es (cdr fit)) (m (car fit)) (tied #f))
+          (cond ((null? es) (if tied 'tie m))
+                ((sig-subsumes? (vector-ref (car es) 2) (vector-ref m 2)) (loop (cdr es) (car es) #f))
+                ((sig-subsumes? (vector-ref m 2) (vector-ref (car es) 2)) (loop (cdr es) m tied))
+                (else (loop (cdr es) m #t)))))))
+(define (method-return-class cls method static? arg-classes)
+  (let ((m (method-sig-pick cls method (jolt-truthy? static?) arg-classes)))
+    (if (and (vector? m) (vector-ref m 3)) (vector-ref m 3) jolt-nil)))
+(def-var! "jolt.host" "method-return-class" method-return-class)
 
 ;; ---- java.lang.Throwable: the surface EVERY throwable inherits ---------------
 ;; On the JVM these are declared on Throwable itself, so every exception class has
@@ -526,7 +694,6 @@
 ;; IllegalArgumentException carries the throwable as its cause. A non-throwable
 ;; argument gets here only from a call the compiler did not resolve (a resolved
 ;; one casts it first, jolt-checkcast above), so it is Class.cast's refusal.
-(register-method-params! "java.lang.Throwable" "addSuppressed" '("java.lang.Throwable"))
 
 ;; A proxy over a throwable class is a reify whose delegate is the base
 ;; throwable; which of the two a call hands over depends on the route it took,
@@ -540,6 +707,51 @@
 (define (throwable-disable-suppression! v)
   (jolt-with-mutex throwable-suppressed-mu
     (hashtable-set! throwable-no-suppression-tbl (throwable-identity v) #t)))
+;; A throwable's cause, the JVM way: unset until a constructor or initCause
+;; sets it, and settable once. The record's cause field is fixed (its layout is
+;; image surface), so what initCause sets, and the one state the field cannot
+;; tell, a cause given as nil to a constructor, live beside it in a table, as
+;; the suppressed lists do. Otherwise a cause is set when the field holds one or
+;; the throwable is an ExceptionInfo, whose every constructor passes one.
+(define throwable-cause-tbl (make-ephemeron-eq-hashtable))
+(define (throwable-cause-entry v)
+  (jolt-with-mutex throwable-suppressed-mu
+    (hashtable-ref throwable-cause-tbl (throwable-identity v) #f)))
+(define (throwable-record-cause v)
+  (let ((v (throwable-identity v)))
+    (if (jolt-ex-info-record? v) (jolt-ex-info-record-cause v) jolt-nil)))
+(define (throwable-cause v)
+  (let ((e (throwable-cause-entry v))) (if e (car e) (throwable-record-cause v))))
+(define (throwable-cause-set? v)
+  (or (throwable-cause-entry v)
+      (not (jolt-nil? (throwable-record-cause v)))
+      (let ((r (throwable-identity v)))
+        (and (jolt-ex-info-record? r)
+             (equal? (jolt-ex-info-record-class-name r) "clojure.lang.ExceptionInfo")))))
+;; A constructor that was handed a cause, nil included (make-exc-ctor).
+(define (throwable-cause-given! v c)
+  (when (jolt-nil? c)
+    (jolt-with-mutex throwable-suppressed-mu
+      (hashtable-set! throwable-cause-tbl (throwable-identity v) (list c))))
+  v)
+;; Throwable.initCause: the cast of the argument, then the JDK's two checks, in
+;; its order, each refusal carrying the throwable as its cause.
+(define (throwable-init-cause! v c)
+  (cond
+    ((not (or (jolt-nil? c) (instance-check throwable-type-sym c)))
+     (jolt-reflect-cast-fail c "java.lang.Throwable"))
+    ((throwable-cause-set? v)
+     (jolt-throw (jolt-host-throwable "java.lang.IllegalStateException"
+                                      (string-append "Can't overwrite cause with "
+                                                     (if (jolt-nil? c) "a null" (jolt-throwable-tostring c)))
+                                      v)))
+    ((eq? (throwable-identity c) (throwable-identity v))
+     (jolt-throw (jolt-host-throwable "java.lang.IllegalArgumentException"
+                                      "Self-causation not permitted" v)))
+    (else
+     (jolt-with-mutex throwable-suppressed-mu
+       (hashtable-set! throwable-cause-tbl (throwable-identity v) (list c)))
+     v)))
 (define (throwable-add-suppressed! v other)
   (cond
     ((not (or (jolt-nil? other) (instance-check throwable-type-sym other)))
@@ -649,8 +861,9 @@
     ((or (string=? name "getMessage") (string=? name "getLocalizedMessage"))
      (list (jolt-throwable-message obj)))
     ((string=? name "toString") (list (jolt-throwable-tostring obj)))
-    ((string=? name "getCause")
-     (list (if (jolt-ex-info-record? obj) (jolt-ex-info-record-cause obj) jolt-nil)))
+    ((string=? name "getCause") (list (throwable-cause obj)))
+    ((and (string=? name "initCause") (pair? args) (null? (cdr args)))
+     (list (throwable-init-cause! obj (car args))))
     ;; java.sql.SQLException chaining — jolt throwables don't chain.
     ((string=? name "getNextException") (list jolt-nil))
     ;; java.text.ParseException.getErrorOffset — the int its ctor stashed.
@@ -700,3 +913,198 @@
              (string=? s "Throwable")))))
 (def-var! "clojure.core" "__catch-broad?"
   (lambda (nm v) (if (jolt-catch-broad? nm v) #t #f)))
+
+;; ---- the JDK signatures jolt models ------------------------------------------
+;; What the JVM compiler knows of a method from its class file: the parameter
+;; classes a resolved call casts its arguments to (register-method-params!), and
+;; the class a call's result has (a return class, or a static method's), which
+;; is what lets a call on that result resolve in turn. The shims stay where they
+;; are; this is only the part the compiler reads, in the one file both hosts
+;; load. A method appears only with its whole overload set at an arity, since
+;; one missing overload would make a reflective call look resolved.
+;; Throwable
+(register-method-params! "java.lang.Throwable" "addSuppressed" '("java.lang.Throwable"))
+(register-method-params! "java.lang.Throwable" "initCause" '("java.lang.Throwable") "java.lang.Throwable")
+(register-method-params! "java.lang.Object" "toString" '() "java.lang.String")
+;; compareTo on the Comparables whose parameter is their own class
+(for-each (lambda (c) (register-method-params! c "compareTo" (list c)))
+          '("java.lang.Long" "java.lang.Double" "java.lang.Float" "java.lang.String"
+            "java.lang.Character" "java.io.File" "java.util.UUID" "java.net.URI"
+            "java.math.BigDecimal"))
+;; BigDecimal
+(register-method-params! "java.math.BigDecimal" "min" '("java.math.BigDecimal") "java.math.BigDecimal")
+(register-method-params! "java.math.BigDecimal" "max" '("java.math.BigDecimal") "java.math.BigDecimal")
+(register-static-method! "java.math.BigDecimal" "valueOf" '("long") "java.math.BigDecimal")
+(register-static-method! "java.math.BigDecimal" "valueOf" '("double") "java.math.BigDecimal")
+(register-static-method! "java.math.BigDecimal" "valueOf" '("long" "int") "java.math.BigDecimal")
+;; String
+(for-each (lambda (m) (register-method-params! "java.lang.String" m '() "java.lang.String"))
+          '("toUpperCase" "toLowerCase" "trim" "strip" "stripLeading" "stripTrailing" "intern"))
+(register-method-params! "java.lang.String" "concat" '("java.lang.String") "java.lang.String")
+(for-each (lambda (p) (register-static-method! "java.lang.String" "valueOf" (list p) "java.lang.String"))
+          '("java.lang.Object" "[C" "boolean" "char" "int" "long" "float" "double"))
+(register-static-method! "java.lang.String" "format" '("java.lang.String" "[Ljava.lang.Object;") "java.lang.String")
+(register-static-method! "java.lang.String" "format" '("java.util.Locale" "java.lang.String" "[Ljava.lang.Object;") "java.lang.String")
+;; the boxed numbers and Character
+(for-each (lambda (c p)
+            (register-static-method! c "valueOf" (list p) c)
+            (register-static-method! c "valueOf" '("java.lang.String") c))
+          '("java.lang.Long" "java.lang.Double" "java.lang.Float")
+          '("long" "double" "float"))
+(register-static-method! "java.lang.Long" "valueOf" '("java.lang.String" "int") "java.lang.Long")
+(register-static-method! "java.lang.Long" "decode" '("java.lang.String") "java.lang.Long")
+(register-static-method! "java.lang.Character" "valueOf" '("char") "java.lang.Character")
+;; UUID, URI, File
+(register-static-method! "java.util.UUID" "randomUUID" '() "java.util.UUID")
+(register-static-method! "java.util.UUID" "fromString" '("java.lang.String") "java.util.UUID")
+(register-static-method! "java.util.UUID" "nameUUIDFromBytes" '("[B") "java.util.UUID")
+(register-static-method! "java.net.URI" "create" '("java.lang.String") "java.net.URI")
+(for-each (lambda (m) (register-method-params! "java.io.File" m '() "java.io.File"))
+          '("getAbsoluteFile" "getCanonicalFile" "getParentFile"))
+(register-static-method! "java.io.File" "createTempFile" '("java.lang.String" "java.lang.String") "java.io.File")
+(register-static-method! "java.io.File" "createTempFile" '("java.lang.String" "java.lang.String" "java.io.File") "java.io.File")
+;; java.util.zip and the java.io stream methods its classes inherit, every
+;; public overload, as JDK 21's reflection lists them (Object's own left out).
+(register-method-sig! "java.io.FilterInputStream" "read" #f '("[B") #f)
+(register-method-sig! "java.io.FilterOutputStream" "write" #f '("[B") #f)
+(register-method-sig! "java.io.InputStream" "nullInputStream" #t '() "java.io.InputStream")
+(register-method-sig! "java.io.InputStream" "readAllBytes" #f '() "[B")
+(register-method-sig! "java.io.InputStream" "readNBytes" #f '("int") "[B")
+(register-method-sig! "java.io.InputStream" "readNBytes" #f '("[B" "int" "int") #f)
+(register-method-sig! "java.io.InputStream" "skipNBytes" #f '("long") #f)
+(register-method-sig! "java.io.InputStream" "transferTo" #f '("java.io.OutputStream") #f)
+(register-method-sig! "java.io.OutputStream" "nullOutputStream" #t '() "java.io.OutputStream")
+(register-method-sig! "java.util.zip.Adler32" "getValue" #f '() #f)
+(register-method-sig! "java.util.zip.Adler32" "reset" #f '() #f)
+(register-method-sig! "java.util.zip.Adler32" "update" #f '("int") #f)
+(register-method-sig! "java.util.zip.Adler32" "update" #f '("java.nio.ByteBuffer") #f)
+(register-method-sig! "java.util.zip.Adler32" "update" #f '("[B" "int" "int") #f)
+(register-method-sig! "java.util.zip.CRC32" "getValue" #f '() #f)
+(register-method-sig! "java.util.zip.CRC32" "reset" #f '() #f)
+(register-method-sig! "java.util.zip.CRC32" "update" #f '("int") #f)
+(register-method-sig! "java.util.zip.CRC32" "update" #f '("java.nio.ByteBuffer") #f)
+(register-method-sig! "java.util.zip.CRC32" "update" #f '("[B" "int" "int") #f)
+(register-method-sig! "java.util.zip.Checksum" "update" #f '("[B") #f)
+(register-method-sig! "java.util.zip.Deflater" "deflate" #f '("java.nio.ByteBuffer") #f)
+(register-method-sig! "java.util.zip.Deflater" "deflate" #f '("[B") #f)
+(register-method-sig! "java.util.zip.Deflater" "deflate" #f '("java.nio.ByteBuffer" "int") #f)
+(register-method-sig! "java.util.zip.Deflater" "deflate" #f '("[B" "int" "int") #f)
+(register-method-sig! "java.util.zip.Deflater" "deflate" #f '("[B" "int" "int" "int") #f)
+(register-method-sig! "java.util.zip.Deflater" "end" #f '() #f)
+(register-method-sig! "java.util.zip.Deflater" "finish" #f '() #f)
+(register-method-sig! "java.util.zip.Deflater" "finished" #f '() #f)
+(register-method-sig! "java.util.zip.Deflater" "getAdler" #f '() #f)
+(register-method-sig! "java.util.zip.Deflater" "getBytesRead" #f '() #f)
+(register-method-sig! "java.util.zip.Deflater" "getBytesWritten" #f '() #f)
+(register-method-sig! "java.util.zip.Deflater" "getTotalIn" #f '() #f)
+(register-method-sig! "java.util.zip.Deflater" "getTotalOut" #f '() #f)
+(register-method-sig! "java.util.zip.Deflater" "needsInput" #f '() #f)
+(register-method-sig! "java.util.zip.Deflater" "reset" #f '() #f)
+(register-method-sig! "java.util.zip.Deflater" "setDictionary" #f '("[B") #f)
+(register-method-sig! "java.util.zip.Deflater" "setDictionary" #f '("java.nio.ByteBuffer") #f)
+(register-method-sig! "java.util.zip.Deflater" "setDictionary" #f '("[B" "int" "int") #f)
+(register-method-sig! "java.util.zip.Deflater" "setInput" #f '("java.nio.ByteBuffer") #f)
+(register-method-sig! "java.util.zip.Deflater" "setInput" #f '("[B") #f)
+(register-method-sig! "java.util.zip.Deflater" "setInput" #f '("[B" "int" "int") #f)
+(register-method-sig! "java.util.zip.Deflater" "setLevel" #f '("int") #f)
+(register-method-sig! "java.util.zip.Deflater" "setStrategy" #f '("int") #f)
+(register-method-sig! "java.util.zip.DeflaterInputStream" "available" #f '() #f)
+(register-method-sig! "java.util.zip.DeflaterInputStream" "close" #f '() #f)
+(register-method-sig! "java.util.zip.DeflaterInputStream" "mark" #f '("int") #f)
+(register-method-sig! "java.util.zip.DeflaterInputStream" "markSupported" #f '() #f)
+(register-method-sig! "java.util.zip.DeflaterInputStream" "read" #f '() #f)
+(register-method-sig! "java.util.zip.DeflaterInputStream" "read" #f '("[B" "int" "int") #f)
+(register-method-sig! "java.util.zip.DeflaterInputStream" "reset" #f '() #f)
+(register-method-sig! "java.util.zip.DeflaterInputStream" "skip" #f '("long") #f)
+(register-method-sig! "java.util.zip.DeflaterOutputStream" "close" #f '() #f)
+(register-method-sig! "java.util.zip.DeflaterOutputStream" "finish" #f '() #f)
+(register-method-sig! "java.util.zip.DeflaterOutputStream" "flush" #f '() #f)
+(register-method-sig! "java.util.zip.DeflaterOutputStream" "write" #f '("int") #f)
+(register-method-sig! "java.util.zip.DeflaterOutputStream" "write" #f '("[B" "int" "int") #f)
+(register-method-sig! "java.util.zip.GZIPInputStream" "close" #f '() #f)
+(register-method-sig! "java.util.zip.GZIPInputStream" "read" #f '("[B" "int" "int") #f)
+(register-method-sig! "java.util.zip.GZIPOutputStream" "finish" #f '() #f)
+(register-method-sig! "java.util.zip.GZIPOutputStream" "write" #f '("[B" "int" "int") #f)
+(register-method-sig! "java.util.zip.Inflater" "end" #f '() #f)
+(register-method-sig! "java.util.zip.Inflater" "finished" #f '() #f)
+(register-method-sig! "java.util.zip.Inflater" "getAdler" #f '() #f)
+(register-method-sig! "java.util.zip.Inflater" "getBytesRead" #f '() #f)
+(register-method-sig! "java.util.zip.Inflater" "getBytesWritten" #f '() #f)
+(register-method-sig! "java.util.zip.Inflater" "getRemaining" #f '() #f)
+(register-method-sig! "java.util.zip.Inflater" "getTotalIn" #f '() #f)
+(register-method-sig! "java.util.zip.Inflater" "getTotalOut" #f '() #f)
+(register-method-sig! "java.util.zip.Inflater" "inflate" #f '("[B") #f)
+(register-method-sig! "java.util.zip.Inflater" "inflate" #f '("java.nio.ByteBuffer") #f)
+(register-method-sig! "java.util.zip.Inflater" "inflate" #f '("[B" "int" "int") #f)
+(register-method-sig! "java.util.zip.Inflater" "needsDictionary" #f '() #f)
+(register-method-sig! "java.util.zip.Inflater" "needsInput" #f '() #f)
+(register-method-sig! "java.util.zip.Inflater" "reset" #f '() #f)
+(register-method-sig! "java.util.zip.Inflater" "setDictionary" #f '("java.nio.ByteBuffer") #f)
+(register-method-sig! "java.util.zip.Inflater" "setDictionary" #f '("[B") #f)
+(register-method-sig! "java.util.zip.Inflater" "setDictionary" #f '("[B" "int" "int") #f)
+(register-method-sig! "java.util.zip.Inflater" "setInput" #f '("[B") #f)
+(register-method-sig! "java.util.zip.Inflater" "setInput" #f '("java.nio.ByteBuffer") #f)
+(register-method-sig! "java.util.zip.Inflater" "setInput" #f '("[B" "int" "int") #f)
+(register-method-sig! "java.util.zip.InflaterInputStream" "available" #f '() #f)
+(register-method-sig! "java.util.zip.InflaterInputStream" "close" #f '() #f)
+(register-method-sig! "java.util.zip.InflaterInputStream" "mark" #f '("int") #f)
+(register-method-sig! "java.util.zip.InflaterInputStream" "markSupported" #f '() #f)
+(register-method-sig! "java.util.zip.InflaterInputStream" "read" #f '() #f)
+(register-method-sig! "java.util.zip.InflaterInputStream" "read" #f '("[B" "int" "int") #f)
+(register-method-sig! "java.util.zip.InflaterInputStream" "reset" #f '() #f)
+(register-method-sig! "java.util.zip.InflaterInputStream" "skip" #f '("long") #f)
+(register-method-sig! "java.util.zip.ZipEntry" "clone" #f '() "java.lang.Object")
+(register-method-sig! "java.util.zip.ZipEntry" "getComment" #f '() "java.lang.String")
+(register-method-sig! "java.util.zip.ZipEntry" "getCompressedSize" #f '() #f)
+(register-method-sig! "java.util.zip.ZipEntry" "getCrc" #f '() #f)
+(register-method-sig! "java.util.zip.ZipEntry" "getCreationTime" #f '() "java.nio.file.attribute.FileTime")
+(register-method-sig! "java.util.zip.ZipEntry" "getExtra" #f '() "[B")
+(register-method-sig! "java.util.zip.ZipEntry" "getLastAccessTime" #f '() "java.nio.file.attribute.FileTime")
+(register-method-sig! "java.util.zip.ZipEntry" "getLastModifiedTime" #f '() "java.nio.file.attribute.FileTime")
+(register-method-sig! "java.util.zip.ZipEntry" "getMethod" #f '() #f)
+(register-method-sig! "java.util.zip.ZipEntry" "getName" #f '() "java.lang.String")
+(register-method-sig! "java.util.zip.ZipEntry" "getSize" #f '() #f)
+(register-method-sig! "java.util.zip.ZipEntry" "getTime" #f '() #f)
+(register-method-sig! "java.util.zip.ZipEntry" "getTimeLocal" #f '() "java.time.LocalDateTime")
+(register-method-sig! "java.util.zip.ZipEntry" "hashCode" #f '() #f)
+(register-method-sig! "java.util.zip.ZipEntry" "isDirectory" #f '() #f)
+(register-method-sig! "java.util.zip.ZipEntry" "setComment" #f '("java.lang.String") #f)
+(register-method-sig! "java.util.zip.ZipEntry" "setCompressedSize" #f '("long") #f)
+(register-method-sig! "java.util.zip.ZipEntry" "setCrc" #f '("long") #f)
+(register-method-sig! "java.util.zip.ZipEntry" "setCreationTime" #f '("java.nio.file.attribute.FileTime") "java.util.zip.ZipEntry")
+(register-method-sig! "java.util.zip.ZipEntry" "setExtra" #f '("[B") #f)
+(register-method-sig! "java.util.zip.ZipEntry" "setLastAccessTime" #f '("java.nio.file.attribute.FileTime") "java.util.zip.ZipEntry")
+(register-method-sig! "java.util.zip.ZipEntry" "setLastModifiedTime" #f '("java.nio.file.attribute.FileTime") "java.util.zip.ZipEntry")
+(register-method-sig! "java.util.zip.ZipEntry" "setMethod" #f '("int") #f)
+(register-method-sig! "java.util.zip.ZipEntry" "setSize" #f '("long") #f)
+(register-method-sig! "java.util.zip.ZipEntry" "setTime" #f '("long") #f)
+(register-method-sig! "java.util.zip.ZipEntry" "setTimeLocal" #f '("java.time.LocalDateTime") #f)
+(register-method-sig! "java.util.zip.ZipEntry" "toString" #f '() "java.lang.String")
+(register-method-sig! "java.util.zip.ZipFile" "close" #f '() #f)
+(register-method-sig! "java.util.zip.ZipFile" "entries" #f '() "java.util.Enumeration")
+(register-method-sig! "java.util.zip.ZipFile" "getComment" #f '() "java.lang.String")
+(register-method-sig! "java.util.zip.ZipFile" "getEntry" #f '("java.lang.String") "java.util.zip.ZipEntry")
+(register-method-sig! "java.util.zip.ZipFile" "getInputStream" #f '("java.util.zip.ZipEntry") "java.io.InputStream")
+(register-method-sig! "java.util.zip.ZipFile" "getName" #f '() "java.lang.String")
+(register-method-sig! "java.util.zip.ZipFile" "size" #f '() #f)
+(register-method-sig! "java.util.zip.ZipFile" "stream" #f '() "java.util.stream.Stream")
+(register-method-sig! "java.util.zip.ZipInputStream" "available" #f '() #f)
+(register-method-sig! "java.util.zip.ZipInputStream" "close" #f '() #f)
+(register-method-sig! "java.util.zip.ZipInputStream" "closeEntry" #f '() #f)
+(register-method-sig! "java.util.zip.ZipInputStream" "getNextEntry" #f '() "java.util.zip.ZipEntry")
+(register-method-sig! "java.util.zip.ZipInputStream" "read" #f '() #f)
+(register-method-sig! "java.util.zip.ZipInputStream" "read" #f '("[B" "int" "int") #f)
+(register-method-sig! "java.util.zip.ZipInputStream" "readAllBytes" #f '() "[B")
+(register-method-sig! "java.util.zip.ZipInputStream" "readNBytes" #f '("int") "[B")
+(register-method-sig! "java.util.zip.ZipInputStream" "readNBytes" #f '("[B" "int" "int") #f)
+(register-method-sig! "java.util.zip.ZipInputStream" "skip" #f '("long") #f)
+(register-method-sig! "java.util.zip.ZipInputStream" "skipNBytes" #f '("long") #f)
+(register-method-sig! "java.util.zip.ZipInputStream" "transferTo" #f '("java.io.OutputStream") #f)
+(register-method-sig! "java.util.zip.ZipOutputStream" "close" #f '() #f)
+(register-method-sig! "java.util.zip.ZipOutputStream" "closeEntry" #f '() #f)
+(register-method-sig! "java.util.zip.ZipOutputStream" "finish" #f '() #f)
+(register-method-sig! "java.util.zip.ZipOutputStream" "putNextEntry" #f '("java.util.zip.ZipEntry") #f)
+(register-method-sig! "java.util.zip.ZipOutputStream" "setComment" #f '("java.lang.String") #f)
+(register-method-sig! "java.util.zip.ZipOutputStream" "setLevel" #f '("int") #f)
+(register-method-sig! "java.util.zip.ZipOutputStream" "setMethod" #f '("int") #f)
+(register-method-sig! "java.util.zip.ZipOutputStream" "write" #f '("[B" "int" "int") #f)

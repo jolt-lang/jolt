@@ -2682,12 +2682,18 @@
       (cond
         ;; (E. msg cause enableSuppression writableStackTrace)
         ((and (pair? rest) (pair? (cdr rest)))
-         (let ((t (jolt-host-throwable canonical (if (or (string? a0) (jolt-nil? a0)) a0 (jolt-str-render-one a0)) cause)))
+         (let ((t (throwable-cause-given!
+                   (jolt-host-throwable canonical (if (or (string? a0) (jolt-nil? a0)) a0 (jolt-str-render-one a0)) cause)
+                   cause)))
            (when (and (pair? (cddr rest)) (null? (cdddr rest)) (not (jolt-truthy? (cadr rest))))
              (throwable-disable-suppression! t))
            t))
-        ((string? a0) (jolt-host-throwable canonical a0 cause))
-        ((jolt-nil? a0) (jolt-host-throwable canonical jolt-nil))
+        ((string? a0) (if (pair? rest)
+                          (throwable-cause-given! (jolt-host-throwable canonical a0 cause) cause)
+                          (jolt-host-throwable canonical a0)))
+        ((jolt-nil? a0) (if (pair? rest)
+                            (throwable-cause-given! (jolt-host-throwable canonical jolt-nil cause) cause)
+                            (jolt-host-throwable canonical jolt-nil)))
         ;; (E. cause): a lone throwable arg is the cause, and the message is the
         ;; cause's toString, as Throwable(Throwable) sets it on the JVM —
         ;; (ExecutionException. (IllegalStateException. "bad")) has the message

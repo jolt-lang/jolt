@@ -4475,7 +4475,7 @@
   (and (jolt-ex-info-record? x) (exception-isa? (ex-info-class x) simple)))
 (define (cf-cancellation? x) (cf-exc-isa? x "CancellationException"))
 (define (cf-completion? x) (cf-exc-isa? x "CompletionException"))
-(define (cf-cause x) (if (jolt-ex-info-record? x) (jolt-ex-info-record-cause x) jolt-nil))
+(define (cf-cause x) (if (jolt-ex-info-record? x) (throwable-cause x) jolt-nil))
 (define (cf-npe) (throw-jvm 'NullPointerException jolt-nil))
 
 ;; new CompletionException(x): the message is x.toString(), as Throwable(cause) makes it.

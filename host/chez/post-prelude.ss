@@ -296,7 +296,7 @@
                     ((throwable-proxy? e) (record-method-dispatch e "getMessage" jolt-nil))
                     (else jolt-nil))))
 (def-var! "clojure.core" "ex-cause"
-  (lambda (e) (cond ((jolt-ex-info-record? e) (jolt-ex-info-record-cause e))
+  (lambda (e) (cond ((jolt-ex-info-record? e) (throwable-cause e))
                     ((throwable-proxy? e) (record-method-dispatch e "getCause" jolt-nil))
                     (else jolt-nil))))
 ;; Throwable->map: the seed prelude version reads ex-data/ex-message/ex-cause

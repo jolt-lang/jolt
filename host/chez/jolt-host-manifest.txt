@@ -214,6 +214,7 @@ map-entry
 mark-spliced!
 maximum-memory-bytes
 method-param-classes
+method-return-class
 mkdirs!
 monitor-enter
 monitor-exit

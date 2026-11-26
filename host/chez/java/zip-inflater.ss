@@ -98,7 +98,7 @@
             (zinflater-lim-set! st (ja-len arr))
             (zinflater-input-buffer-set! st (car args))))
         jolt-nil)
-      (let-values (((bv off len more) (zip-array-args "setInput" self args "input")))
+      (let-values (((bv off len more) (zip-array-args "setInput" self args "input" "Cannot read the array length because \"input\" is null")))
         (inflater-locked self
           (lambda (st)
             (zinflater-input-set! st (car args))
@@ -110,7 +110,7 @@
 ;; setDictionary(byte[]) | setDictionary(byte[], off, len); the result check is
 ;; Inflater.c checkSetDictionaryResult.
 (define (inflater-set-dictionary! self . args)
-  (let-values (((bv off len more) (zip-array-args "setDictionary" self args "dictionary")))
+  (let-values (((bv off len more) (zip-array-args "setDictionary" self args "dictionary" "Cannot invoke \"java.nio.ByteBuffer.position()\" because \"dictionary\" is null")))
     (inflater-open self
       (lambda (st)
         (let* ((zs (zinflater-zs st))
@@ -143,7 +143,7 @@
        (inflater-locked self zinflater-sync-buffer!)
        n))))
 (define (inflater-inflate-array self . args)
-  (let-values (((out-bv off len more) (zip-array-args "inflate" self args "output")))
+  (let-values (((out-bv off len more) (zip-array-args "inflate" self args "output" "Cannot read the array length because \"output\" is null")))
     (let ((out (car args)))
       (inflater-open self
         (lambda (st)

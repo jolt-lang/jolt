@@ -6,8 +6,7 @@
   (:require [clojure.string :as str]
             [jolt.backend-scheme.names :refer [chez-str-lit]]
             [jolt.backend-scheme.session :refer [fresh-label target var-cache?]]
-            [jolt.backend-scheme.hoist :refer [*const-pool* hoist-const-per-site]]
-            [jolt.host :refer [method-param-classes]]))
+            [jolt.backend-scheme.hoist :refer [*const-pool* hoist-const-per-site]]))
 
 ;; Host interop methods with a Chez RT shim (rt.ss jolt-host-call). A `.method`
 ;; call on any other method routes to record-method-dispatch (a reify/record
@@ -210,28 +209,35 @@
       (or (host-site-emit t m args) (method-dispatch-emit t m args)))))
 
 ;; A resolved call's argument casts. The JVM compiles a call whose receiver class
-;; it knows against that method's parameters, with a checkcast on each argument,
-;; so a wrong argument fails there with the checkcast's message; an unresolved
-;; call reaches the method through the Reflector, whose Class.cast words it
-;; differently. The receiver class is the analyzer's (:target-class) and the
-;; parameters are the runtime's (jolt.host/method-param-classes, registered
-;; beside each method's shim), so the method's own check is only ever reached by
-;; a call nobody resolved and words its failure as Class.cast does. A parameter
-;; of a class with a one-test predicate tests inline and calls the helper only
-;; to fail; nil passes, as it does a checkcast.
+;; it knows against one method's parameters, casting each argument there, so a
+;; wrong argument fails with the checkcast's message (or the unboxing's, for a
+;; primitive parameter); an unresolved call reaches the method through the
+;; Reflector, which casts differently. The analyzer puts the chosen method's
+;; parameter classes on the node (:arg-casts, from the runtime's signature table,
+;; records-interop.ss), so the method's own check is only ever reached by a call
+;; nobody resolved and is the Reflector's. A parameter of a class with a
+;; one-test predicate tests inline and calls the helper only to fail; nil
+;; passes, as it does a checkcast. An int or long parameter unboxes; another
+;; primitive is left to the method. Both targets: the helpers are in the runtime
+;; file the two hosts share.
 (def ^:private checkcast-preds
   {"java.lang.String" "string?" "java.lang.Long" "fixnum?" "java.lang.Double" "flonum?"})
+(def ^:private unbox-entries {"int" "jolt-unbox-int" "long" "jolt-unbox-long"})
 (defn- checkcast-emit [cls e]
   (let [lit (chez-str-lit cls)]
     (if-let [p (get checkcast-preds cls)]
       (let [v (fresh-label "_cc$")]
         (str "(let ((" v " " e ")) (if (" p " " v ") " v " (jolt-checkcast " lit " " v ")))"))
       (str "(jolt-checkcast " lit " " e ")"))))
+(defn- arg-cast-emit [p a]
+  (cond (or (nil? p) (= p "java.lang.Object")) a
+        (or (str/includes? p ".") (str/starts-with? p "[")) (checkcast-emit p a)
+        (get unbox-entries p) (str "(" (get unbox-entries p) " " a ")")
+        :else a))
 (defn- cast-args [node args]
-  (let [c (:target-class node)
-        ps (when c (method-param-classes c (:method node) (count args)))]
-    (if (seq ps)
-      (mapv (fn [p a] (if (or (nil? p) (= p "java.lang.Object")) a (checkcast-emit p a))) ps args)
+  (let [ps (:arg-casts node)]
+    (if (and (seq ps) (= (count ps) (count args)))
+      (mapv arg-cast-emit ps args)
       args)))
 
 ;; EMIT lowers the receiver and arguments when the node does not carry them
@@ -241,7 +247,7 @@
         chez? (not= :gambit (target))
         t (or (:sited-target node) (emit (:target node)))
         args (or (:sited-args node) (map emit (:args node)))
-        args (if chez? (cast-args node args) args)
+        args (cast-args node args)
         direct (when chez? (proven-receiver-emit node m t args))]
     (cond
       direct direct

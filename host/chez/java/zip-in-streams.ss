@@ -110,9 +110,9 @@
 (define (zin-stream-arg x)
   (if (or (jolt-nil? x) (in-stream? x) (user-in-stream? x))
       x
-      (zip-class-cast x "java.io.InputStream")))
+      (zip-ctor-class-cast x "java.io.InputStream")))
 (define (zin-codec-arg x ok? class)
-  (if (or (jolt-nil? x) (ok? x)) x (zip-class-cast x class)))
+  (if (or (jolt-nil? x) (ok? x)) x (zip-ctor-class-cast x class)))
 (define (zin-ctor-arity who args)
   (unless (<= 1 (length args) 3)
     (throw-jvm 'IllegalArgumentException (string-append "No matching ctor found for class " who))))
@@ -123,7 +123,7 @@
   (let* ((in (zin-stream-arg (car args)))
          (given (and (pair? (cdr args))
                      (zin-codec-arg (cadr args) zip-inflater? "java.util.zip.Inflater")))
-         (size (if (and (pair? (cdr args)) (pair? (cddr args))) (zip-int-arg (caddr args)) 512))
+         (size (if (and (pair? (cdr args)) (pair? (cddr args))) (zip-ctor-int-arg (caddr args)) 512))
          (owned (null? (cdr args)))
          (inf (cond (given given)
                     ((jolt-nil? in) jolt-nil)
@@ -177,7 +177,7 @@
   (let* ((in (zin-stream-arg (car args)))
          (given (and (pair? (cdr args))
                      (zin-codec-arg (cadr args) zip-deflater-arg? "java.util.zip.Deflater")))
-         (size (if (and (pair? (cdr args)) (pair? (cddr args))) (zip-int-arg (caddr args)) 512))
+         (size (if (and (pair? (cdr args)) (pair? (cddr args))) (zip-ctor-int-arg (caddr args)) 512))
          (owned (null? (cdr args)))
          (def (cond (given given)
                     ((jolt-nil? in) jolt-nil)
@@ -225,14 +225,8 @@
     (close-port (in-stream-port self)))
   (in-stream-live-port self))
 
-;; A long argument (skip): nil is NullPointerException, a value that is not a
-;; number is not a Number, and a number is truncated.
-(define (zin-long-arg x)
-  (cond ((jolt-nil? x)
-         (throw-jvm 'NullPointerException
-                    "Cannot invoke \"java.lang.Number.doubleValue()\" because \"x\" is null"))
-        ((or (number? x) (jbigdec? x)) (jnum->exact x))
-        (else (zip-class-cast x "java.lang.Number"))))
+;; A long argument (skip): the reflector's Number.longValue (zip-base.ss).
+(define (zin-long-arg x) (zip-long-arg x))
 
 ;; available(): the class's own answer, or 1 when it says 0 while bytes still
 ;; wait in the port's buffer (the stream is not at its end). A ZipFile entry

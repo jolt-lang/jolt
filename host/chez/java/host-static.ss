@@ -1540,9 +1540,6 @@
         (else (num-wrap (jnum->exact n) bits))))
 (define (num-exact-integer? n) (and (number? n) (exact? n) (integer? n)))
 (define (num-ratio? n) (and (number? n) (exact? n) (not (integer? n))))
-(register-method-params! "java.lang.Long" "compareTo" '("java.lang.Long"))
-(register-method-params! "java.lang.Double" "compareTo" '("java.lang.Double"))
-(register-method-params! "java.lang.Float" "compareTo" '("java.lang.Float"))
 (define-number-methods (n args)
     ("byteValue" (num-wrap (num-integral n 32) 8))
     ("shortValue" (num-wrap (num-integral n 32) 16))
@@ -1553,7 +1550,7 @@
     ;; Comparable.compareTo: -1/0/1, a double by Double.compare (NaN above
     ;; everything, -0.0 below 0.0). Long, Double and Float compare only to their
     ;; own class: a resolved call casts the argument before it gets here
-    ;; (register-method-params! below), so this check is the reflector's cast. A
+    ;; (records-interop.ss, the JDK signatures), so this check is the reflector's cast. A
     ;; Ratio takes any number (Numbers.compare) and casts to Number inside the
     ;; method, so its refusal is the checkcast's whatever the call. jolt's one
     ;; integer answers for a Long.

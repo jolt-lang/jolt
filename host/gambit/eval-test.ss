@@ -410,6 +410,16 @@
 (check "(try (jolt.ffi/__ccallable (fn [d] nil) [:int] [:by-value [:struct [[:a :int]]]]) (catch Throwable t (ex-message t)))"
        "\"jolt.ffi/foreign-callable: ffi is unsupported on the gambit target\"")
 
+;; A host call on a receiver whose class the compiler knows casts its argument
+;; at the call site with the checkcast's wording; one through an untyped local
+;; reaches the method, which refuses with Class.cast's (records-interop.ss).
+(check "(try (let [e (Exception. \"o\")] (.addSuppressed e \"s\")) (catch ClassCastException c (ex-message c)))"
+       "\"class java.lang.String cannot be cast to class java.lang.Throwable (java.lang.String and java.lang.Throwable are in module java.base of loader 'bootstrap')\"")
+(check "(try ((fn [e x] (.addSuppressed e x)) (Exception. \"o\") \"s\") (catch ClassCastException c (ex-message c)))"
+       "\"Cannot cast java.lang.String to java.lang.Throwable\"")
+(check "(try (.compareTo \"a\" 1) (catch ClassCastException c (ex-message c)))"
+       "\"class java.lang.Long cannot be cast to class java.lang.String (java.lang.Long and java.lang.String are in module java.base of loader 'bootstrap')\"")
+
 (printf "eval-test: ~a failure(s)\n" failures)
 (if (= failures 0)
     (begin (display "eval-test: PASS — jolt compiles and evaluates on native gsi\n") (exit 0))
