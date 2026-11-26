@@ -1490,12 +1490,19 @@
 (let [p (.start (ProcessBuilder. ^java.util.List ["cc" "-O2" "-shared" "-fPIC" "-o" loc-so (str work-dir "/jn_loc.c")]))]
   (when-not (zero? (.waitFor p)) (throw (ex-info "cc failed for jn_loc" {}))))
 (defextern ^double loc-twice [^double x] {:c "jn_loc_twice"})
+(defn loc-site [x] (jolt.native/native [^double x] (loc-twice x)))
 (defn spec-loc [k x] (jolt.native/native ^{:specialize [k]} [^double k ^double x] (+ k (loc-twice x))))
-(let [before (outcome (fn [_] (jolt.native/native-fn '[^double x] '((loc-twice x)))) nil)
+(let [site-before (outcome (fn [_] (loc-site 2.5)) nil)
+      before (outcome (fn [_] (jolt.native/native-fn '[^double x] '((loc-twice x)))) nil)
       spec-before (outcome (fn [_] (spec-loc 1.0 2.0)) nil)
       spec-sites (count (filter #(re-find #"\$0\$" (str %)) (keys (jolt.native/specializations))))
       _ (jolt.ffi/load-library loc-so)
-      after (outcome (fn [_] ((jolt.native/native-fn '[^double x] '((loc-twice x))) 2.5)) nil)]
+      after (outcome (fn [_] ((jolt.native/native-fn '[^double x] '((loc-twice x))) 2.5)) nil)
+      site-after (outcome (fn [_] (loc-site 2.5)) nil)
+      spec-after (outcome (fn [_] (spec-loc 1.0 2.0)) nil)]
+  (check-eq "a call site loaded before the library resolves its region once the library loads"
+            [(:throw site-before) site-after spec-after]
+            ["java.lang.UnsupportedOperationException" {:value 5.0} {:value 5.0}])
   (check-eq "native-fn raises a region's link failure before it returns"
             [(:throw before) (boolean (re-find #"undefined symbol jn_loc_twice" (str (:msg before))))]
             ["java.lang.UnsupportedOperationException" true])
