@@ -3941,8 +3941,11 @@
 ;; are x - y, Integer/Long/Double.compare are -1, 0 or 1. A reference array's
 ;; elements compare with compareTo, a null element before any other.
 ;; Arrays.rangeCheck, as fill above throws it, after the NPE a null array gets.
-(define (arrays-range-check! a f t)
-  (when (jolt-nil? a) (throw-jvm 'NullPointerException "array is null"))
+(define (arrays-null-array name)
+  (throw-jvm 'NullPointerException
+             (string-append "Cannot read the array length because \"" name "\" is null")))
+(define (arrays-range-check! a f t name)
+  (when (jolt-nil? a) (arrays-null-array name))
   (cond ((> f t)
          (throw-jvm 'IllegalArgumentException
                     (string-append "fromIndex(" (number->string f)
@@ -4017,8 +4020,8 @@
            (else (arrays-compare-range a 0 (ja-len a) b 0 (ja-len b) unsigned?))))
     ((a af at b bf bt)
      (let ((af (jnum->exact af)) (at (jnum->exact at)) (bf (jnum->exact bf)) (bt (jnum->exact bt)))
-       (arrays-range-check! a af at)
-       (arrays-range-check! b bf bt)
+       (arrays-range-check! a af at "a")
+       (arrays-range-check! b bf bt "b")
        (arrays-compare-range a af at b bf bt unsigned?)))))
 ;; compareUnsigned exists for the integral arrays only, as on the JVM.
 (define (arrays-unsigned-check! a)
@@ -4033,12 +4036,13 @@
 (define arrays-mismatch
   (case-lambda
     ((a b)
-     (when (or (jolt-nil? a) (jolt-nil? b)) (throw-jvm 'NullPointerException "array is null"))
+     (when (jolt-nil? a) (arrays-null-array "a"))
+     (when (jolt-nil? b) (arrays-null-array "b"))
      (arrays-mismatch-range a 0 (ja-len a) b 0 (ja-len b)))
     ((a af at b bf bt)
      (let ((af (jnum->exact af)) (at (jnum->exact at)) (bf (jnum->exact bf)) (bt (jnum->exact bt)))
-       (arrays-range-check! a af at)
-       (arrays-range-check! b bf bt)
+       (arrays-range-check! a af at "a")
+       (arrays-range-check! b bf bt "b")
        (arrays-mismatch-range a af at b bf bt)))))
 (let ((arrays-statics
        (list
