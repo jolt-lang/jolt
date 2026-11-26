@@ -139,6 +139,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - On x86-64 glibc, `jolt build` compiles each region function that has a loop
   twice, for AVX2 and the baseline, and the loader picks one for the CPU it
   runs on (gcc, or clang 18 and later). `-DJN_NO_CPU_CLONES` turns it off.
+- `clojure.tools.reader` and rewrite-clj parse about 10% faster (#1713).
+  `(symbol s)` no longer pools a run-time string's name, which matches the
+  JVM: `Symbol.intern` interns only a class file's literal strings, so
+  `(identical? (name (symbol s)) (name (symbol s)))` is now false, as it is
+  there. Quoted symbols still share their name. A `StringBuilder` writes a
+  char appended while nothing else is pending straight into its buffer, and
+  `toString` of such a builder is a single copy.
 
 ### Fixed
 
