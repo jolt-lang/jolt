@@ -74,6 +74,60 @@
   (let ((st (jhost-state x)))
     (and (vector? st) (fx>? (vector-length st) stream-class-slot)
          (vector-ref st stream-class-slot))))
+;; A stream whose bytes a procedure produces, where the JDK's class decodes as it
+;; reads (Base64.Decoder.wrap). State slot 11 holds #(fill available close check)
+;; over the stream's own state:
+;;   fill       (bv start len): the class's read(byte[],off,len) on a bytevector
+;;              range — the count, or -1 at the end. read with a buffer calls it
+;;              directly (after any bytes the port holds), so its count is the
+;;              JDK's, and so is how far it reads into the source.
+;;   available  the class's available(), an exact integer
+;;   close      the class's close()
+;;   check      raises the class's IOException when it has been closed
+;; The port in slot 0 is for everything else (read(), readAllBytes, a Reader over
+;; the stream). It refills through fill CHUNK bytes at most, so a read() never
+;; waits on the source for more than the JDK's would.
+(define in-stream-ops-slot 11)
+(define (in-stream-ops x)
+  (let ((st (and (jhost? x) (jhost-state x))))
+    (and (vector? st) (fx>? (vector-length st) in-stream-ops-slot)
+         (vector-ref st in-stream-ops-slot))))
+(define (make-ops-in-stream fill chunk available close check cls)
+  (let ((v (make-vector (fx+ in-stream-ops-slot 1) #f)))
+    (vector-set! v 0 (make-custom-binary-input-port
+                      "ops-source"
+                      (lambda (bv start n)
+                        (let ((k (fill bv start (fxmin n chunk)))) (if (fx<? k 0) 0 k)))
+                      ;; a Reader that closes the port it reads closes the class
+                      #f #f close))
+    (vector-set! v 2 0)
+    (vector-set! v stream-class-slot cls)
+    (vector-set! v in-stream-ops-slot (vector fill available close check))
+    (make-jhost "in-stream" v)))
+;; read(buf) / read(buf, off, len) on such a stream: the bytes the port already
+;; holds, then fill for the rest of the range. The array's own bytevector is
+;; filled where it has one, so the bytes a read stored before an error raised
+;; stay in the array, as they do on the JDK.
+(define (in-stream-ops-read self ops rest)
+  ((vector-ref ops 3))
+  (let* ((buf (car rest))
+         (_ (when (jolt-nil? buf) (raf-null-array!)))
+         (off (if (pair? (cdr rest)) (jnum->exact (cadr rest)) 0))
+         (len (if (pair? (cdr rest)) (jnum->exact (caddr rest)) (ja-len buf))))
+    (data-array-check! buf off len)
+    (if (fx=? len 0)
+        0
+        (let* ((v (jolt-array-vec buf))
+               (direct? (bytevector? v))
+               (bv (if direct? v (make-bytevector len)))
+               (start (if direct? off 0))
+               (port (in-stream-port self))
+               (k (fxmin len (port-buffered port)))
+               (k (if (fx>? k 0) (get-bytevector-n! port bv start k) 0))
+               (r (if (fx=? k len) 0 ((vector-ref ops 0) bv (fx+ start k) (fx- len k))))
+               (n (if (fx<? r 0) (if (fx=? k 0) -1 k) (fx+ k r))))
+          (when (and (not direct?) (fx>? n 0)) (ja-bv->bytes! bv 0 buf off n))
+          n))))
 ;; Two optional slots follow, each #f or absent on an ordinary stream: slot 3 is
 ;; a piped stream's shared pipe (piped-cell, below), slot 4 a
 ;; PushbackInputStream's pushback state (in-stream-pushback, below). Slot 5 is
@@ -177,6 +231,8 @@
   (let ((port (in-stream-live-port self))
         (p (piped-pipe self)))
     (cond
+      ;; a stream a procedure fills answers its class's own count
+      ((in-stream-ops self) => (lambda (ops) ((vector-ref ops 1))))
       ;; a buffered stream's unread bytes, then the wrapped stream's own count
       ((in-stream-replay self)
        => (lambda (replay) (replay 'available #f)))
@@ -331,6 +387,8 @@
                  ;; not "until the buffer is full": filling it first hung a read
                  ;; over a pipe or a terminal, where the rest of the buffer only
                  ;; arrives after whatever the program does with these bytes.
+                 (if (in-stream-ops self)
+                     (->num (in-stream-ops-read self (in-stream-ops self) rest))
                  (let* ((buf (in-stream-read-buf self rest))
                         (off (if (>= (length rest) 3) (jolt-box-int (cadr rest)) 0))
                         (len (if (>= (length rest) 3) (jolt-box-int (caddr rest)) (ja-len buf)))
@@ -356,7 +414,7 @@
                       (let* ((tmp (make-bytevector (max len 1)))
                              (n (in-stream-read-some! self port tmp 0 len)))
                         (if (eof-object? n) -1
-                            (begin (ja-bv->bytes! tmp 0 buf off n) (->num n)))))))))))
+                            (begin (ja-bv->bytes! tmp 0 buf off n) (->num n))))))))))))
    (cons "readAllBytes" (lambda (self) (let ((bv (get-bytevector-all (in-stream-live-port self))))
                                          (na-byte-array (if (eof-object? bv) (make-bytevector 0) bv)))))
    (cons "skip" (lambda (self n)
@@ -378,7 +436,13 @@
    ;; a read after close is the end of input on the JVM, not an IOException.
    (cons "close" (lambda (self)
                    (let ((p (piped-pipe self)) (sq (in-stream-sequence-close self)))
-                     (cond (p (pipe-close-read! p))
+                     (cond ((in-stream-ops self)
+                            ;; the class closes; the port stays open and empty, so
+                            ;; every later read reaches fill and its IOException
+                            => (lambda (ops)
+                                 ((vector-ref ops 2))
+                                 (set-port-input-size! (in-stream-port self) 0)))
+                           (p (pipe-close-read! p))
                            (sq (sq))
                            (else (close-port (in-stream-port self)))))
                    jolt-nil))

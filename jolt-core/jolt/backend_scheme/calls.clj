@@ -7,7 +7,7 @@
   access, fixnum bit ops, static host calls. Each takes its operands already
   emitted, through an order-args fn of the caller's."
   (:require [clojure.string :as str]
-            [jolt.host :refer [seed-callable?]]
+            [jolt.host :refer [seed-callable? record-shapes]]
             [jolt.ir :as ir]
             [jolt.op-registry :as op-registry]
             [jolt.backend-scheme.names :refer [chez-str-lit munge-name]]
@@ -251,6 +251,27 @@
   (if-let [unary (get numeric-unary-forms [kind nm])]
     (unary (first args))
     (emit-numeric-op kind nm args order-args)))
+
+;; The keyword-site head for key KW (#1713). Chez open-codes the record-cache hit
+;; (rt.ss jolt-kw-get-site/i), which saves a defrecord field read ~12 ns but costs
+;; every other receiver -- a map, nil, a vector -- ~2 ns for the test, so it is
+;; emitted only for a key some defrecord declares as a field. The host's shapes
+;; map is cached until a type is defined, so the field set is rebuilt only when
+;; the map is a new one. A record defined after this site was compiled leaves the
+;; site on the procedure, whose own record cache still serves it.
+(def ^:private record-field-kws (atom nil))
+(defn- record-field-kw? [kw]
+  (let [m (record-shapes nil) memo @record-field-kws]
+    (contains? (if (and memo (identical? m (nth memo 0)))
+                 (nth memo 1)
+                 (let [s (into #{} (comp (filter :record) (mapcat :fields)) (vals m))]
+                   (reset! record-field-kws [m s])
+                   s))
+               kw)))
+(defn kw-site-head [kw]
+  (if (and (not= :gambit (session/target)) (record-field-kw? kw))
+    "(jolt-kw-get-site/i "
+    "(jolt-kw-get-site "))
 
 ;; slot of a declared field key in a record's field-order shape, or nil.
 (defn struct-field-index [shape kw]

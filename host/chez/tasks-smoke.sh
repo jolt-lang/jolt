@@ -318,6 +318,27 @@ out="$(export JOLT_NATIVE_BUILD=0; JOLT_PWD="$tmp/nb/app" JOLT_QUIET=1 "$JOLT" b
 check "jolt build with a dependency's library missing and auto-build off fails" "1" "$([ "$s" = 0 ] && echo 0 || echo 1)"
 case "$out" in *"required native library jbt not found"*"auto-build is off"*"(declared by dependency jbt/jbt)"*) r=yes ;; *) r="no: $out" ;; esac
 check "...naming the library, the task and the dependency" "yes" "$r"
+
+# A library added at run time with jolt.deps/add-deps brings its :jolt/native
+# the same way, opened on the first require of one of its namespaces. Before,
+# add-deps added the roots and left the natives out, so a script that pulled
+# jolt-lang/crypto this way bound EVP_* to whatever the process already had
+# (on macOS a BoringSSL copy that aborts) or to nothing.
+fresh
+mkdir -p "$tmp/nb/script"
+cat > "$tmp/nb/script/s.clj" <<EOF
+(jolt.deps/add-deps '{:deps {jbt/jbt {:local/root "$tmp/nb/lib"}}})
+(println "pending" (count (jolt.host/pending-native-roots)))
+(require 'jbt.core)
+(println "answer" (jbt.core/answer))
+EOF
+out="$(inbb "$tmp/nb/script" run "$tmp/nb/script/s.clj")"
+case "$out" in "pending 1"*"building native library jbt"*"answer 42") r=yes ;; *) r="no: $out" ;; esac
+check "add-deps defers the added library's native to its first require" "yes" "$r"
+check "...building it once" "1" "$(builds)"
+# adding the same library twice registers its native once
+out="$(inbb "$tmp/nb/script" -e "(jolt.deps/add-deps '{:deps {jbt/jbt {:local/root \"$tmp/nb/lib\"}}}) (jolt.deps/add-deps '{:deps {jbt/jbt {:local/root \"$tmp/nb/lib\"}}}) (println (count (jolt.host/pending-native-roots)))")"
+check "...and adding it twice registers its native once" "1" "$out"
 else
   echo "  (skipped :build cases: no C compiler)" >&2
 fi

@@ -271,8 +271,18 @@
 ;; clojure.tools.reader reads every list through here, and a consumer that asks
 ;; `list?` (clojure.tools.namespace's ns-decl?, say) would reject the result.
 (define (plist-create x)
-  (let ((items (seq->list (jolt-seq x))))
-    (if (null? items) jolt-empty-list (apply jolt-list items))))
+  (if (and (pvec? x) (fx>? (pvec-cnt x) 0))
+      ;; a vector -- tools.reader's read-list hands over every list it reads as
+      ;; one -- becomes the cells jolt-list builds, back to front, without the
+      ;; seq, the Scheme list and the apply in between (#1713)
+      (let loop ((i (fx- (pvec-cnt x) 1)) (t jolt-nil))
+        (if (fx=? i 0)
+            (cseq-list (pvec-nth-in-range x 0) t)
+            (loop (fx- i 1)
+                  (make-cseqn (pvec-nth-in-range x i) t sk-list jolt-nil
+                              (if (jolt-nil? t) 1 (fx+ (cseqn-cnt t) 1))))))
+      (let ((items (seq->list (jolt-seq x))))
+        (if (null? items) jolt-empty-list (apply jolt-list items)))))
 (register-class-statics! "PersistentList" (list (cons "create" plist-create)))
 (register-class-statics! "clojure.lang.PersistentList" (list (cons "create" plist-create)))
 

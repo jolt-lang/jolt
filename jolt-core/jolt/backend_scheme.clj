@@ -41,7 +41,7 @@
                      emit-rec-type-check emit-record-ctor emit-seed-callable-invoke
                      ifn-kind lookup-restore native-op node-inline-chain ordered-call
                      plain-call record-ctor-shape site-literal site-restore
-                     sited-tail-call stdlib-var? struct-field-index]]
+                     sited-tail-call stdlib-var? struct-field-index kw-site-head]]
             [jolt.backend-scheme.literals :as literals :refer [emit-const]]
             [jolt.backend-scheme.once :refer [once-clear-stmts with-once-clears]]
             [jolt.backend-scheme.fnsrc :as fnsrc
@@ -436,6 +436,14 @@
     (cond
       dir  (order-args (fn [as] (str "(" dir " " (first as) ")")))
       idx  (order-args (fn [as] (str "(jrec-field-at " (first as) " " idx " " (emit key-node) ")")))
+      ;; a constant keyword key: the lookup (:k m [d]) is (Keyword.invoke is
+      ;; RT.get), so the same per-site cache serves it (#1713)
+      (and *const-pool* (= :const (:op key-node)) (keyword? (:val key-node)))
+      (let [site (hoist-const-per-site "(jolt-kw-site)")]
+        (note-tail-call! tail?)
+        (order-args (fn [as] (lookup-restore tail? (str (kw-site-head (:val key-node))
+                                                        (first as) " " (second as) " " site
+                                                        (if (= 3 (count as)) (str " " (nth as 2)) "") ")")))))
       :else (do (note-tail-call! tail?)
                 (order-args (fn [as] (lookup-restore tail? (str "(jolt-get " (str/join " " as) ")"))))))))
 
@@ -458,7 +466,9 @@
       ;; jolt-get rather than allocate a cell per evaluation.
       *const-pool*
       (let [site (hoist-const-per-site "(jolt-kw-site)")]
-        (order-args (fn [as] (lookup-restore tail? (str "(jolt-kw-get-site " (first as) " " (emit fnode) " " site (defstr as) ")")))))
+        ;; on Chez a record field's cache hit is open-coded (kw-site-head)
+        (order-args (fn [as] (lookup-restore tail? (str (kw-site-head (:val fnode))
+                                                        (first as) " " (emit fnode) " " site (defstr as) ")")))))
       :else (order-args (fn [as] (lookup-restore tail? (str "(jolt-get " (first as) " " (emit fnode) (defstr as) ")")))))))
 
 ;; A collection literal or value in call position.
@@ -916,7 +926,9 @@
       (instance-site-call? (:fnode c) arg-nodes)
       (let [site (hoist-const-per-site "(jolt-instance-site-make)")]
         (note-tail-call! tail?)
-        (order-args (fn [as] (str "(jolt-instance-site " site " " (first as) " " (second as) ")"))))
+        ;; on Chez a hit is open-coded (rt.ss jolt-instance-site/i)
+        (order-args (fn [as] (str (if (= :gambit (session/target)) "(jolt-instance-site " "(jolt-instance-site/i ")
+                                  site " " (first as) " " (second as) ")"))))
       (deftype-field-site-call? (:fnode c) arg-nodes)
       (let [site (hoist-const-per-site "(jrec-field-site-make)")]
         (note-tail-call! tail?)

@@ -172,7 +172,10 @@
 (define jrdesc-ifc-mutex (make-mutex))
 (define (jrdesc-ifc d) (hashtable-ref jrdesc-ifc-tbl d #f))
 (define (jrdesc-ifc-set! d v) (jolt-with-mutex jrdesc-ifc-mutex (hashtable-set! jrdesc-ifc-tbl d v)))
-(define (jrdesc-ifc-epoch) (fx+ jch-graph-epoch jolt-proto-epoch))
+;; A macro, not a procedure: every record op's derived-vector hit compares it,
+;; and the call was a third of that hit (9 ns, #1713). Two global reads.
+(define-syntax jrdesc-ifc-epoch
+  (syntax-rules () ((_) (fx+ jch-graph-epoch jolt-proto-epoch))))
 ;; The shape order is the JVM's print-method precedence, verified against it: ISeq
 ;; outranks IPersistentVector / IPersistentSet / IPersistentMap, and IRecord
 ;; outranks IPersistentMap (prefer-method), so a defrecord has no shape at all.
