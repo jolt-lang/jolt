@@ -498,6 +498,19 @@
            :jvm "throws IllegalArgumentException"
            :jolt "200"}
    :note "jolt models one integer type, so a byte-typed overload cannot be told from an int-typed one. Verified against Clojure 1.12.5."}
+  ;; A static call whose argument jolt cannot type reaches the shim, which takes
+  ;; any number: the JVM compiler may have typed that argument a primitive jolt
+  ;; does not (the double an arithmetic call returns), and then it resolves.
+  ;; With every argument's class known the call takes the Reflector's member
+  ;; and refuses as the JVM does ((Float/valueOf (Double/valueOf "1"))).
+  {:category :permissive
+   :behavior "((fn [x] (Double/valueOf x)) 2)"
+   :jvm "throws IllegalArgumentException (the Reflector finds no valueOf taking a Long)"
+   :jolt "2.0"
+   :check {:expr "((fn [x] (Double/valueOf x)) 2)"
+           :jvm "throws IllegalArgumentException"
+           :jolt "2.0"}
+   :note "jolt types fewer primitive expressions than the JVM compiler, so an untyped argument cannot be told from a primitive one. Verified against Clojure 1.12.5 on JDK 21."}
   ;; A bignum-literal operand (9223372036854775807 = Long/MAX_VALUE, past jolt's
   ;; 2^60-1 fixnum ceiling) BLOCKS :long specialization, so the loop var stays
   ;; generic and jolt computes the EXACT bignum sum — where the JVM keeps `i` a

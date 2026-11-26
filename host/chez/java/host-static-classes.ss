@@ -2667,44 +2667,9 @@
 ;; clojure.lang.MapEntry/create — the static factory clojure.walk and kin use
 ;; when rebuilding map entries.
 (register-class-statics! "MapEntry" (list (cons "create" (lambda (k v) (make-map-entry k v)))))
-;; JVM exception ctors -> a typed host throwable carrying the canonical :jolt/class
-;; (so class / instance? / getMessage / ex-message reflect the real type) and the
-;; message. Supports (E. msg), (E. msg cause), (E. cause), and (E.), and the
-;; protected (E. msg cause enableSuppression writableStackTrace) a proxy calls:
-;; enableSuppression false makes addSuppressed record nothing.
-;; Derived from the ONE exception hierarchy in class-hierarchy.ss: every
+;; JVM exception ctors: make-exc-ctor (records-interop.ss, shared with Gambit),
+;; derived from the ONE exception hierarchy in class-hierarchy.ss: every
 ;; jch-isa? -> Throwable gets a ctor with no second list to maintain.
-;; A throwable a constructor was handed CAUSE for: a nil one is still a cause
-;; given (rt.ss jolt-cause-given-nil).
-(define (throwable-given canonical msg cause)
-  (if (jolt-nil? cause)
-      (jolt-host-throwable/nil-cause canonical msg)
-      (jolt-host-throwable canonical msg cause)))
-(define (make-exc-ctor canonical)
-  (lambda args
-    (let* ((a0 (if (pair? args) (car args) jolt-nil))
-           (rest (if (pair? args) (cdr args) '()))
-           (cause (if (pair? rest) (car rest) jolt-nil)))
-      (cond
-        ;; (E. msg cause enableSuppression writableStackTrace)
-        ((and (pair? rest) (pair? (cdr rest)))
-         (let ((t (throwable-given canonical (if (or (string? a0) (jolt-nil? a0)) a0 (jolt-str-render-one a0)) cause)))
-           (when (and (pair? (cddr rest)) (null? (cdddr rest)) (not (jolt-truthy? (cadr rest))))
-             (throwable-disable-suppression! t))
-           t))
-        ((string? a0) (if (pair? rest)
-                          (throwable-given canonical a0 cause)
-                          (jolt-host-throwable canonical a0)))
-        ((jolt-nil? a0) (if (pair? rest)
-                            (throwable-given canonical jolt-nil cause)
-                            (jolt-host-throwable canonical jolt-nil)))
-        ;; (E. cause): a lone throwable arg is the cause, and the message is the
-        ;; cause's toString, as Throwable(Throwable) sets it on the JVM —
-        ;; (ExecutionException. (IllegalStateException. "bad")) has the message
-        ;; "java.lang.IllegalStateException: bad", not nil.
-        ((and (null? rest) (ex-info-map? a0))
-         (jolt-host-throwable canonical (jolt-str-render-one a0) a0))
-        (else (jolt-host-throwable canonical (jolt-str-render-one a0) cause))))))
 (let-values (((keys vals) (hashtable-entries jvm-class-parents)))
   (vector-for-each
     (lambda (canonical supers)

@@ -156,29 +156,17 @@
 ;; ClassCastException msg) is what (zero? "a") raises), and a deftype/defrecord,
 ;; whose type name is a var holding its ctor — the same two arms Chez's host-new
 ;; (host-static.ss) takes. The throwable ctors are derived from the ONE
-;; hierarchy in class-hierarchy.ss the way host-static-classes.ss derives them,
-;; so (E. msg), (E. msg cause), (E. cause) and (E.) all build the typed
-;; throwable. Anything else names a class this target has no shim for, and says so.
-(define (gambit-exc-ctor canonical)
-  (lambda args
-    (let* ((a0 (if (pair? args) (car args) jolt-nil))
-           (rest (if (pair? args) (cdr args) '()))
-           (cause (if (pair? rest) (car rest) jolt-nil)))
-      (cond
-        ((string? a0) (jolt-host-throwable canonical a0 cause))
-        ((jolt-nil? a0) (jolt-host-throwable canonical jolt-nil))
-        ;; (E. cause): the message is the cause's toString, as on the JVM
-        ((and (null? rest) (ex-info-map? a0))
-         (jolt-host-throwable canonical (jolt-str-render-one a0) a0))
-        (else (jolt-host-throwable canonical (jolt-str-render-one a0) cause))))))
+;; hierarchy in class-hierarchy.ss with the ctor host-static-classes.ss uses
+;; (records-interop.ss make-exc-ctor), so (E. msg), (E. msg cause), (E. cause)
+;; and (E.) build the same typed throwable, a nil cause given included. Anything else names a class this target has no shim for, and says so.
 (let-values (((keys vals) (hashtable-entries jvm-class-parents)))
   (vector-for-each
     (lambda (canonical supers)
       (when (jch-isa? canonical "Throwable")
         (let ((short (jch-last-segment canonical)))
-          (register-class-ctor! short (gambit-exc-ctor canonical))
+          (register-class-ctor! short (make-exc-ctor canonical))
           (unless (string=? short canonical)
-            (register-class-ctor! canonical (gambit-exc-ctor canonical))))))
+            (register-class-ctor! canonical (make-exc-ctor canonical))))))
     keys vals))
 (define (host-new class . args)
   (let ((ctor (lookup-class class-ctors-tbl class)))
@@ -213,8 +201,10 @@
 ;; valueOf, Long/decode, String/valueOf, and java.util.UUID's factories.
 (register-class-statics! "Long"
   (list (cons "valueOf" (lambda (s . r) (parse-int-or-throw s (if (null? r) 10 (jnum->exact (car r))) "long")))
-        (cons "decode" (lambda (s) (decode-or-throw s "long")))))
-(register-class-statics! "Double" (list (cons "valueOf" ->double)))
+        (cons "decode" (lambda (s) (decode-or-throw s "long")))
+        (cons "valueOf(reflect)" jolt-reflect-long-value-of)))
+(register-class-statics! "Double" (list (cons "valueOf" ->double)
+                                        (cons "valueOf(reflect)" jolt-reflect-double-value-of)))
 (register-class-statics! "Character"
   (list (cons "valueOf" (lambda (ch) (if (or (char? ch) (jsurr? ch)) ch (jolt-char ch))))))
 (register-class-statics! "String"
@@ -250,7 +240,7 @@
             ((number? obj) (jolt-num-compare-to obj (car args)))
             ((juuid? obj)
              (let ((o (car args)))
-               (if (juuid? o) (uuid-cmp obj o) (jolt-reflect-cast-fail o "java.util.UUID"))))
+               (if (juuid? o) (uuid-cmp obj o) (jolt-compare-to-fail o "java.util.UUID"))))
             (else 'pass)))))
 ;; JVM Character.isWhitespace: Unicode whitespace MINUS the no-break spaces the
 ;; JVM excludes (U+00A0/U+2007/U+202F) and NEL (U+0085), plus U+001C..U+001F.

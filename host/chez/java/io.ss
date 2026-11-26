@@ -2331,7 +2331,7 @@
       ;; jolt-checkcast), so this is the reflector's cast
       ((string=? name "compareTo")
        (unless (jfile? (car args))
-         (jolt-reflect-cast-fail (car args) "java.io.File"))
+         (jolt-compare-to-fail (car args) "java.io.File"))
        (list (->num (jfile-compare-for (win32?) p (jfile-path (car args))))))
       ((string=? name "equals")         (list (and (jfile? (car args)) (string=? p (jfile-path (car args))))))
       ((string=? name "hashCode")       (list (jfile-hashcode f)))
@@ -4161,7 +4161,7 @@
      (let ((o (if (pair? args) (car args) jolt-nil)))
        (if (juuid? o)
            (uuid-cmp u o)
-           (jolt-reflect-cast-fail o "java.util.UUID"))))
+           (jolt-compare-to-fail o "java.util.UUID"))))
     ;; (int)(hilo >> 32) ^ (int)hilo where hilo = msb ^ lsb — the JVM fold.
     ((string=? m "hashCode") (uuid-hashcode u))
     (else 'pass)))
@@ -4769,7 +4769,7 @@
         (cons "relativize" (lambda (u x) (uri-relativize u (uri-arg->uri x))))
         (cons "compareTo" (lambda (u o)
                             (unless (and (jhost? o) (string=? (jhost-tag o) "uri"))
-                              (jolt-reflect-cast-fail o "java.net.URI"))
+                              (jolt-compare-to-fail o "java.net.URI"))
                             (uri-compare u o)))
         (cons "hashCode" (lambda (u) (uri-hashcode u)))
         (cons "equals" (lambda (u o) (and (jhost? o) (string=? (jhost-tag o) "uri") (uri-equals? u o))))))

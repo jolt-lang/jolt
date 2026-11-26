@@ -440,8 +440,23 @@
        "\"Cannot cast java.lang.String to java.lang.Long\"")
 (check "(try (let [x (Long/valueOf 1)] (.compareTo x \"a\")) (catch ClassCastException c (ex-message c)))"
        "\"class java.lang.String cannot be cast to class java.lang.Long (java.lang.String and java.lang.Long are in module java.base of loader 'bootstrap')\"")
-(check "[(Long/valueOf \"12\") (Long/valueOf 7) (Long/decode \"0x10\") (Double/valueOf \"1.5\") (Double/valueOf 2) (Character/valueOf \\a) (String/valueOf 12)]"
+(check "[(Long/valueOf \"12\") (Long/valueOf 7) (Long/decode \"0x10\") (Double/valueOf \"1.5\") (Double/valueOf 2.0) (Character/valueOf \\a) (String/valueOf 12)]"
        "[12 7 16 1.5 2.0 \\a \"12\"]")
+;; a static call no overload fits takes the Reflector's member: a Double fits
+;; neither Long.valueOf(long) nor (String)
+(check "(try (Long/valueOf (Double/valueOf \"1\")) (catch IllegalArgumentException e (ex-message e)))"
+       "\"No matching method valueOf found taking 1 args\"")
+;; compareTo of nil is the method's NullPointerException, resolved or not
+(check "(try (.compareTo (java.util.UUID/fromString \"1-1-1-1-1\") nil) (catch NullPointerException e (ex-message e)))"
+       "\"Cannot read field \\\"mostSigBits\\\" because \\\"val\\\" is null\"")
+(check "[(try ((fn [x y] (.compareTo x y)) 1 nil) (catch NullPointerException e (ex-message e))) (try ((fn [x y] (.compareTo x y)) \"a\" nil) (catch NullPointerException e (ex-message e)))]"
+       "[\"Cannot read field \\\"value\\\" because \\\"anotherLong\\\" is null\" \"Cannot read field \\\"value\\\" because \\\"anotherString\\\" is null\"]")
+;; a constructor handed a nil cause has set it: initCause refuses after
+(check "(try (.initCause (Exception. \"o\" nil) (Exception. \"b\")) (catch IllegalStateException e (ex-message e)))"
+       "\"Can't overwrite cause with java.lang.Exception: b\"")
+;; a throwable's toString is Throwable's, ExceptionInfo's with its data
+(check "[(str (Exception. \"b\")) (.toString (Exception. \"b\")) (str (ex-info \"x\" {:a 1})) (str (RuntimeException.))]"
+       "[\"java.lang.Exception: b\" \"java.lang.Exception: b\" \"clojure.lang.ExceptionInfo: x {:a 1}\" \"java.lang.RuntimeException\"]")
 (check "(str (java.util.UUID/fromString \"1-1-1-1-1\"))"
        "\"00000001-0001-0001-0001-000000000001\"")
 (check "(class (java.util.UUID/randomUUID))"

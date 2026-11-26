@@ -1861,33 +1861,8 @@
                      "\n :trace []"
                      "}"))))
 
-;; toString (str/print) for throwable records: Throwable's "ClassName: message",
-;; the ": message" dropped when there is none. Only ExceptionInfo's own toString
-;; appends its data. A throwable of another class can carry data here too — a
-;; read error keeps its diagnostic position on its RuntimeException — and
-;; printing that into its toString broke the text a caller builds from it, the
-;; ReaderException's message first among them.
-;; A CompilerException's toString is its message alone, then its cause's message
-;; on a line of its own when the cause is an IExceptionInfo.
-(register-str-render! jolt-ex-info-record?
-  (lambda (x)
-    (let* ((class-name (jolt-ex-info-record-class-name x))
-           (msg (jolt-ex-info-record-message x))
-           (data (jolt-ex-info-record-data x)))
-      (if (equal? class-name "clojure.lang.Compiler$CompilerException")
-          (let ((c (jolt-ex-info-record-cause x)))
-            (string-append (if (jolt-nil? msg) "" (jolt-str-render-one msg))
-                           (if (and (jolt-ex-info-record? c)
-                                    (member (jolt-ex-info-record-class-name c)
-                                            '("clojure.lang.ExceptionInfo" "clojure.lang.Compiler$CompilerException")))
-                               (string-append "\n" (let ((m (jolt-ex-info-record-message c)))
-                                                      (if (jolt-nil? m) "null" (jolt-str-render-one m))))
-                               "")))
-      (string-append class-name
-                     (if (jolt-nil? msg) "" (string-append ": " (jolt-str-render-one msg)))
-                     (if (or (jolt-nil? data) (not (equal? class-name "clojure.lang.ExceptionInfo")))
-                         ""
-                         (string-append " " (jolt-pr-str data))))))))
+;; A throwable record's toString (str/print) is records-interop.ss's, which
+;; both hosts load.
 
 ;; count on ex-info / host throwable records throws UnsupportedOperationException
 ;; matching JVM: "count not supported on this type: <SimpleClassName>"
