@@ -30,14 +30,6 @@
  :unused-public
  [;; Named by a caller jolt-metrics doesn't read (EDN config or task maps, or
   ;; excluded vendor/ code); to come off once jolt-metrics resolves them.
-  {:path "clj-kondo.exports/jolt-lang/jolt/hooks/jolt/ffi.clj" :name "defcfn"
-   :why "clj-kondo hook, named by :hooks :analyze-call in clj-kondo.exports/jolt-lang/jolt/config.edn"}
-  {:path "clj-kondo.exports/jolt-lang/jolt/hooks/jolt/ffi.clj" :name "with-arena"
-   :why "clj-kondo hook, named by :hooks :analyze-call in clj-kondo.exports/jolt-lang/jolt/config.edn"}
-  {:path "stdlib/babashka/tasks.clj" :name "current-task"
-   :why "called from :tasks bodies in bb.edn/deps.edn, e.g. test/chez/tasks/bbproj/bb.edn :enter/:leave"}
-  {:path "stdlib/babashka/tasks.clj" :name "clojure"
-   :why "called from :tasks bodies in bb.edn/deps.edn, e.g. test/chez/tasks/bbproj/bb.edn viajolt"}
   {:path "stdlib/clojure/sci/io_stubs.clj" :name "print-simple"
    :why "named as sci.impl.io/print-simple by vendor/sci/src/sci/impl/namespaces.cljc"}
   {:path "stdlib/clojure/sci/io_stubs.clj" :name "with-out-str"
@@ -73,13 +65,7 @@
   {:path "compatibility/bencode/core.clj" :name "write-netstring"
    :why "nrepl/bencode's public API, for scripts that call it; nothing in jolt does"}
   {:path "compatibility/jsonista/core.clj" :name "write-value"
-   :why "jsonista's public API, for libraries that call it (muuntaja); tested only from test/chez/unit.edn rows"}
-  {:path "compatibility/jsonista/core.clj" :name "read-value"
-   :why "jsonista's public API, for libraries that call it (muuntaja); nothing in jolt does"}
-  {:path "compatibility/jsonista/core.clj" :name "write-value-as-bytes"
-   :why "jsonista's public API, for libraries that call it (muuntaja); nothing in jolt does"}
-  {:path "compatibility/jsonista/core.clj" :name "java-collection-module"
-   :why "jsonista's public API, for libraries that call it; nothing in jolt does"}]
+   :why "jsonista's public API, for libraries that call it (muuntaja); tested only from test/chez/unit.edn rows"}]
  :lints
  [{:path "jolt-core/clojure/core/20-coll.clj" :rule :str-accumulation :count 1
    :why "pr-str's variadic loop: a StringBuilder measured 5-9% slower for 2-3 args, the usual call (and collecting the pieces for one apply str 60% slower); it only wins past about 6"}
