@@ -353,20 +353,20 @@
 ;; had to restate that dependency's :darwin and :linux lists verbatim — and a
 ;; windows-only project entry deduped the dependency away and broke the other
 ;; two platforms instead (jolt-lang/jolt#989). reconcile-natives overlays.
-(let [reconcile (var jolt.deps.declarations/reconcile-natives)]
-  (let [project {:name "z" :windows ["zlib1.dll"] :jolt.deps/root "/app"}
-        dep     {:name "z" :linux ["libz.so.1"] :darwin ["libz.dylib"]
-                 :jolt.deps/root "/dep"}]
-    (is= "the project adds a platform without restating the others"
-         [{:name "z" :windows ["zlib1.dll"] :jolt.deps/root "/app"
-           :linux ["libz.so.1"] :darwin ["libz.dylib"]
-           :jolt.deps/roots {:linux "/dep" :darwin "/dep"}}]
-         (reconcile [project dep]))
-    ;; the winner still wins every key it declares — an app override is an
-    ;; override, not a merge of candidate lists
-    (is= "a key the winner declares is not overlaid"
-         ["zlib1.dll"]
-         (:windows (first (reconcile [project (assoc dep :windows ["other.dll"])]))))))
+(let [reconcile (var jolt.deps.declarations/reconcile-natives)
+      project {:name "z" :windows ["zlib1.dll"] :jolt.deps/root "/app"}
+      dep     {:name "z" :linux ["libz.so.1"] :darwin ["libz.dylib"]
+               :jolt.deps/root "/dep"}]
+  (is= "the project adds a platform without restating the others"
+       [{:name "z" :windows ["zlib1.dll"] :jolt.deps/root "/app"
+         :linux ["libz.so.1"] :darwin ["libz.dylib"]
+         :jolt.deps/roots {:linux "/dep" :darwin "/dep"}}]
+       (reconcile [project dep]))
+  ;; the winner still wins every key it declares — an app override is an
+  ;; override, not a merge of candidate lists
+  (is= "a key the winner declares is not overlaid"
+       ["zlib1.dll"]
+       (:windows (first (reconcile [project (assoc dep :windows ["other.dll"])])))))
 
 ;; The root travels with the candidates it belongs to. Without it a dependency's
 ;; relative "native/libfoo.so" would resolve against whichever deps.edn won the

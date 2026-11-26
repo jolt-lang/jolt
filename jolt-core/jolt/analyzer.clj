@@ -467,10 +467,10 @@
             seg (cond (and named (not defn-self?)) [:named fn-name pos]
                       dn (if (:objx env) [:def-id dn pos] [:def dn pos])
                       defn-self? [:def fn-name pos]
-                      :else [:fn nil pos])]
-        (let [path (objx-in ctx env seg)]
-          ;; the fn's own class name, which (class f) reports (:class on the node)
-          (assoc env :objx path :fn-class (objx-path-name path)))))))
+                      :else [:fn nil pos])
+            path (objx-in ctx env seg)]
+        ;; the fn's own class name, which (class f) reports (:class on the node)
+        (assoc env :objx path :fn-class (objx-path-name path))))))
 
 ;; Is the form's own head already the bare, meta-free symbol fn*? Then the form IS
 ;; what :src-form rebuilds and the rebuild can be skipped — see analyze-fn.
@@ -602,43 +602,43 @@
   (let [env (if (wraps? (or (:here env) :expression) :try) (wrapper-env ctx form env) env)
         parts (reduce add-try-clause
                       {:body [] :catches [] :finally nil :finally? false}
-                      (rest items))]
-    ;; Multiple catch clauses dispatch on the thrown value's class, in order. Lower
-    ;; them to ONE guard binding a fresh local, then a nested-if chain testing each
-    ;; clause's class with (instance? C e) — which respects the exception supertype
-    ;; hierarchy — plus __catch-broad? for an untyped host condition. No match
-    ;; re-throws. (The earlier single-catch IR ignored the class and caught
-    ;; everything; this gives real per-class dispatch.) :catch-sym/:catch-body/
-    ;; :finally are added only when present — an absent key must stay absent (a
-    ;; nil-valued key would make the node a phm and force back-end densification).
-    ;; `recur` may not cross a try. On the JVM that is a bytecode limit; here the
-    ;; lowering re-enters the handler scope each iteration without leaving the
-    ;; previous one, so a recur that crossed one leaked ~400 bytes an iteration and
-    ;; ran `finally` bodies LIFO at loop exit rather than per iteration — and with
-    ;; no loop condition it simply hung. The target stays VISIBLE (with-recur in an
-    ;; inner fn/loop lifts this again); marking the boundary rather than dropping
-    ;; :recur is what lets the recur arm tell "no target at all" from "a target it
-    ;; may not reach", which are different diagnostics.
-    ;;
-    ;; Body and catch/finally are marked differently because the reference reports
-    ;; them differently: the body is "Cannot recur across try", while a catch or
-    ;; finally is not a tail position in the first place and reports as such.
-    (let [benv (assoc env :recur-blocked :try)
-          tenv (assoc env :recur-blocked :non-tail)
-          n {:op :try :body (analyze-body ctx (:body parts) benv :return)}
-          n (if (seq (:catches parts))
-              (let [evar-name (gen-name "catch")
-                    raw-name (gen-name "catch-raw")
-                    evar (symbol evar-name)]
-                (assoc n :catch-sym evar-name
-                         :catch-raw-sym raw-name
-                         :catch-body (analyze-body ctx (list (catch-dispatch-form evar (:catches parts)))
-                                                   (add-locals tenv [evar-name]) :expression)))
-              n)
-          n (if (:finally parts)
-              (assoc n :finally (analyze-body ctx (:finally parts) tenv :statement))
-              n)]
-      n)))
+                      (rest items))
+        ;; Multiple catch clauses dispatch on the thrown value's class, in order. Lower
+        ;; them to ONE guard binding a fresh local, then a nested-if chain testing each
+        ;; clause's class with (instance? C e) — which respects the exception supertype
+        ;; hierarchy — plus __catch-broad? for an untyped host condition. No match
+        ;; re-throws. (The earlier single-catch IR ignored the class and caught
+        ;; everything; this gives real per-class dispatch.) :catch-sym/:catch-body/
+        ;; :finally are added only when present — an absent key must stay absent (a
+        ;; nil-valued key would make the node a phm and force back-end densification).
+        ;; `recur` may not cross a try. On the JVM that is a bytecode limit; here the
+        ;; lowering re-enters the handler scope each iteration without leaving the
+        ;; previous one, so a recur that crossed one leaked ~400 bytes an iteration and
+        ;; ran `finally` bodies LIFO at loop exit rather than per iteration — and with
+        ;; no loop condition it simply hung. The target stays VISIBLE (with-recur in an
+        ;; inner fn/loop lifts this again); marking the boundary rather than dropping
+        ;; :recur is what lets the recur arm tell "no target at all" from "a target it
+        ;; may not reach", which are different diagnostics.
+        ;;
+        ;; Body and catch/finally are marked differently because the reference reports
+        ;; them differently: the body is "Cannot recur across try", while a catch or
+        ;; finally is not a tail position in the first place and reports as such.
+        benv (assoc env :recur-blocked :try)
+        tenv (assoc env :recur-blocked :non-tail)
+        n {:op :try :body (analyze-body ctx (:body parts) benv :return)}
+        n (if (seq (:catches parts))
+            (let [evar-name (gen-name "catch")
+                  raw-name (gen-name "catch-raw")
+                  evar (symbol evar-name)]
+              (assoc n :catch-sym evar-name
+                       :catch-raw-sym raw-name
+                       :catch-body (analyze-body ctx (list (catch-dispatch-form evar (:catches parts)))
+                                                 (add-locals tenv [evar-name]) :expression)))
+            n)
+        n (if (:finally parts)
+            (assoc n :finally (analyze-body ctx (:finally parts) tenv :statement))
+            n)]
+    n))
 
 ;; letfn*: (letfn* [name1 fn1 name2 fn2 …] body*) — the special form Clojure's
 ;; letfn macro expands to (flat name/fn-form pairs, the fn forms already named).
@@ -1159,7 +1159,7 @@
 ;; A type may be [:by-value [:struct ...]], read as foreign-fn reads it.
 (defn- analyze-ffi-callable [ctx items env]
   (when-not (<= 4 (count items) 5)
-    (analysis-error :ffi/invalid-signature (str "jolt.ffi/foreign-callable expects (foreign-callable f [argtypes] rettype [:collect-safe])")))
+    (analysis-error :ffi/invalid-signature "jolt.ffi/foreign-callable expects (foreign-callable f [argtypes] rettype [:collect-safe])"))
   {:op :ffi-callable
    :fn (analyze ctx (nth items 1) env)
    :argtypes (mapv #(analyze-ffi-signature-type % "callback argument")

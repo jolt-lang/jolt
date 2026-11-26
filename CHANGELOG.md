@@ -139,6 +139,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - On x86-64 glibc, `jolt build` compiles each region function that has a loop
   twice, for AVX2 and the baseline, and the loader picks one for the CPU it
   runs on (gcc, or clang 18 and later). `-DJN_NO_CPU_CLONES` turns it off.
+- `clojure.tools.reader` and rewrite-clj parse about 10% faster (#1713).
+  `(symbol s)` no longer pools a run-time string's name, which matches the
+  JVM: `Symbol.intern` interns only a class file's literal strings, so
+  `(identical? (name (symbol s)) (name (symbol s)))` is now false, as it is
+  there. Quoted symbols still share their name. A `StringBuilder` writes a
+  char appended while nothing else is pending straight into its buffer, and
+  `toString` of such a builder is a single copy.
 
 ### Fixed
 
@@ -193,6 +200,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   interposed (an `LD_PRELOAD`ed ASan or jemalloc) regions compiled at
   different times could pair one allocator's `calloc` with the other's `free`
   and crash.
+- `clojure.test/*initial-report-counters*` is dynamic, as in Clojure, so
+  `binding` it no longer throws `Can't dynamically bind non-dynamic var`.
+- `jolt.parser.combinators/any-of` carries its docstring; it sat after the
+  argument vector, where it was a body expression.
+
+### Internal
+
+- The metrics workflow runs the latest jolt-metrics and gates on its lint
+  findings as well (`ci/metrics-allow.edn` lists the ones that stay), and a
+  pull request's report opens with what changed since main's.
 
 ## [0.8.30] - 2026-11-24
 
