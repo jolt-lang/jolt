@@ -37,9 +37,6 @@
   (let ((v (make-vector 23 1.0)))
     (do ((k 1 (fx+ k 1))) ((fx= k 23) v)
       (vector-set! v k (fl* 10.0 (vector-ref v (fx- k 1)))))))
-;; (digits . point) for the decimal N x 10^-K, N a positive fixnum: N's digits
-;; with its trailing zeros dropped (k = 0 leaves them: 1200.0), written by hand
-;; because number->string of a fixnum costs ~0.2 us, most of a short double's print
 ;; The digit producers below answer (M . POINT): M the digits as a fixnum with
 ;; its trailing zeros dropped, value = 0.M x 10^POINT. jolt-flonum->string lays
 ;; M out straight into its result (flonum-layout/fx); the string forms, (DIGITS
@@ -49,6 +46,9 @@
     (fx-fill-digits! s m len)
     s))
 (define (fx-digits-pair->strings d) (cons (fx-digits->string (car d)) (cdr d)))
+;; (M . POINT) for the decimal N x 10^-K, N a positive fixnum: M is N with its
+;; trailing zeros dropped, worked out by hand because number->string of a fixnum
+;; cost ~0.2 us, most of a short double's print
 (define (flonum-fixnum-digits/fx n k)
   ;; fx-digits.ss's divide-free helpers: each fxquotient here was a dependent
   ;; hardware divide, ~110 ns for the "15" of 1.5
@@ -57,7 +57,6 @@
       (if (fx=? m (fx* q 10))
           (strip q (fx+ z 1))
           (cons m (fx- (fx+ (fx-decimal-length m) z) k))))))
-(define (flonum-fixnum-digits n k) (fx-digits-pair->strings (flonum-fixnum-digits/fx n k)))
 (define (flonum-fast-digits/fx x)
   (and (fl>= x 1e-22) (fl< x 1e15)
        (let loop ((k 0))
