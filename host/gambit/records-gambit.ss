@@ -781,6 +781,7 @@
                 (jolt-get ext k jrec-absent))))
     (if (eq? v jrec-absent)
         (cond
+          ((jrec-plain? coll) d)
           ((jrec-declared-valat coll) =>
            (lambda (va) (jrec-call-valat va coll k d)))
           ((find-method-any-protocol (jrec-rtag coll) "valAt") =>
@@ -1114,8 +1115,9 @@
     jrdesc-ifc-mutex
     (hashtable-set! jrdesc-ifc-tbl d v)))
 
-(define (jrdesc-ifc-epoch)
-  (fx+ jch-graph-epoch jolt-proto-epoch))
+(define-syntax jrdesc-ifc-epoch
+  (syntax-rules ()
+    ((_) (fx+ jch-graph-epoch jolt-proto-epoch))))
 
 (define (jrdesc-derive-ifc d record?)
   (let ((tag (jrdesc-tag d))
@@ -4565,9 +4567,19 @@
            (and (iface-method v "iterator" #f) #t))))
 
 (define (jolt-satisfies? proto obj)
-  (if (jclass? proto)
-      (if (instance-check proto obj) #t #f)
-      (jolt-satisfies-protocol? proto obj)))
+  (if (and (jrec? obj) (pmap? proto))
+      (let* ((t (vector-ref (jrdesc-ifc-of obj) 10))
+             (hit (hashtable-ref t proto 'none)))
+        (if (eq? hit 'none)
+            (let ((ans (jolt-satisfies-protocol? proto obj)))
+              (jolt-with-mutex
+                jrdesc-ifc-mutex
+                (hashtable-set! t proto ans))
+              ans)
+            hit))
+      (if (jclass? proto)
+          (if (instance-check proto obj) #t #f)
+          (jolt-satisfies-protocol? proto obj))))
 
 (define kw-proto-name (keyword #f "name"))
 
