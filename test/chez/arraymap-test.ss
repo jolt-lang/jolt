@@ -242,12 +242,25 @@
 ;; hash-mode map, a record, a nil receiver and a default all keep their old
 ;; path. Only a site inside a def gets a cell (a bare top-level form has no
 ;; constant pool to hold it).
+;; On Chez a key some defrecord declares as a field gets the head
+;; jolt-kw-get-site/i (rt.ss), which open-codes that record's cached field read;
+;; any other key keeps jolt-kw-get-site, so a map pays nothing for it.
 (ok "a keyword-invoke site inside a def emits the site lookup over a hoisted cell"
     (let ((e (emitf "(defn kw-site-f [m] (:a m))")))
       (and (has? e "(jolt-kw-get-site ") (has? e "(jolt-kw-site)"))))
 (ok "a keyword-invoke with a default keeps the default arity"
     (let ((e (emitf "(defn kw-site-g [m] (:a m 0))")))
-      (has? e "(jolt-kw-get-site ")))
+      (and (has? e "(jolt-kw-get-site ") (has? e " 0)"))))
+(ok "(get m :k) with a constant keyword takes the same site"
+    (let ((e (emitf "(defn kw-site-h [m] [(get m :a) (get m :b 0)])")))
+      (and (has? e "(jolt-kw-get-site ") (has? e "(jolt-kw-site)"))))
+(evv "(defrecord KwSiteRec [kw-site-field])")
+(ok "a defrecord field's key opens the record hit inline, by (:k x) and by get"
+    (let ((e (emitf "(defn kw-site-r [m] [(:kw-site-field m) (get m :kw-site-field) (:a m)])")))
+      (and (has? e "(jolt-kw-get-site/i ") (has? e "(jolt-kw-get-site "))))
+(is "the inline record hit, a miss on another type, and a map with that key"
+    "(let [f (fn [m] (:kw-site-field m))] [(f (->KwSiteRec 1)) (f (->KwSiteRec 2)) (f {:kw-site-field 3}) (f nil)])"
+    "[1 2 3 nil]")
 (is "site lookup: hit, miss, default, nil receiver"
     "(let [f (fn [m] (:c m)) g (fn [m] (:c m :none))] [(f {:a 1 :b 2 :c 3}) (f {:a 1}) (g {:a 1}) (f nil) (g nil)])"
     "[3 nil :none nil :none]")

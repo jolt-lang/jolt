@@ -161,6 +161,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   there. Quoted symbols still share their name. A `StringBuilder` writes a
   char appended while nothing else is pending straight into its buffer, and
   `toString` of such a builder is a single copy.
+- Common host operations are 2 to 7 times faster (#1713). On Chez,
+  `(:k rec)` and `(get rec :k)` on a defrecord read the field straight from a
+  per-site cache (19 and 38 ns to 5.5); the inline read is emitted only for a
+  key some defrecord declares, so a map's lookup is not slowed by it.
+  `(instance? T x)` answers a repeat inline for a record or a string, number,
+  char, boolean, keyword or nil (16 to 32 ns down to 9 to 15).
+  `Matcher.group` and the group vectors of `re-find`, `re-matches` and
+  `re-seq` slice the matched string directly (94 to 37 ns). A key a plain
+  defrecord does not have no longer searches its type's methods (155 to
+  31 ns), `satisfies?` on a record is keyed by the protocol value (45 to
+  27 ns), char keys take the hash map's fast path, and a map or keyword
+  called as a fn goes straight to the lookup.
+- Printing numbers is 3 to 4 times faster: `(str n)` of a long and the
+  digits of a double divide by 10 and 100 with a multiply and a shift, not a
+  chain of hardware divides, and a double's plain decimal form is written into
+  one string. `clojure.lang.PersistentList/create` builds a vector's list
+  directly (2 to 3 times faster; tools.reader reads every list through it).
+- Printing a double is about twice as fast again, and a short decimal like
+  `1.5` about three times (#1713). Schubfach's three rounded products are
+  computed over 28-bit limbs in fixnums instead of bignums, a double's digits
+  stay a fixnum until they are laid out straight into the printed string, and
+  long digit runs are split seven at a time. Output is unchanged: `str` of 2.5
+  million doubles and longs is identical to the JVM's.
 
 ### Fixed
 
