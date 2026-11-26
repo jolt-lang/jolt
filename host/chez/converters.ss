@@ -294,10 +294,12 @@
      (keyword (if (jolt-nil? ns) #f ns) (jolt-need-string name)))
     (args (throw-jvm (quote ArityException) "Wrong number of args passed to: keyword"))))
 
-(define (jolt-symbol-new . args)
-  (cond
-    ((= (length args) 1)
-     (let ((a (car args)))
+;; A case-lambda, not (. args): symbol is called per token by tools.reader and
+;; rewrite-clj, and the rest list plus two length calls were most of a call.
+;; A string's symbol is built unpooled (values.ss jolt-symbol/unpooled).
+(define jolt-symbol-new
+  (case-lambda
+    ((a)
        (cond
          ((jolt-symbol? a) a)
          ;; (symbol "ns/name") splits the namespace at the FIRST "/" (JVM
@@ -311,27 +313,27 @@
             (if (string=? a "/")
                 (jolt-symbol #f "/")
                 (let loop ((i 1))
-                  (cond ((>= i slen) (jolt-symbol #f a))
+                  (cond ((fx>=? i slen) (jolt-symbol/unpooled #f a))
                         ((char=? (string-ref a i) #\/)
-                         (jolt-symbol (substring a 0 i) (substring a (+ i 1) slen)))
-                        (else (loop (+ i 1))))))))
+                         (jolt-symbol/unpooled (substring a 0 i) (substring a (fx+ i 1) slen)))
+                        (else (loop (fx+ i 1))))))))
          ((keyword? a) (jolt-symbol (keyword-t-ns a) (keyword-t-name a)))
          ;; (symbol a-var) -> the var's qualified symbol (clojure.spec.alpha/->sym).
          ((var-cell? a) (jolt-symbol (var-cell-ns a) (var-cell-name a)))
-         (else (throw-jvm (quote IllegalArgumentException) (string-append "no conversion to symbol: " (jolt-final-str a)))))))
+         (else (throw-jvm (quote IllegalArgumentException) (string-append "no conversion to symbol: " (jolt-final-str a))))))
     ;; (symbol ns name): a nil namespace is the no-ns sentinel #f (NOT jolt-nil),
     ;; so (symbol nil "x") equals (symbol "x") and the reader literal 'x — jolt=
     ;; compares ns with strict equal?, so a jolt-nil ns would differ from #f.
-    ((= (length args) 2)
-     (let ((ns (car args)) (nm (cadr args)))
+    ((ns nm)
+     (begin
        (unless (or (jolt-nil? ns) (string? ns))
          (throw-jvm (quote ClassCastException)
                     (string-append (jolt-final-str ns) " cannot be cast to java.lang.String")))
        (unless (string? nm)
          (throw-jvm (quote ClassCastException)
                     (string-append (jolt-final-str nm) " cannot be cast to java.lang.String")))
-       (jolt-symbol (if (jolt-nil? ns) #f ns) nm)))
-    (else (throw-jvm (quote ArityException) "Wrong number of args passed to: symbol"))))
+       (jolt-symbol/unpooled (if (jolt-nil? ns) #f ns) nm)))
+    (args (throw-jvm (quote ArityException) "Wrong number of args passed to: symbol"))))
 
 ;; gensym: per-process counter. The bump and the read are ONE step — a bare
 ;; (set! c (+ c 1)) followed by a read of c is a read-modify-write, and two

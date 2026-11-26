@@ -231,12 +231,12 @@
                              (k/call-cc (fn [escape]
                                           (deliver saved escape)
                                           @hold
-                                          :done))))]
-          (let [escape @saved
-                result (within 5000 (fn [] (escape :cross-fiber)))]
-            (deliver hold true)
-            (fib/join f)
-            result))
+                                          :done))))
+              escape @saved
+              result (within 5000 (fn [] (escape :cross-fiber)))]
+          (deliver hold true)
+          (fib/join f)
+          result)
         "another"))
 
 ;; --- the guard does not cost correctness on the happy path ---------------------

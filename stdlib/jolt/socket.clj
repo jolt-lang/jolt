@@ -682,7 +682,7 @@
   (let [kind (jolt.host/ref-get self :jolt/type)
         k    (jolt.host/ref-get o :key)]
     (when-not (and k (contains? (jolt.host/ref-get o :kinds) kind))
-      (throw (UnsupportedOperationException. (str "'" (str o) "' not supported"))))
+      (throw (UnsupportedOperationException. (str "'" o "' not supported"))))
     (ensure-socket-open! self)
     k))
 
