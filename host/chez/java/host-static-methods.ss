@@ -1179,18 +1179,32 @@
                ((char-array-arg? x) (char-array->string x))
                (else (jolt-str-render-one x))))
     ((x offset count)
+     (string-chars-null-check x)
      (unless (char-array-arg? x)
        (throw-jvm (quote ClassCastException)
                   (string-append "class " (jolt-class-name x) " cannot be cast to class [C")))
      (char-array-chunk x (jnum->exact offset) (jnum->exact count)
                        (quote StringIndexOutOfBoundsException)))))
+(define (string-chars-null-check x)
+  (when (jolt-nil? x)
+    (throw-jvm (quote NullPointerException) "Cannot read the array length because \"value\" is null")))
+;; String.valueOf(char[]), the overload a nil the compiler types as nil picks
+;; (records-interop.ss, the JDK signatures): the JDK reads the array's length.
+;; copyValueOf has only char[] overloads, so a nil fails there however it came.
+(define (string-value-of-chars x) (string-chars-null-check x) (string-value-of x))
+(define string-copy-value-of
+  (case-lambda
+    ((x) (string-value-of-chars x))
+    ((x offset count) (string-value-of x offset count))))
 (register-class-statics! "String"
   (list (cons "CASE_INSENSITIVE_ORDER" string-ci-comparator)
         (cons "valueOf" string-value-of)
-        (cons "copyValueOf" string-value-of)
+        (cons "valueOf([C)" string-value-of-chars)
+        (cons "copyValueOf" string-copy-value-of)
         ;; String.join(delim, elems) — elems as a collection or spread as varargs,
         ;; the two shapes the JVM overloads on.
         (cons "join" (lambda (delim . parts)
+                       (when (jolt-nil? delim) (throw-jvm (quote NullPointerException) jolt-nil))
                        (let ((items (if (and (fx=? (length parts) 1)
                                              (not (string? (car parts))))
                                         (seq->list (jolt-seq (car parts)))
@@ -1198,7 +1212,12 @@
                          (str-join-strs (map jolt-str-render-one items)
                                         (jolt-str-render-one delim)))))
         ;; String.format([Locale] fmt, Object...): jvm-format-string below
-        (cons "format" (lambda (a . rest) (jvm-format-string a rest)))))
+        ;; a nil first argument is the format, not a Locale, unless a format
+        ;; string follows it
+        (cons "format" (lambda (a . rest)
+                         (when (and (jolt-nil? a) (not (and (pair? rest) (string? (car rest)))))
+                           (throw-jvm (quote NullPointerException) "Cannot invoke \"String.length()\" because \"s\" is null"))
+                         (jvm-format-string a rest)))))
 
 ;; The text of a JVM format(…) call — String.format, and PrintStream's and
 ;; PrintWriter's printf/format, which all take ([Locale] String Object...). A

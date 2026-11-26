@@ -48,7 +48,7 @@
              :refer [*fnsrc-counter* *fnsrc-def* *fnsrc-def-init?* *fnsrc-ns*
                      *fnsrc-regs* fnsrc-flush]]
             [jolt.backend-scheme.ffi :as ffi :refer [emit-ffi-node]]
-            [jolt.backend-scheme.interop :refer [host-call-emit]]
+            [jolt.backend-scheme.interop :refer [host-call-emit cast-call]]
             [jolt.backend-scheme.lambda
              :refer [emit-fn emit-nhint-coerce]]
             [jolt.backend-scheme.fused :refer [emit-fused-invoke]]))
@@ -711,7 +711,7 @@
       ;; instead of three string-keyed lookups and a rest list. Gated like the
       ;; instance? site, so the seed mint stays byte-identical.
       (= :host-static (:op fnode))
-      (emit-host-static-call (:tail? c) fnode (:order-args c))
+      (emit-host-static-call (:tail? c) fnode (:order-args c) (:node c) cast-call)
       (= :host (:op fnode))
       (throw (ex-info (str "emit: unsupported host call `" (:name fnode) "`") {}))
       (= :local (:op fnode)) (emit-local-invoke c)

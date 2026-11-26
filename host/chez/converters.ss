@@ -576,7 +576,12 @@
                  ((jsurr? x) (jsurr-unit x))
                  ((and (number? x) (exact? x)) (truncate x))
                  (else (jolt-cast-truncate-slow x)))))
-    (if (and (>= n lo) (<= n hi)) n (jolt-cast-range-throw name x))))
+    (cond ((and (>= n lo) (<= n hi)) n)
+          ;; RT.longCast takes a Ratio through its BigInteger, so the refusal
+          ;; names the truncation; byte and short name the ratio itself
+          ((and (equal? name "long") (number? x) (exact? x) (not (integer? x)))
+           (jolt-cast-range-throw name n))
+          (else (jolt-cast-range-throw name x)))))
 ;; A fixnum is what these casts are handed almost every time they are called —
 ;; (long (.length s)), (int i) in a loop — and it is already the answer, so each
 ;; cast checks for one before entering the generic path above. That path is not
@@ -777,3 +782,24 @@
 (def-var! "clojure.core" "numerator" (jolt-ratio-part "numerator" numerator))
 (def-var! "clojure.core" "denominator" (jolt-ratio-part "denominator" denominator))
 (def-var! "clojure.core" "compare" jolt-compare)
+
+;; ---- Java whitespace and String.strip, shared with the Gambit host -----------
+;; U+001C..U+001F (the file/group/record/unit separators) are whitespace to Java but
+;; carry no Unicode White_Space property, so char-whitespace? alone misses them.
+;; U+0085 (NEL) has White_Space but is a control character to Java, so it's out.
+;; Character/isWhitespace uses this too.
+(define (java-whitespace? c)
+  (let ((cp (char->integer c)))
+    (cond ((or (fx=? cp #xA0) (fx=? cp #x2007) (fx=? cp #x202F) (fx=? cp #x85)) #f)
+          ((and (fx>=? cp #x1C) (fx<=? cp #x1F)) #t)
+          (else (char-whitespace? c)))))
+;; String.strip / stripLeading / stripTrailing: Java whitespace off either end.
+(define (str-strip s left? right?)
+  (let ((len (string-length s)))
+    (let scan-l ((i 0))
+      (cond ((fx=? i len) "")
+            ((and left? (java-whitespace? (string-ref s i))) (scan-l (fx+ i 1)))
+            (else (let scan-r ((j (fx- len 1)))
+                    (if (and right? (fx>? j i) (java-whitespace? (string-ref s j)))
+                        (scan-r (fx- j 1))
+                        (substring s i (fx+ j 1)))))))))

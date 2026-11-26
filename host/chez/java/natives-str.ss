@@ -92,16 +92,6 @@
 ;; Character.isWhitespace accepts, which reaches the Unicode space separators
 ;; (U+3000 and friends) but NOT the non-breaking ones. Keep them apart: str-trim
 ;; is String.trim, str-triml / str-trimr / str-trim* back clojure.string.
-;; U+001C..U+001F (the file/group/record/unit separators) are whitespace to Java but
-;; carry no Unicode White_Space property, so char-whitespace? alone misses them.
-;; U+0085 (NEL) has White_Space but is a control character to Java, so it's out.
-;; Character/isWhitespace uses this too.
-(define (java-whitespace? c)
-  (let ((cp (char->integer c)))
-    (cond ((or (fx=? cp #xA0) (fx=? cp #x2007) (fx=? cp #x202F) (fx=? cp #x85)) #f)
-          ((and (fx>=? cp #x1C) (fx<=? cp #x1F)) #t)
-          (else (char-whitespace? c)))))
-
 ;; Each of these answers S ITSELF when there is nothing to cut, exactly as
 ;; String.trim returns `this`. Strings are values here, so handing back the same
 ;; one is indistinguishable — and the case matters, because trimming a string
@@ -153,15 +143,7 @@
 ;; Java 11's strip family, over the same Character.isWhitespace as clojure.string's
 ;; trim. String.trim cuts at <= U+0020 — its notion of "space" predates Unicode —
 ;; where strip also removes the Unicode separators trim leaves behind.
-(define (str-strip s left? right?)
-  (let ((len (string-length s)))
-    (let scan-l ((i 0))
-      (cond ((fx=? i len) "")
-            ((and left? (java-whitespace? (string-ref s i))) (scan-l (fx+ i 1)))
-            (else (let scan-r ((j (fx- len 1)))
-                    (if (and right? (fx>? j i) (java-whitespace? (string-ref s j)))
-                        (scan-r (fx- j 1))
-                        (substring s i (fx+ j 1)))))))))
+
 
 ;; --- substring search: first index of `needle` in `s` at/after `from`, or -1 --
 (define (char-by-char-match? s si needle nlen)
@@ -1038,7 +1020,6 @@
 ;; String.compareTo(String): another class is refused by the reflector's cast,
 ;; since a resolved call casts the argument before it gets here (records-interop.ss
 ;; jolt-checkcast); nil is the method's own NullPointerException.
-(register-method-params! "java.lang.String" "compareTo" '("java.lang.String"))
 (define (jolt-str-compare s o)
   (jvm-string-compare s (if (or (string? o) (jolt-nil? o)) (jolt-need-str o)
                             (jolt-reflect-cast-fail o "java.lang.String"))))

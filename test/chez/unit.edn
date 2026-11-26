@@ -1177,7 +1177,8 @@
   {:suite "javastatic" :expr "(String/valueOf 42)" :expected "\"42\""}
   {:suite "javastatic" :expr "(String/valueOf \"hi\")" :expected "\"hi\""}
   {:suite "javastatic" :expr "(String/valueOf :k)" :expected "\":k\""}
-  {:suite "javastatic" :expr "(String/valueOf nil)" :expected "\"null\""}
+  {:suite "javastatic" :expr "((fn [x] (String/valueOf x)) nil)" :expected "\"null\""}
+  {:suite "javastatic" :expr "(String/valueOf nil)" :expected :throws}
   {:suite "javastatic" :expr "(Long/parseLong \"42\")" :expected "42"}
   {:suite "javastatic" :expr "(Long/valueOf \"42\")" :expected "42"}
   {:suite "javastatic" :expr "(Integer/parseInt \"ff\" 16)" :expected "255"}
@@ -1669,7 +1670,7 @@
   {:suite "str" :expr "(.strip \"\\u001ca\\u001c\")" :expected "\"a\""}
   ;; String/valueOf(char[]) is the chars, not the array's own #object[[C] rendering
   {:suite "str" :expr "(String/valueOf (char-array \"hi\"))" :expected "\"hi\""}
-  {:suite "str" :expr "[(String/valueOf 42) (String/valueOf nil)]" :expected "[\"42\" \"null\"]"}
+  {:suite "str" :expr "[(String/valueOf 42) ((fn [x] (String/valueOf x)) nil)]" :expected "[\"42\" \"null\"]"}
   ;; copyValueOf IS valueOf, at both of its arities (the JDK defines them so), and
   ;; the 3-arg overload is valueOf(char[], offset, count): it used to resolve to the
   ;; 1-arg arm with the offset and count dropped, answering the whole array.
@@ -1680,7 +1681,7 @@
   ;; which names the class (Clojure 1.12.0: "No matching method valueOf found
   ;; taking 2 args for class java.lang.String").
   {:suite "str" :expr "(try (String/valueOf (char-array \"abc\") 0) (catch IllegalArgumentException e (.getMessage e)))" :expected "\"No matching method valueOf found taking 2 args for class java.lang.String\""}
-  {:suite "str" :expr "(try (String/valueOf 5 1 2) (catch ClassCastException e (.getMessage e)))" :expected "\"class java.lang.Long cannot be cast to class [C\""}
+  {:suite "str" :expr "(try (String/valueOf 5 1 2) (catch ClassCastException e (.getMessage e)))" :expected "\"class java.lang.Long cannot be cast to class [C (java.lang.Long and [C are in module java.base of loader 'bootstrap')\""}
   {:suite "javastatic" :expr "(try (System/getenv \"HOME\" 1) (catch IllegalArgumentException e (.getMessage e)))" :expected "\"No matching method getenv found taking 2 args for class java.lang.System\""}
   {:suite "javastatic" :expr "(map? (System/getenv))" :expected "true"}
   ;; A member that picks its overload out of a rest list states the JVM's

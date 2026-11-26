@@ -7,8 +7,10 @@
   (:require [jolt.host :refer [form-sym? form-sym-name form-sym-ns form-sym-meta
                                form-coll-meta form-list? form-vec? form-elements
                                record-type? record-ctor-key resolve-global
-                               resolve-class-hint]]
-            [jolt.analyzer.diagnostics :refer [analysis-error]]))
+                               resolve-class-hint method-return-class
+                               method-param-classes method-overload-entry]]
+            [jolt.analyzer.diagnostics :refer [analysis-error]]
+            [jolt.ir :refer [invoke]]))
 
 ;; --- the JVM's primitive boolean loop locals --------------------------------
 ;; The reference compiler gives a loop local the JVM type of its init, and a local
@@ -170,16 +172,106 @@
         (if (= :class (:kind r)) (:name r) (resolve-class-hint nm))))))
 (defn sym-tag-class [ctx sym]
   (let [m (form-sym-meta sym)] (when m (tag-class ctx (get m :tag)))))
+(declare node-jclass)
+;; An argument's class as the JVM compiler matches it against a method's
+;; parameters: node-jclass's, or a literal's own JVM type ("long" for 1, "null"
+;; for nil). nil is an untyped argument, which the compiler takes as an Object.
+(defn- arg-jclass [ctx node env]
+  (or (node-jclass ctx node env)
+      (when (= :const (:op node))
+        (let [c (const-jvm-class (:val node))]
+          (cond (= :null c) "null" (string? c) c :else nil)))))
+;; The class a host method's result has: the runtime's signature table
+;; (jolt.host/method-return-class) decides from the receiver class and the
+;; arguments' classes, as the JVM compiler picks the method it compiles against.
+(defn- call-return-class [ctx cls method static? args env]
+  (when cls
+    (let [r (method-return-class cls method static? (mapv #(arg-jclass ctx % env) args))]
+      (when (string? r) r))))
+;; The parameter classes a resolved call (receiver class cls) casts its
+;; arguments to, or nil when the call is not resolved to one method — the
+;; runtime's signature table picks the method as the JVM compiler does, and
+;; refuses as it does when the arguments fit two overloads equally well (a nil
+;; literal where one takes a byte[] and another a ByteBuffer).
+;; A static call the same way: its arguments may fit two overloads equally
+;; well, which the JVM compiler refuses (String/join "," nil). One it resolves
+;; to a single overload casts and unboxes its arguments as a resolved instance
+;; call does (:arg-casts), and calls the overload's own member when the runtime
+;; registers one for it (String.valueOf(char[]) refusing a nil the shim named
+;; valueOf would print).
+(defn static-invoke [ctx f args env]
+  (let [cls (when (= :host-static (:op f)) (tag-class ctx (:class f)))
+        acs (when cls (mapv #(arg-jclass ctx % env) args))
+        ps (when cls (method-param-classes cls (:member f) acs true))]
+    (when (true? ps)
+      (analysis-error :analyze/ambiguous-method
+                      (str "More than one matching method found: " (:member f))))
+    (if (some? ps)
+      (let [entry (method-overload-entry cls (:member f) acs)]
+        (assoc (invoke (if (string? entry) (assoc f :entry entry) f) args) :arg-casts (vec ps)))
+      (invoke f args))))
+(defn host-call-arg-casts [ctx cls method args env]
+  (when cls
+    (let [ps (method-param-classes cls method (mapv #(arg-jclass ctx % env) args))]
+      (cond (true? ps) (analysis-error :analyze/ambiguous-method
+                                       (str "More than one matching method found: " method))
+            (some? ps) (vec ps)))))
+;; The class of a constant: a constant collection is the JVM's ConstantExpr,
+;; typed by its concrete class.
+(defn- const-jclass [v]
+  (cond (string? v) "java.lang.String" (keyword? v) "clojure.lang.Keyword"
+        (vector? v) "clojure.lang.PersistentVector"
+        (set? v) "clojure.lang.PersistentHashSet" :else nil))
+;; (jolt.host/static-member "C" "m") with constant arguments
+(defn- static-member-call? [f args]
+  (and (= :var (:op f)) (= "jolt.host" (str (:ns f))) (= "static-member" (str (:name f)))
+       (every? #(= :const (:op %)) args)))
+(defn- invoke-jclass [ctx node env]
+  (let [f (:fn node)]
+    (cond
+      (= :host-static (:op f))
+      (call-return-class ctx (tag-class ctx (:class f)) (:member f) true (:args node) env)
+      ;; (Class/member) with no arguments: a static field or a no-arg static
+      ;; method, decided at run time (jolt.host/static-member)
+      (static-member-call? f (:args node))
+      (let [[c m] (map :val (:args node))]
+        (when (and (string? c) (string? m)) (call-return-class ctx (tag-class ctx c) m true [] env)))
+      :else
+      (let [c (invoke-jvm-class f)]
+        (when (and (string? c) (not= c "Object")) (tag-class ctx c))))))
 (defn node-jclass [ctx node env]
   (case (:op node)
     :local (get (:jclasses env) (:name node))
     :host-new (tag-class ctx (:class node))
-    :const (let [v (:val node)]
-             (cond (string? v) "java.lang.String" (keyword? v) "clojure.lang.Keyword" :else nil))
+    :const (const-jclass (:val node))
+    ;; one with an element computed at run time is a VectorExpr/SetExpr/MapExpr,
+    ;; typed by its interface; all-constant elements make it a constant
+    :vector (if (every? #(= :const (:op %)) (:items node))
+              "clojure.lang.PersistentVector" "clojure.lang.IPersistentVector")
+    :set (if (every? #(= :const (:op %)) (:items node))
+           "clojure.lang.PersistentHashSet" "clojure.lang.IPersistentSet")
+    :map "clojure.lang.IPersistentMap"
+    :quote (when (form-list? (:form node)) "clojure.lang.PersistentList")
+    :bigdec "java.math.BigDecimal"
     :do (node-jclass ctx (:ret node) env)
-    :invoke (let [c (invoke-jvm-class (:fn node))]
-              (when (and (string? c) (not= c "Object")) (tag-class ctx c)))
+    :host-call (call-return-class ctx (:target-class node) (:method node) false (:args node) env)
+    :invoke (invoke-jclass ctx node env)
     nil))
+;; The class a (.method target ...) call's target has: its ^Tag, else what the
+;; analyzed target node is known to be.
+(defn host-call-target-class [ctx raw target env]
+  (let [m (cond (form-sym? raw) (form-sym-meta raw)
+                (form-list? raw) (form-coll-meta raw)
+                :else nil)
+        tag (when (map? m) (get m :tag))]
+    (if tag
+      (tag-class ctx tag)
+      (let [c (node-jclass ctx target env)] (when-not (= c "null") c)))))
+;; A let or loop local's class from its init: a nil literal gives the local the
+;; null type, which picks an overload as the literal would (String/valueOf of
+;; such a local is the char[] one).
+(defn init-jclass [ctx init env]
+  (if (and (= :const (:op init)) (nil? (:val init))) "null" (node-jclass ctx init env)))
 (defn add-jclass [env nm c]
   (if c (assoc env :jclasses (assoc (:jclasses env) nm c)) env))
 

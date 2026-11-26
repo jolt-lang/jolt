@@ -213,7 +213,9 @@ make-thread-local
 map-entry
 mark-spliced!
 maximum-memory-bytes
+method-overload-entry
 method-param-classes
+method-return-class
 mkdirs!
 monitor-enter
 monitor-exit

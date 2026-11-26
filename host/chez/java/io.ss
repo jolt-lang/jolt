@@ -2312,7 +2312,6 @@
            #t))))))
 
 ;; --- File method surface (record-method-dispatch arm) -----------------------
-(register-method-params! "java.io.File" "compareTo" '("java.io.File"))
 (define (jfile-method f name args)        ; -> boxed result, or #f to fall through
   ;; Lexical methods use the held path. Resolving a relative name here would
   ;; ask for the process cwd even for getName or a conversion to a NIO Path.
@@ -3989,6 +3988,8 @@
 (register-class-ctor! "File" jolt-file-ctor)
 ;; File statics: the platform separators plus createTempFile / listRoots.
 (define (file-create-temp prefix suffix . dir)
+  (when (jolt-nil? prefix)
+    (throw-jvm (quote NullPointerException) "Cannot invoke \"String.length()\" because \"prefix\" is null"))
   ;; the JVM rejects a prefix under three characters, so a caller that works here
   ;; works there too
   (when (< (string-length (jolt-str-render-one prefix)) 3)
@@ -4065,55 +4066,60 @@
 ;; else throws IllegalArgumentException — returning nil here sent library code
 ;; down a wrong branch silently. parse-uuid stays the nil-returning Clojure
 ;; surface; only the java.util.UUID spellings throw.
-(define (uuid-split-dashes s)
-  (let ((len (string-length s)))
-    (let loop ((i 0) (start 0) (acc '()))
-      (cond ((fx=? i len) (reverse (cons (substring s start len) acc)))
-            ((char=? (string-ref s i) #\-)
-             (loop (fx+ i 1) (fx+ i 1) (cons (substring s start i) acc)))
-            (else (loop (fx+ i 1) start acc))))))
-(define (uuid-from-string-jvm s0)
-  (let ((s (jolt-str-render-one s0)))
-    (define (bad!)
-      (throw-jvm (quote IllegalArgumentException) (string-append "Invalid UUID string: " s)))
-    (define (part-u p)          ; unsigned hex value; JVM parses each group as a signed long
-      (let ((n (string-length p)))
-        (when (or (fx=? n 0) (fx>? n 16)) (bad!))
-        (let loop ((i 0) (acc 0))
-          (if (fx=? i n)
-              (if (> acc #x7FFFFFFFFFFFFFFF) (bad!) acc)
-              (let ((c (string-ref p i)))
-                (if (hex-char? c)
-                    (loop (fx+ i 1) (+ (* acc 16) (uuid-hexv (char-downcase c))))
-                    (bad!)))))))
-    (if (uuid-shape? s)
-        (make-juuid (string-downcase s))
-        (let ((parts (uuid-split-dashes s)))
-          (if (not (= (length parts) 5))
-              (bad!)
-              (let ((p0 (part-u (car parts)))    (p1 (part-u (cadr parts)))
-                    (p2 (part-u (caddr parts)))  (p3 (part-u (cadddr parts)))
-                    (p4 (part-u (car (cddddr parts)))))
-                (uuid-from-halves
-                 (bitwise-ior (bitwise-arithmetic-shift-left (bitwise-and p0 #xFFFFFFFF) 32)
-                              (bitwise-arithmetic-shift-left (bitwise-and p1 #xFFFF) 16)
-                              (bitwise-and p2 #xFFFF))
-                 (bitwise-ior (bitwise-arithmetic-shift-left (bitwise-and p3 #xFFFF) 48)
-                              (bitwise-and p4 #xFFFFFFFFFFFF)))))))))
+;; RFC 1321 MD5 of a bytevector, as 16 bytes: what UUID.nameUUIDFromBytes digests.
+(define md5-s '#(7 12 17 22 7 12 17 22 7 12 17 22 7 12 17 22 5 9 14 20 5 9 14 20 5 9 14 20 5 9 14 20
+                 4 11 16 23 4 11 16 23 4 11 16 23 4 11 16 23 6 10 15 21 6 10 15 21 6 10 15 21 6 10 15 21))
+(define md5-k
+  (let ((v (make-vector 64)))
+    (do ((i 0 (+ i 1))) ((= i 64) v)
+      (vector-set! v i (exact (floor (* (abs (sin (inexact (+ i 1)))) 4294967296.0)))))))
+(define (md5-bytes bv)
+  (define (u32 x) (bitwise-and x #xFFFFFFFF))
+  (define (rotl x c) (u32 (bitwise-ior (bitwise-arithmetic-shift-left x c)
+                                       (bitwise-arithmetic-shift-right x (- 32 c)))))
+  (let* ((n (bytevector-length bv))
+         (padded (* 64 (quotient (+ n 8 64) 64)))
+         (m (make-bytevector padded 0)))
+    (bytevector-copy! bv 0 m 0 n)
+    (bytevector-u8-set! m n #x80)
+    (bytevector-u64-set! m (- padded 8) (* n 8) (endianness little))
+    (let chunk ((off 0) (a0 #x67452301) (b0 #xefcdab89) (c0 #x98badcfe) (d0 #x10325476))
+      (if (= off padded)
+          (let ((out (make-bytevector 16)))
+            (bytevector-u32-set! out 0 a0 (endianness little))
+            (bytevector-u32-set! out 4 b0 (endianness little))
+            (bytevector-u32-set! out 8 c0 (endianness little))
+            (bytevector-u32-set! out 12 d0 (endianness little))
+            out)
+          (let round ((i 0) (a a0) (b b0) (c c0) (d d0))
+            (if (= i 64)
+                (chunk (+ off 64) (u32 (+ a0 a)) (u32 (+ b0 b)) (u32 (+ c0 c)) (u32 (+ d0 d)))
+                (let-values (((f g)
+                              (cond ((< i 16) (values (bitwise-ior (bitwise-and b c) (bitwise-and (u32 (bitwise-not b)) d)) i))
+                                    ((< i 32) (values (bitwise-ior (bitwise-and d b) (bitwise-and (u32 (bitwise-not d)) c))
+                                                      (modulo (+ (* 5 i) 1) 16)))
+                                    ((< i 48) (values (bitwise-xor b c d) (modulo (+ (* 3 i) 5) 16)))
+                                    (else (values (bitwise-xor c (bitwise-ior b (u32 (bitwise-not d))))
+                                                  (modulo (* 7 i) 16))))))
+                  (let ((f (u32 (+ f a (vector-ref md5-k i)
+                                  (bytevector-u32-ref m (+ off (* 4 g)) (endianness little))))))
+                    (round (+ i 1) d (u32 (+ b (rotl f (vector-ref md5-s i)))) b c)))))))))
+;; UUID.nameUUIDFromBytes: a version 3 UUID, the MD5 of the bytes with the
+;; version nibble set to 3 and the IETF variant bits.
+(define (uuid-name-from-bytes arr)
+  (when (jolt-nil? arr)
+    (throw-jvm 'NullPointerException "Cannot read the array length because \"input\" is null"))
+  (let ((h (md5-bytes (na-bytearray->bv arr))))
+    (bytevector-u8-set! h 6 (bitwise-ior (bitwise-and (bytevector-u8-ref h 6) #x0f) #x30))
+    (bytevector-u8-set! h 8 (bitwise-ior (bitwise-and (bytevector-u8-ref h 8) #x3f) #x80))
+    (uuid-from-halves (bytevector-u64-ref h 0 (endianness big)) (bytevector-u64-ref h 8 (endianness big)))))
 (register-class-statics! "java.util.UUID"
   (list (cons "randomUUID" (lambda () (jolt-random-uuid)))
-        (cons "fromString" uuid-from-string-jvm)))
+        (cons "fromString" uuid-from-string-jvm)
+        (cons "nameUUIDFromBytes" uuid-name-from-bytes)))
 ;; (UUID. msb lsb): build from the most/least-significant 64-bit halves (the JVM's
 ;; 2-long ctor), the form test.check's uuid generator uses. (UUID. s) parses a
 ;; string. The 128 bits format as the canonical 8-4-4-4-12 lowercase hex string.
-(define (uuid-long->hex16 n)
-  (let* ((u (bitwise-and (jnum->exact n) #xFFFFFFFFFFFFFFFF))
-         (s (string-downcase (number->string u 16))))   ; JVM UUIDs are lowercase
-    (string-append (make-string (- 16 (string-length s)) #\0) s)))
-(define (uuid-from-halves msb lsb)
-  (let ((h (uuid-long->hex16 msb)) (l (uuid-long->hex16 lsb)))
-    (make-juuid (string-append (substring h 0 8) "-" (substring h 8 12) "-" (substring h 12 16)
-                               "-" (substring l 0 4) "-" (substring l 4 16)))))
 (define (uuid-ctor . args)
   (if (= (length args) 2)
       (uuid-from-halves (car args) (cadr args))
@@ -4125,7 +4131,6 @@
 ;; longs (natives-misc.ss); timestamp/clockSequence/node are v1-only, like the
 ;; JVM. Unknown names 'pass so the base still answers toString/equals/getClass.
 (define (uuid-version-of u) (uuid-hexv (string-ref (juuid-s u) 14)))
-(register-method-params! "java.util.UUID" "compareTo" '("java.util.UUID"))
 (define (uuid-method u m args)
   (define (need-v1!)
     (unless (= 1 (uuid-version-of u))
@@ -4190,6 +4195,10 @@
         (else #f)))
 (register-class-ctor! "Boolean" boolean-ctor)
 (register-class-ctor! "java.lang.Boolean" boolean-ctor)
+;; new Character(char): the char itself, jolt's Character
+(let ((char-ctor (lambda (c) (if (or (char? c) (jsurr? c)) c (jolt-checkcast-fail c "java.lang.Character")))))
+  (register-class-ctor! "Character" char-ctor)
+  (register-class-ctor! "java.lang.Character" char-ctor))
 
 ;; --- java.net.URI -----------------------------------------------------------
 ;; An RFC-2396 parse that follows java.net.URI's, because the single-argument
@@ -4723,8 +4732,11 @@
     (if (uri-error? r)
         (throw-jvm (quote IllegalArgumentException) (uri-error-message s r))
         r)))
-(register-class-statics! "java.net.URI" (list (cons "create" (lambda (s) (uri-create (jolt-str-render-one s))))))
-(register-method-params! "java.net.URI" "compareTo" '("java.net.URI"))
+(register-class-statics! "java.net.URI"
+  (list (cons "create" (lambda (s)
+                         (when (jolt-nil? s)
+                           (throw-jvm (quote NullPointerException) "Cannot invoke \"String.length()\" because \"this.input\" is null"))
+                         (uri-create (jolt-str-render-one s))))))
 (register-host-methods! "uri"
   ;; The getX / getRawX pairs answer DIFFERENT strings: raw is the substring the
   ;; parse produced, getX is that percent-decoded. They used to share one field,

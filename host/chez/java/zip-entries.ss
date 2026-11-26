@@ -157,15 +157,10 @@
 (hashtable-set! jhost-tag->fqn "zip-entry" "java.util.zip.ZipEntry")
 ;; Each member takes no arguments; a call with any is no-method-throw's.
 (define (zentry-member name f) (cons name (zip-method name '(0) f)))
-;; A setter takes one argument, cast as the compiled call casts it.
+;; A setter takes one argument (zip-base.ss for how it is cast).
 (define (zentry-setter name f) (cons name (zip-method name '(1) (lambda (self x) (f (zentry-of self) x) jolt-nil))))
-;; A long argument: nil is NullPointerException, a non-number is not a Number.
-(define (zentry-long-arg x)
-  (cond ((jolt-nil? x)
-         (throw-jvm 'NullPointerException
-                    "Cannot invoke \"java.lang.Number.longValue()\" because \"x\" is null"))
-        ((or (number? x) (jbigdec? x)) (jnum->exact x))
-        (else (zip-class-cast x "java.lang.Number"))))
+;; A long argument: the reflector's Number.longValue (zip-base.ss).
+(define (zentry-long-arg x) (zip-long-arg x))
 ;; getTime(): the mtime when one was set, else the DOS time, else -1 (lines
 ;; 187-195).
 (define (zentry-time e)

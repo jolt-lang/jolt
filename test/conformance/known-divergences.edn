@@ -2129,13 +2129,11 @@
    ;; Host classes jolt models rather than wraps: no ctor/method overload set to
    ;; resolve against, so (Long. 42) / .shiftLeft on an integer / (Date. ts) /
    ;; (SimpleDateFormat. pattern locale-id) all work where the JVM finds no
-   ;; matching member. String/valueOf answers for the Object overload the JVM only
-   ;; reaches with an explicit cast (a literal nil there selects char[] and NPEs).
+   ;; matching member.
    ;; The SimpleDateFormat rows are the locale-id extension point of the
    ;; :documented entry above.
    {:suite "host-interop / UUID + Long + shiftLeft", :label "(UUID. msb lsb), .shiftLeft, (Long. n)", :category :host-model}
    {:suite "host-interop / migratus class shims", :label "Timestamp is millis", :category :host-model}
-   {:suite "interop / String methods", :label "String/valueOf nil", :category :host-model}
 
    ;; A jolt chunk IS a vector, so vec accepts one; the JVM's ArrayChunk is not
    ;; convertible to Object[]. Representation, not granularity.

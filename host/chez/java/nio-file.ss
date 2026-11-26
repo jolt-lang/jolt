@@ -4045,7 +4045,7 @@
 ;; entries are skipped, as the JDK skips them
 (define (win32-set-acl! fp shown follow? entries)
   (let* ((entries (map (lambda (e) (unless (acl-entry? e)
-                                     (zip-class-cast e "java.nio.file.attribute.AclEntry"))
+                                     (jolt-checkcast-fail e "java.nio.file.attribute.AclEntry"))
                          e)
                        (seq->list (jolt-seq entries))))
          (sids (map (lambda (e) (win32-principal-sid-ptr (acl-entry-who e))) entries)))
@@ -4201,7 +4201,7 @@
     (for-each (lambda (x)
                 (cond ((jolt-nil? x) (throw-jvm 'NullPointerException jolt-nil))
                       ((not (and (jhost? x) (string=? (jhost-tag x) tag)))
-                       (zip-class-cast x what))))
+                       (jolt-checkcast-fail x what))))
               xs)
     (acl-ordinal-sort (fold-left (lambda (acc x) (if (memq x acc) acc (cons x acc))) '() xs))))
 (register-host-methods! "acl-entry-builder"
@@ -4256,7 +4256,7 @@
   (if (nio-windows?) (win32-ads-delete (nfp p) (nio-shown p) name) (nio-xattr-delete (nfp p) (nio-shown p) follow? name)))
 ;; read(name, ByteBuffer): into the buffer from its position, answering the count
 (define (nio-user-read-into p follow? name dst)
-  (unless (bb? dst) (zip-class-cast dst "java.nio.ByteBuffer"))
+  (unless (bb? dst) (jolt-checkcast-fail dst "java.nio.ByteBuffer"))
   (when (nb-ro? dst) (throw-jvm 'IllegalArgumentException "Read-only buffer"))
   (let* ((bv (nio-user-bytes p follow? name (max 0 (nb-remaining dst)))) (n (bytevector-length bv)))
     (nb-put dst (na-byte-array bv) 0 n)
@@ -4264,7 +4264,7 @@
 ;; write(name, ByteBuffer): the remaining bytes, the position moved past them
 ;; once written
 (define (nio-user-write-from p follow? name src)
-  (unless (bb? src) (zip-class-cast src "java.nio.ByteBuffer"))
+  (unless (bb? src) (jolt-checkcast-fail src "java.nio.ByteBuffer"))
   (let* ((pos (bb-pos src)) (rem (max 0 (nb-remaining src))) (arr (na-byte-array (make-bytevector rem 0))))
     (nb-get src arr 0 rem)
     (bb-pos! src pos)
@@ -4345,7 +4345,7 @@
 (define (nio-dos-set-bool! p follow? nm value)
   (let ((flag (cond ((string=? nm "readonly") nio-dos-READONLY) ((string=? nm "hidden") nio-dos-HIDDEN)
                     ((string=? nm "system") nio-dos-SYSTEM) (else nio-dos-ARCHIVE))))
-    (unless (boolean? value) (zip-class-cast value "java.lang.Boolean"))
+    (unless (boolean? value) (jolt-checkcast-fail value "java.lang.Boolean"))
     (nio-dos-update! p follow? flag value)))
 (define (nio-dos-view-setter nm)
   (lambda (self v) (nio-dos-set-bool! (nio-xview-path self) (nio-xview-follow? self) nm v) jolt-nil))

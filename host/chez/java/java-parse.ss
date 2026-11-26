@@ -45,6 +45,8 @@
                  (if (= radix 10) "" (string-append " under radix " (number->string radix)))))
 
 (define (parse-int-or-throw s radix type)
+  (when (jolt-nil? s)
+    (jolt-throw (jolt-host-throwable "java.lang.NumberFormatException" "Cannot parse null string")))
   (let* ((str (if (string? s) s (jolt-str-render-one s)))
          (row (assoc type java-int-types))
          (v (java-int-parse str radix (cadr row) (caddr row))))
@@ -93,6 +95,8 @@
       (else (values neg? (substring str i n) 10)))))
 
 (define (decode-or-throw s type)
+  (when (jolt-nil? s)
+    (throw-jvm (quote NullPointerException) "Cannot invoke \"String.isEmpty()\" because \"nm\" is null"))
   (let ((str (if (string? s) s (jolt-str-render-one s))))
     (if (fx=? 0 (string-length str))
         (jolt-throw (jolt-host-throwable "java.lang.NumberFormatException" "Zero length string"))
@@ -130,6 +134,8 @@
 (define (parse-double-str s)
   (java-double-parse (if (string? s) s (jolt-str-render-one s))))
 (define (parse-double-or-throw s)
+  (when (jolt-nil? s)
+    (throw-jvm (quote NullPointerException) "Cannot invoke \"String.trim()\" because \"in\" is null"))
   (or (parse-double-str s)
       (jolt-throw (jolt-host-throwable "java.lang.NumberFormatException"
                     (string-append "For input string: \""

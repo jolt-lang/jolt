@@ -909,6 +909,23 @@
 (rtu "lazy realized"  "(doall (map inc [1 2 3]))"
      "[(vec $rt) (str (type $rt))]"   "[[2 3 4] \"class clojure.lang.LazySeq\"]")
 
+;; A throwable's cause the way initCause and a constructor set it: a cause
+;; initCause set, a nil cause given to a constructor and an initCause'd nil all
+;; travel, so the restored throwable answers ex-cause the same and refuses a
+;; second initCause the same; an unset cause stays settable.
+(rtu "initCause'd cause" "(let [e (Exception. \"o\")] (.initCause e (Exception. \"c\")) e)"
+     "[(ex-message (ex-cause $rt)) (try (.initCause $rt (Exception. \"d\")) :set (catch IllegalStateException _ :refused))]"
+     "[\"c\" :refused]")
+(rtu "nil cause given" "(Exception. \"o\" nil)"
+     "[(ex-cause $rt) (try (.initCause $rt (Exception. \"d\")) :set (catch IllegalStateException _ :refused))]"
+     "[nil :refused]")
+(rtu "initCause'd nil" "(let [e (RuntimeException. \"o\")] (.initCause e nil) e)"
+     "[(ex-cause $rt) (try (.initCause $rt (Exception. \"d\")) :set (catch IllegalStateException _ :refused))]"
+     "[nil :refused]")
+(rtu "unset cause" "(Exception. \"o\")"
+     "[(ex-cause $rt) (ex-message (ex-cause (.initCause $rt (Exception. \"d\"))))]"
+     "[nil \"d\"]")
+
 ;; --- header / compatibility ------------------------------------------------------
 (is "reading a non-image fails with a clear message"
     (string-append "(do (spit \"" tmp ".txt\" \"not an image\")"

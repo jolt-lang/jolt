@@ -54,8 +54,8 @@
   (let-values (((level nowrap)
                 (case (length args)
                   ((0) (values -1 #f))
-                  ((1) (values (zip-int-arg (car args)) #f))
-                  ((2) (let* ((level (zip-int-arg (car args)))
+                  ((1) (values (zip-ctor-int-arg (car args)) #f))
+                  ((2) (let* ((level (zip-ctor-int-arg (car args)))
                               (nowrap (zip-boolean-arg (cadr args))))
                          (values level nowrap)))
                   (else (throw-jvm 'IllegalArgumentException
@@ -99,7 +99,7 @@
 ;; setDictionary(byte[]) | setDictionary(byte[], off, len); the result check is
 ;; Deflater.c checkSetDictionaryResult.
 (define (deflater-set-dictionary! self . args)
-  (let-values (((bv off len more) (zip-array-args "setDictionary" self args "dictionary")))
+  (let-values (((bv off len more) (zip-array-args "setDictionary" self args "dictionary" "Cannot read the array length because \"dictionary\" is null")))
     (deflater-open self
       (lambda (st)
         (let* ((zs (zdeflater-zs st))
@@ -181,7 +181,7 @@
        (deflater-locked self zdeflater-sync-buffer!)
        n))))
 (define (deflater-deflate-array self . args)
-  (let-values (((out-bv off len more) (zip-array-args "deflate" self args "output")))
+  (let-values (((out-bv off len more) (zip-array-args "deflate" self args "output" "Cannot invoke \"java.nio.ByteBuffer.isReadOnly()\" because \"output\" is null")))
     (let ((out (car args))
           (flush (if (pair? more) (car more) z-no-flush)))
       (unless (memv flush (list z-no-flush z-sync-flush z-full-flush))

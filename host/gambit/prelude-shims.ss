@@ -894,6 +894,8 @@
 ;; them. bigint is the unbounded parse, so there is no width to name and only the
 ;; ordinary "For input string:" message can come out.
 (define (parse-int-or-throw s radix type)
+  (when (jolt-nil-t? s)
+    (jolt-throw (jolt-host-throwable "java.lang.NumberFormatException" "Cannot parse null string")))
   (let* ((str (if (string? s) s (jolt-str-render-one s)))
          (v (java-int-parse str radix #f #f)))
     (if (symbol? v)

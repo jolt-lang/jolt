@@ -208,6 +208,50 @@
 ;; registered by compile-eval.ss at its load, into the same table.
 (register-class-statics! "Long"
   (list (cons "parseLong" (lambda (s . r) (parse-int-or-throw s (if (null? r) 10 (jnum->exact (car r))) "long")))))
+;; The statics in the JDK signature table (records-interop.ss), with Chez's
+;; bodies (host-static-methods.ss, io.ss): the boxed numbers' and Character's
+;; valueOf, Long/decode, String/valueOf, and java.util.UUID's factories.
+(register-class-statics! "Long"
+  (list (cons "valueOf" (lambda (s . r) (parse-int-or-throw s (if (null? r) 10 (jnum->exact (car r))) "long")))
+        (cons "decode" (lambda (s) (decode-or-throw s "long")))))
+(register-class-statics! "Double" (list (cons "valueOf" ->double)))
+(register-class-statics! "Character"
+  (list (cons "valueOf" (lambda (ch) (if (or (char? ch) (jsurr? ch)) ch (jolt-char ch))))))
+(register-class-statics! "String"
+  (list (cons "valueOf" (lambda (x) (if (jolt-nil? x) "null" (jolt-str-render-one x))))
+        ;; the char[] overload a nil literal resolves to (records-interop.ss)
+        (cons "valueOf([C)" (lambda (x)
+                              (if (jolt-nil? x)
+                                  (throw-jvm (quote NullPointerException)
+                                             "Cannot read the array length because \"value\" is null")
+                                  (jolt-str-render-one x))))))
+(register-class-statics! "java.util.UUID"
+  (list (cons "randomUUID" (lambda () (jolt-random-uuid)))
+        (cons "fromString" uuid-from-string-jvm)))
+;; instance? over jolt's own values by the class graph: Chez answers a
+;; collection's interfaces from per-kind tables in files this boot leaves out, so
+;; here (instance? Iterable [1]) and (instance? java.util.List [1]) asked the
+;; class graph nothing and answered false. The value's class and the graph are
+;; both shared; a record, reify or throwable has passed to its own arms already.
+(register-instance-check-arm!
+  (lambda (ts val)
+    (if (and (symbol-t? ts) (not (jolt-nil? val)))
+        (let ((n (guard (e (#t #f)) (jolt-class-name val))))
+          (if (and (string? n) (jch-isa? n (symbol-t-name ts))) #t 'pass))
+        'pass)))
+;; a UUID is a java.util.UUID, as Chez's io.ss registers it
+(register-class-arm! juuid? (lambda (x) "java.util.UUID"))
+;; ...and the instance methods: a number's compareTo (records-interop.ss, the
+;; one Chez's number methods call) and a UUID's, which Chez answers in io.ss.
+(register-method-arm! arm-priority-host-type
+  (lambda (obj method-name rest-args)
+    (let ((args (if (jolt-nil? rest-args) '() (seq->list rest-args))))
+      (cond ((not (and (string=? method-name "compareTo") (pair? args) (null? (cdr args)))) 'pass)
+            ((number? obj) (jolt-num-compare-to obj (car args)))
+            ((juuid? obj)
+             (let ((o (car args)))
+               (if (juuid? o) (uuid-cmp obj o) (jolt-reflect-cast-fail o "java.util.UUID"))))
+            (else 'pass)))))
 ;; JVM Character.isWhitespace: Unicode whitespace MINUS the no-break spaces the
 ;; JVM excludes (U+00A0/U+2007/U+202F) and NEL (U+0085), plus U+001C..U+001F.
 (register-class-statics! "Character"

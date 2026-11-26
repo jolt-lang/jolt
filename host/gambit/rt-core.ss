@@ -140,8 +140,17 @@
 ;; equals). get / keyword lookup: MISS (record is NOT ILookup).
 ;; error-offset stores ParseException.getErrorOffset (0 when not set).
 (define-record-type jolt-ex-info-record
-  (fields class-name message cause data (mutable error-offset))
-  (nongenerative jolt-ex-info-record-v1))
+  (fields class-name message (mutable cause) data (mutable error-offset))
+  (nongenerative jolt-ex-info-record-v2))
+;; A throwable whose cause is set to nil (a constructor given nil, or
+;; initCause(nil)): the JVM tells it from no cause at all (initCause then
+;; refuses). The cause field stays nil, so every reader of the cause is
+;; unchanged, and this keyword marks the record's error-offset slot instead,
+;; which only a ParseException's int or a detail vector otherwise holds
+;; (records-interop.ss throwable-field-cause). A keyword travels in an image as
+;; itself.
+(define jolt-cause-given-nil (keyword "jolt" "cause-given-nil"))
+(define jolt-ex-info-class-name "clojure.lang.ExceptionInfo")
 
 ;; --- exceptions --------------------------------------------------------------
 ;; throw raises a Chez condition WRAPPING the jolt value; catch (emitted as
@@ -450,7 +459,7 @@
 ;; ex-data is nil.
 (define (jolt-ex-info msg data . more)
   (jolt-capture-throwable!
-    (make-jolt-ex-info-record "clojure.lang.ExceptionInfo" msg
+    (make-jolt-ex-info-record jolt-ex-info-class-name msg
                               (if (null? more) jolt-nil (car more))
                               (if (jolt-nil? data) empty-pmap data) 0)))
 ;; A host-constructed throwable (RuntimeException. etc.): a jolt-ex-info-record
@@ -458,6 +467,11 @@
 ;; ex-message all reflect the real type.
 ;; java.text.ParseException carries an int error offset (getErrorOffset). Stored
 ;; in the record's error-offset field.
+;; ...and one constructed with a nil cause GIVEN, marked as set
+;; (jolt-cause-given-nil) in the one allocation.
+(define (jolt-host-throwable/nil-cause class-name msg)
+  (jolt-capture-throwable!
+    (make-jolt-ex-info-record class-name msg jolt-nil jolt-nil jolt-cause-given-nil)))
 (define (jolt-host-throwable class-name msg . more)
   (jolt-capture-throwable!
     (make-jolt-ex-info-record class-name msg
@@ -1307,6 +1321,17 @@
     ((string=? method "contains") (fx>=? (str-index-of s (str-needle (arg 0)) 0) 0))
     ((string=? method "concat") (string-append s (jolt-need-str (arg 0))))
     ((string=? method "equals") (let ((o (arg 0))) (and (string? o) (string=? s o))))
+    ;; the JDK signature table's String methods (records-interop.ss): compareTo
+    ;; refuses another class with Class.cast's wording, as natives-str.ss does
+    ((string=? method "compareTo")
+     (let ((o (arg 0)))
+       (cond ((string? o) (jolt-strcmp s o))
+             ((jolt-nil? o) (jolt-need-str o))
+             (else (jolt-reflect-cast-fail o "java.lang.String")))))
+    ((string=? method "strip") (str-strip s #t #t))
+    ((string=? method "stripLeading") (str-strip s #t #f))
+    ((string=? method "stripTrailing") (str-strip s #f #t))
+    ((string=? method "intern") s)
     (else (error 'jolt-string-method "unhandled string method on gambit" method))))
 
 ;; ---- clojure.core/str-* natives ---------------------------------------------
@@ -1582,6 +1607,9 @@
 (define (jts? x) #f)
 (define (jfile? x) #f)
 (define (jbigdec? x) #f)
+;; records-interop.ss's Number.intValue reads a BigDecimal's integer part only
+;; behind jbigdec?, which nothing here satisfies
+(define (jbd->integer x) (error "jbd->integer: no BigDecimal on the gambit target" x))
 
 ;; ---- concurrency tier stubs (demo boot: single-threaded) ---------------------
 ;; java/concurrency.ss + natives-queue.ss are excluded from this boot. Gambit

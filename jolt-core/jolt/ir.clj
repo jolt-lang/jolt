@@ -236,6 +236,9 @@
 ;;                           would know it (analyzer, hints.clj node-jclass): the
 ;;                           back end casts the arguments of such a resolved call
 ;;                           the way the JVM's checkcast does.
+;;   :arg-casts              the parameter classes of the one method such a call
+;;                           resolves to (the runtime's signature table), which
+;;                           the back end casts or unboxes each argument to.
 ;;   :devirt-type :devirt-*  a monomorphic protocol call's resolved impl (backend).
 ;;   :num-ret                a ^double/^long declared return, on a :var node
 ;;   :jvm-long-ret           every arglist tagged ^long, on a :var node: the JVM
