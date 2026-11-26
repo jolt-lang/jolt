@@ -164,7 +164,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Common host operations are 2 to 7 times faster (#1713). On Chez,
   `(:k rec)` and `(get rec :k)` on a defrecord read the field straight from a
   per-site cache (19 and 38 ns to 5.5); the inline read is emitted only for a
-  key some defrecord declares, so a map's lookup is not slowed by it.
+  key some defrecord declares, so a map's lookup is not slowed by it. A
+  default, as in `(:k rec (f))`, is still evaluated on every call.
   `(instance? T x)` answers a repeat inline for a record or a string, number,
   char, boolean, keyword or nil (16 to 32 ns down to 9 to 15).
   `Matcher.group` and the group vectors of `re-find`, `re-matches` and
@@ -196,6 +197,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `(unchecked-long Float/NEGATIVE_INFINITY)` is `-9223372036854775808` (it
   printed `-0`), and `unchecked-byte`/`unchecked-short` clamp at the int range
   first, so `(unchecked-short 1e10)` is `-1` rather than `-7168`.
+- A host method call whose argument is of the wrong class words its
+  `ClassCastException` as the JVM does for that call: the checkcast's message
+  when the compiler knows the receiver's class (a hint, a constructor, a
+  literal, a catch binding), Class.cast's `Cannot cast X to Y` when it does
+  not. This covers `addSuppressed` and `compareTo` on Long, Double, Float,
+  String, Character, File, UUID, URI and BigDecimal. `Keyword` and `Symbol`
+  have `compareTo`, `Character.compareTo` answers the code unit difference, and
+  `cast` and `Class.cast` name both classes.
 - A float prints with the JDK's shortest digits at a power of two, where the
   shortest decimal that reads back can lie on the far side of the float:
   `(str (float (Math/pow 2 -96)))` is `1.2621775E-29`, not `1.26217745E-29`

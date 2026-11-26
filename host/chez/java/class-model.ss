@@ -384,11 +384,7 @@
         (cons "cast" (lambda (self o)
                        (if (or (jolt-nil? o) (instance-check self o))
                            o
-                           (throw-jvm
-                            'ClassCastException
-                            (string-append "class " (jclass-jvm-name (jolt-class o))
-                                           " cannot be cast to class "
-                                           (jclass-jvm-name self))))))
+                           (jolt-reflect-cast-fail o (jclass-jvm-name self)))))
         ;; getModifiers: the JVM bitmask, derived from the class graph (jolt has
         ;; no bytecode to read one out of). Modifier's predicates read it.
         (cons "getModifiers" (lambda (self) (->num (jch-modifiers (jclass-name self)))))

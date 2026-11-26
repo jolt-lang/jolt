@@ -1816,9 +1816,10 @@
   {:suite "kwdirect" :expr "(.equals :a nil)" :expected "false"}
   {:suite "kwdirect" :expr "((fn [^clojure.lang.Keyword k] (.sym k)) :x/y)" :expected "x/y"}
   {:suite "kwdirect" :expr "(let [k :a/b] (.sym ^clojure.lang.Keyword k))" :expected "a/b"}
-  ;; outside the table -> generic dispatch; the keyword arm itself has no
-  ;; compareTo, so both paths throw the same IllegalArgumentException
-  {:suite "kwdirect" :expr "(.compareTo :a :b)" :expected :throws}
+  ;; outside the table -> generic dispatch, the keyword arm's compareTo, so a
+  ;; literal and a hinted receiver answer alike
+  {:suite "kwdirect" :expr "(.compareTo :a :b)" :expected "-1"}
+  {:suite "kwdirect" :expr "((fn [^clojure.lang.Keyword k] (.compareTo k :a)) :b)" :expected "1"}
   ;; (.m sb …) with a PROVEN StringBuilder target emits the accessor inline. Three
   ;; proof sources, all pinned below: a local bound to (StringBuilder.) with NO
   ;; hint in the source (init-proves-hint — the shape every string-building let

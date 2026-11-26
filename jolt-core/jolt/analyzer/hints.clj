@@ -150,6 +150,39 @@
 (defn add-hint [env nm h]
   (if h (assoc env :hints (assoc (:hints env) nm h)) env))
 
+;; --- the receiver class a host call is resolved against ----------------------
+;; The JVM compiler resolves (.m x args) to one method when it knows x's class,
+;; and then casts each argument to the parameter's class with a checkcast; when
+;; it does not, the Reflector finds the method at run time and Class.cast does
+;; it. The two raise ClassCastException in different words, so jolt carries the
+;; class the compiler would know onto the :host-call (:target-class), and the
+;; back end emits the cast where the JVM would have one. The sources are the
+;; compiler's: a tag on the target or on the local it reads, the class of a let
+;; or loop init (a constructor, a literal, another such local, a call to a var
+;; tagged with a class), a catch binding's class. A tag naming no class jolt
+;; knows, or a primitive, gives nil.
+(defn tag-class [ctx tag]
+  (let [nm (cond (form-sym? tag) (if (form-sym-ns tag) nil (form-sym-name tag))
+                 (string? tag) tag
+                 :else nil)]
+    (when nm
+      (let [r (resolve-global ctx (symbol nm))]
+        (if (= :class (:kind r)) (:name r) (resolve-class-hint nm))))))
+(defn sym-tag-class [ctx sym]
+  (let [m (form-sym-meta sym)] (when m (tag-class ctx (get m :tag)))))
+(defn node-jclass [ctx node env]
+  (case (:op node)
+    :local (get (:jclasses env) (:name node))
+    :host-new (tag-class ctx (:class node))
+    :const (let [v (:val node)]
+             (cond (string? v) "java.lang.String" (keyword? v) "clojure.lang.Keyword" :else nil))
+    :do (node-jclass ctx (:ret node) env)
+    :invoke (let [c (invoke-jvm-class (:fn node))]
+              (when (and (string? c) (not= c "Object")) (tag-class ctx c)))
+    nil))
+(defn add-jclass [env nm c]
+  (if c (assoc env :jclasses (assoc (:jclasses env) nm c)) env))
+
 ;; The resolved record ctor-key ("ns/->Name") for a ^Type param hint, or nil.
 ;; Unlike hint-of (which collapses any record hint to the coarse :struct guard-
 ;; skip marker), this carries the SPECIFIC record type — cross-namespace aware —
@@ -362,7 +395,8 @@
         (conj-hint :uphints nm (when (and ph (not proven?)) ph))
         (conj-hint :nhints nm nh)
         (conj-hint :ahints nm ah)
-        (conj-hint :dhints nm dh))))
+        (conj-hint :dhints nm dh)
+        (conj-hint :jclasses nm (sym-tag-class ctx p)))))
 
 (defn- rest-param-name [r]
   (when-not (form-sym? r)
@@ -378,7 +412,7 @@
   ;; same for the hints a program wrote, which the optimizing passes turn into a
   ;; type test on the param (jolt.passes.types guard-declared-records).
   (loop [i 0 acc {:fixed [] :rest nil :hints [] :phints [] :uphints [] :nhints []
-                  :ahints [] :dhints []}]
+                  :ahints [] :dhints [] :jclasses []}]
     (if (< i (count pvec))
       (let [p (nth pvec i)]
         (when-not (form-sym? p)

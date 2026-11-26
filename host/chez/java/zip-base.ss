@@ -47,23 +47,8 @@
 ;; matching method, and the one overload for a count casts every argument, left
 ;; to right, before the method runs.
 
-(define (zip-prefix? prefix s)
-  (and (>= (string-length s) (string-length prefix))
-       (string=? prefix (substring s 0 (string-length prefix)))))
-
-;; ClassCastException for X cast to TO, a java.base class, with the JDK's
-;; message. A class outside java.base is in the unnamed module of Clojure's
-;; application loader.
-(define (zip-class-cast x to)
-  (let ((from (jolt-class-name x)))
-    (throw-jvm 'ClassCastException
-               (string-append
-                "class " from " cannot be cast to class " to " ("
-                (if (or (zip-prefix? "java." from) (zip-prefix? "[" from))
-                    (string-append from " and " to " are in module java.base of loader 'bootstrap'")
-                    (string-append from " is in unnamed module of loader 'app'; "
-                                   to " is in module java.base of loader 'bootstrap'"))
-                ")"))))
+;; ClassCastException for X cast to TO with the checkcast's message (host-class.ss).
+(define (zip-class-cast x to) (jolt-checkcast-fail x to))
 
 ;; An int argument of the overload the call picked, cast as the compiled call
 ;; casts it on JDK 21: nil is NullPointerException; a double is truncated, NaN is

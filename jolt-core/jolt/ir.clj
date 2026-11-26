@@ -232,6 +232,10 @@
 ;;                           hint (analyzer) or by inference (jolt.passes.types).
 ;;                           Drives the direct interop emit, and is what the
 ;;                           call's own answer type is read off.
+;;   :target-class           a :host-call receiver's class as the JVM compiler
+;;                           would know it (analyzer, hints.clj node-jclass): the
+;;                           back end casts the arguments of such a resolved call
+;;                           the way the JVM's checkcast does.
 ;;   :devirt-type :devirt-*  a monomorphic protocol call's resolved impl (backend).
 ;;   :num-ret                a ^double/^long declared return, on a :var node
 ;;   :jvm-long-ret           every arglist tagged ^long, on a :var node: the JVM

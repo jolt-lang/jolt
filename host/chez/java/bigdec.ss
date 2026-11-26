@@ -659,6 +659,7 @@
 (define (jbd-precision bd)
   (if (= 0 (jbigdec-unscaled bd)) 1 (jbd-digits (jbigdec-unscaled bd))))
 
+(register-method-params! "java.math.BigDecimal" "compareTo" '("java.math.BigDecimal"))
 (define jbd-instance-members
   (list
    ;; --- scale and rounding ---------------------------------------------------
@@ -694,7 +695,13 @@
    (cons "min" (lambda (b x) (jbd-min2 b (jbd-coerce x))))
    (cons "max" (lambda (b x) (jbd-max2 b (jbd-coerce x))))
    ;; --- comparison, conversion, identity ------------------------------------
-   (cons "compareTo" (lambda (b x) (->num (jbd-compare2 b (jbd-coerce x)))))
+   ;; compareTo(BigDecimal): a resolved call casts first (records-interop.ss
+   ;; jolt-checkcast), so another class here is the reflector's cast; nil is
+   ;; still the method's NullPointerException
+   (cons "compareTo" (lambda (b x)
+                       (unless (or (jbigdec? x) (jolt-nil? x))
+                         (jolt-reflect-cast-fail x "java.math.BigDecimal"))
+                       (->num (jbd-compare2 b (jbd-coerce x)))))
    ;; jolt's bigdec equality is by VALUE throughout — (= 1.5M 1.50M) is true, the
    ;; hash strips trailing zeros to match — so .equals answers what = answers
    ;; rather than contradicting it with the JVM's scale-sensitive test.
