@@ -604,7 +604,11 @@
         h)))
 (define (symbol-hasheq sym)
   (or (symbol-t-khash sym)
-      (let* ((c (symbol-t-ncell sym))
+      (let* ((c (or (symbol-t-ncell sym)
+                    ;; an unpooled symbol (values.ss jolt-symbol/unpooled) finds
+                    ;; its name's cell now, on its first hash, not when built
+                    (let ((nm (symbol-t-name sym)))
+                      (and (string? nm) (intern-symbol-cell nm)))))
              (ns (symbol-t-ns sym))
              ;; one string? in place of compute-symbol-hasheq's three-way
              ;; nil/#f/() check: an ns that is not a string is exactly an absent
