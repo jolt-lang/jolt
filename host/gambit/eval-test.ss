@@ -420,6 +420,33 @@
 (check "(try (.compareTo \"a\" 1) (catch ClassCastException c (ex-message c)))"
        "\"class java.lang.Long cannot be cast to class java.lang.String (java.lang.Long and java.lang.String are in module java.base of loader 'bootstrap')\"")
 
+;; The JDK signature table's methods (records-interop.ss) dispatch here too:
+;; String.compareTo and the strip family, a number's compareTo, the boxed
+;; numbers' and Character's valueOf, String/valueOf, and java.util.UUID's
+;; statics and compareTo, each answering what the Chez build answers.
+(check "((fn [x y] (.compareTo x y)) \"a\" \"c\")"
+       "-2")
+(check "(try ((fn [x y] (.compareTo x y)) \"a\" 1) (catch ClassCastException c (ex-message c)))"
+       "\"Cannot cast java.lang.Long to java.lang.String\"")
+(check "[((fn [x y] (.compareTo x y)) 1 2) ((fn [x y] (.compareTo x y)) 2.5 1.5) ((fn [x y] (.compareTo x y)) 1/2 1) (.compareTo 3 3)]"
+       "[-1 1 -1 0]")
+(check "(try ((fn [x y] (.compareTo x y)) 1 \"a\") (catch ClassCastException c (ex-message c)))"
+       "\"Cannot cast java.lang.String to java.lang.Long\"")
+(check "(try (let [x (Long/valueOf 1)] (.compareTo x \"a\")) (catch ClassCastException c (ex-message c)))"
+       "\"class java.lang.String cannot be cast to class java.lang.Long (java.lang.String and java.lang.Long are in module java.base of loader 'bootstrap')\"")
+(check "[(Long/valueOf \"12\") (Long/valueOf 7) (Long/decode \"0x10\") (Double/valueOf \"1.5\") (Double/valueOf 2) (Character/valueOf \\a) (String/valueOf 12)]"
+       "[12 7 16 1.5 2.0 \\a \"12\"]")
+(check "(str (java.util.UUID/fromString \"1-1-1-1-1\"))"
+       "\"00000001-0001-0001-0001-000000000001\"")
+(check "(class (java.util.UUID/randomUUID))"
+       "java.util.UUID")
+(check "(.compareTo (java.util.UUID/fromString \"00000000-0000-0000-0000-000000000001\") (java.util.UUID/fromString \"00000000-0000-0000-0000-000000000002\"))"
+       "-1")
+(check "(try ((fn [x y] (.compareTo x y)) (java.util.UUID/randomUUID) \"a\") (catch ClassCastException c (ex-message c)))"
+       "\"Cannot cast java.lang.String to java.util.UUID\"")
+(check "[(.strip \" a \") (.stripLeading \" a \") (.stripTrailing \" a \") (.intern \"a\")]"
+       "[\"a\" \"a \" \" a\" \"a\"]")
+
 (printf "eval-test: ~a failure(s)\n" failures)
 (if (= failures 0)
     (begin (display "eval-test: PASS — jolt compiles and evaluates on native gsi\n") (exit 0))

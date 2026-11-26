@@ -1307,6 +1307,17 @@
     ((string=? method "contains") (fx>=? (str-index-of s (str-needle (arg 0)) 0) 0))
     ((string=? method "concat") (string-append s (jolt-need-str (arg 0))))
     ((string=? method "equals") (let ((o (arg 0))) (and (string? o) (string=? s o))))
+    ;; the JDK signature table's String methods (records-interop.ss): compareTo
+    ;; refuses another class with Class.cast's wording, as natives-str.ss does
+    ((string=? method "compareTo")
+     (let ((o (arg 0)))
+       (cond ((string? o) (jolt-strcmp s o))
+             ((jolt-nil? o) (jolt-need-str o))
+             (else (jolt-reflect-cast-fail o "java.lang.String")))))
+    ((string=? method "strip") (str-strip s #t #t))
+    ((string=? method "stripLeading") (str-strip s #t #f))
+    ((string=? method "stripTrailing") (str-strip s #f #t))
+    ((string=? method "intern") s)
     (else (error 'jolt-string-method "unhandled string method on gambit" method))))
 
 ;; ---- clojure.core/str-* natives ---------------------------------------------

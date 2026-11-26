@@ -768,3 +768,24 @@
 (def-var! "clojure.core" "numerator" (jolt-ratio-part "numerator" numerator))
 (def-var! "clojure.core" "denominator" (jolt-ratio-part "denominator" denominator))
 (def-var! "clojure.core" "compare" jolt-compare)
+
+;; ---- Java whitespace and String.strip, shared with the Gambit host -----------
+;; U+001C..U+001F (the file/group/record/unit separators) are whitespace to Java but
+;; carry no Unicode White_Space property, so char-whitespace? alone misses them.
+;; U+0085 (NEL) has White_Space but is a control character to Java, so it's out.
+;; Character/isWhitespace uses this too.
+(define (java-whitespace? c)
+  (let ((cp (char->integer c)))
+    (cond ((or (fx=? cp #xA0) (fx=? cp #x2007) (fx=? cp #x202F) (fx=? cp #x85)) #f)
+          ((and (fx>=? cp #x1C) (fx<=? cp #x1F)) #t)
+          (else (char-whitespace? c)))))
+;; String.strip / stripLeading / stripTrailing: Java whitespace off either end.
+(define (str-strip s left? right?)
+  (let ((len (string-length s)))
+    (let scan-l ((i 0))
+      (cond ((fx=? i len) "")
+            ((and left? (java-whitespace? (string-ref s i))) (scan-l (fx+ i 1)))
+            (else (let scan-r ((j (fx- len 1)))
+                    (if (and right? (fx>? j i) (java-whitespace? (string-ref s j)))
+                        (scan-r (fx- j 1))
+                        (substring s i (fx+ j 1)))))))))

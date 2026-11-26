@@ -208,6 +208,33 @@
 ;; registered by compile-eval.ss at its load, into the same table.
 (register-class-statics! "Long"
   (list (cons "parseLong" (lambda (s . r) (parse-int-or-throw s (if (null? r) 10 (jnum->exact (car r))) "long")))))
+;; The statics in the JDK signature table (records-interop.ss), with Chez's
+;; bodies (host-static-methods.ss, io.ss): the boxed numbers' and Character's
+;; valueOf, Long/decode, String/valueOf, and java.util.UUID's factories.
+(register-class-statics! "Long"
+  (list (cons "valueOf" (lambda (s . r) (parse-int-or-throw s (if (null? r) 10 (jnum->exact (car r))) "long")))
+        (cons "decode" (lambda (s) (decode-or-throw s "long")))))
+(register-class-statics! "Double" (list (cons "valueOf" ->double)))
+(register-class-statics! "Character"
+  (list (cons "valueOf" (lambda (ch) (if (or (char? ch) (jsurr? ch)) ch (jolt-char ch))))))
+(register-class-statics! "String"
+  (list (cons "valueOf" (lambda (x) (if (jolt-nil? x) "null" (jolt-str-render-one x))))))
+(register-class-statics! "java.util.UUID"
+  (list (cons "randomUUID" (lambda () (jolt-random-uuid)))
+        (cons "fromString" uuid-from-string-jvm)))
+;; a UUID is a java.util.UUID, as Chez's io.ss registers it
+(register-class-arm! juuid? (lambda (x) "java.util.UUID"))
+;; ...and the instance methods: a number's compareTo (records-interop.ss, the
+;; one Chez's number methods call) and a UUID's, which Chez answers in io.ss.
+(register-method-arm! arm-priority-host-type
+  (lambda (obj method-name rest-args)
+    (let ((args (if (jolt-nil? rest-args) '() (seq->list rest-args))))
+      (cond ((not (and (string=? method-name "compareTo") (pair? args) (null? (cdr args)))) 'pass)
+            ((number? obj) (jolt-num-compare-to obj (car args)))
+            ((juuid? obj)
+             (let ((o (car args)))
+               (if (juuid? o) (uuid-cmp obj o) (jolt-reflect-cast-fail o "java.util.UUID"))))
+            (else 'pass)))))
 ;; JVM Character.isWhitespace: Unicode whitespace MINUS the no-break spaces the
 ;; JVM excludes (U+00A0/U+2007/U+202F) and NEL (U+0085), plus U+001C..U+001F.
 (register-class-statics! "Character"

@@ -668,6 +668,36 @@
     (if (and (vector? m) (vector-ref m 3)) (vector-ref m 3) jolt-nil)))
 (def-var! "jolt.host" "method-return-class" method-return-class)
 
+;; Comparable.compareTo on a number: -1/0/1, a double by Double.compare (NaN
+;; above everything, -0.0 below 0.0). Long, Double and Float compare only to
+;; their own class: a resolved call casts the argument before it gets here (the
+;; JDK signatures below), so this check is the reflector's cast. A Ratio takes
+;; any number (Numbers.compare) and casts to Number inside the method, so its
+;; refusal is the checkcast's whatever the call. jolt's one integer answers for a
+;; Long. Both hosts' number methods call it.
+(define (jolt-num-compare-to n o)
+  (let ((ratio? (and (number? n) (exact? n) (not (integer? n))))
+        (flo (lambda (x) (cond ((jfloat? x) (jfloat-fl x)) ((flonum? x) x) (else #f)))))
+    (when (and ratio? (not (or (number? o) (jfloat? o) (jolt-nil? o))))
+      (jolt-checkcast-fail o "java.lang.Number"))
+    (unless (or ratio?
+                (cond ((jfloat? n) (jfloat? o))
+                      ((flonum? n) (flonum? o))
+                      (else (and (number? o) (exact? o) (integer? o)))))
+      (jolt-reflect-cast-fail o (cond ((jfloat? n) "java.lang.Float")
+                                      ((flonum? n) "java.lang.Double")
+                                      (else "java.lang.Long"))))
+    (let ((a (or (flo n) n)) (b (or (flo o) (jolt-need-num o))))
+      (if (or (flonum? a) (flonum? b))
+          (let ((x (inexact a)) (y (inexact b)))
+            (cond ((nan? x) (if (nan? y) 0 1))
+                  ((nan? y) -1)
+                  ((fl< x y) -1) ((fl> x y) 1)
+                  ;; equal, so only the sign of a zero tells them apart
+                  ((and (fl= x 0.0) (not (eqv? x y))) (if (eqv? x -0.0) -1 1))
+                  (else 0)))
+          (cond ((< a b) -1) ((> a b) 1) (else 0))))))
+
 ;; ---- java.lang.Throwable: the surface EVERY throwable inherits ---------------
 ;; On the JVM these are declared on Throwable itself, so every exception class has
 ;; them by inheritance and no shim ever needs to restate them. jolt had no such
