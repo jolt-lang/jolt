@@ -421,7 +421,11 @@
 ;; (jolt.configure/locate): pkg-config's libdirs, Homebrew, the linker's
 ;; configured directories and the usual system ones, read without running
 ;; anything. Discovery runs only after every candidate failed, so a library the
-;; loader already finds costs nothing extra. JOLT_NATIVE_DISCOVER=0 turns the
+;; loader already finds costs nothing extra, and never for an :optional spec: a
+;; program runs without that library by design, and looking for one that is
+;; absent on every start would load jolt.configure and walk the filesystem each
+;; time (jolt.configure, or a path in deps.local.edn, finds an optional library
+;; for a machine that has it somewhere unusual). JOLT_NATIVE_DISCOVER=0 turns the
 ;; discovery step off; `jolt run configure` records what it finds in
 ;; deps.local.edn instead, for a machine that wants it pinned.
 
@@ -448,7 +452,7 @@
         ;; (a handle, or Windows-global), #f when no candidate opens.
         load! #(some (fn [c] (when (jolt.ffi/load-native c) c)) cands)
         hit (or (load!)
-                (when (and (not (:static spec)) (seq declared))
+                (when (and (not (:static spec)) (not (:optional spec)) (seq declared))
                   (discover-native spec declared root)))
         ;; a task may build a library it declared candidates for, but
         ;; not one already on disk that failed to load. A :static
