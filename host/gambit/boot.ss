@@ -32,6 +32,7 @@
 ;; first file whose blocker is class (c) (a genuine Chez-only construct with no
 ;; gambit seam) — see REPORT.
 
+(##include "../chez/fx-digits.ss")
 (##include "../chez/values.ss")
 (##include "hasheq.ss")
 (##include "../chez/collections.ss")

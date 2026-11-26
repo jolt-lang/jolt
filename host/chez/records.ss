@@ -729,7 +729,12 @@
   (let* ((ext (jrec-ext coll))
          (v (if (jolt-nil? ext) jrec-absent (jolt-get ext k jrec-absent))))
     (if (eq? v jrec-absent)
-        (cond ((jrec-declared-valat coll)
+        (cond ;; a plain defrecord (records-coll.ss jrec-plain?) declares no
+              ;; valAt and no get, so a key its fields and extension map miss
+              ;; is the default: (:missing rec) asked the type's method table
+              ;; for both by name on every call, 155 ns against the JVM's 14
+              ((jrec-plain? coll) d)
+              ((jrec-declared-valat coll)
                 => (lambda (va) (jrec-call-valat va coll k d)))
               ;; a defrecord that declares a valAt anyway (the JVM refuses to
               ;; compile one, but jolt has always allowed it): its fields are not

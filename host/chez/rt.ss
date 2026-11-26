@@ -64,6 +64,7 @@
 ;; Before everything else that locks: jolt-with-mutex is a MACRO, so it has to be
 ;; defined before any file that uses it is loaded. It depends on nothing but Chez.
 (load "host/chez/locks.ss")
+(load "host/chez/fx-digits.ss")
 (load "host/chez/values.ss")
 (load "host/chez/hasheq.ss")
 ;; Resolve a libc entry point at RUN time; #f when the entry doesn't exist
@@ -3544,6 +3545,60 @@
      (cond ((and (pvec? c) (fixnum? k) (fx>=? k 0) (fx<? k (pvec-cnt c))) (pvec-nth-in-range c k))
            ((and (string? c) (fixnum? k) (fx>=? k 0) (fx<? k (string-length c))) (string-ref c k))
            (else fallback)))))
+;; (:k rec) on Chez (backend_scheme.clj emit-keyword-call): the hit of
+;; collections.ss's record cache, open-coded. Slot 1 of the site (jolt-kw-site)
+;; holds (desc . field-index) once jolt-kw-rec-get has found K as a defrecord's
+;; field; a receiver with that descriptor has that layout (a redefinition makes a
+;; fresh descriptor), so the field is one slot read. The procedure path was four
+;; calls deep, 19 ns against the JVM's 2.6 (#1713). Anything else -- a map, the
+;; first lookup, another type -- is jolt-kw-get-site as before; a map pays one
+;; pair? test for this.
+(define-syntax jolt-kw-get-site/i
+  (syntax-rules ()
+    ((_ m0 k site0 d ...)
+     (let* ((m m0) (site site0) (c (vector-ref site 1)))
+       (if (and (pair? c) (eq? (car c) (jrec-pic-desc/i m)))
+           (if (record? m (record-type-descriptor jrec*))
+               (jrec*-slot/u m (cdr c))
+               (jrec-slot/u m (cdr c)))
+           (jolt-kw-get-site m k site d ...))))))
+;; (instance? T x) on Chez (backend_scheme.clj emit-site-cache-invoke): the hit of
+;; records-interop.ss's jolt-instance-site, open-coded. The site's state is
+;; #(t ts tname kind answer epoch); a hit is the same T, a receiver of the cached
+;; kind and the current epoch. The procedure computed the receiver's kind through
+;; instance-kind-key, whose cond reaches a string only after jrec?, jreify? and
+;; class-fast-name's chain (21 ns of a 29 ns check; a deftype's took 16 ns, the
+;; JVM's instanceof ~0). Here the kind of a record and of the scalar types is read
+;; inline: a record's is its descriptor, a scalar's the one class-name string
+;; instance-kind-key answers for every value of the type, captured below. A kind
+;; this cond does not know is #f, never a cached kind, so it takes the procedure.
+(define instance-fast-key
+  (let ((stable (lambda (a b) (let ((ka (instance-kind-key a))) (and ka (eq? ka (instance-kind-key b)) ka)))))
+    (vector (stable "" (string #\a)) (stable 1 -7) (stable 1.5 -2.0) (stable #\a #\b)
+            (stable #t #f) (stable (keyword #f "a") (keyword "x" "b")) (instance-kind-key jolt-nil))))
+(define-syntax instance-fast-kind
+  (syntax-rules ()
+    ((_ x0)
+     (let ((x x0))
+       (cond ((jrec-pic-desc/i x))
+             ((string? x) (vector-ref instance-fast-key 0))
+             ((fixnum? x) (vector-ref instance-fast-key 1))
+             ((flonum? x) (vector-ref instance-fast-key 2))
+             ((char? x) (vector-ref instance-fast-key 3))
+             ((boolean? x) (vector-ref instance-fast-key 4))
+             ((keyword-t? x) (vector-ref instance-fast-key 5))
+             ((eq? x jolt-nil) (vector-ref instance-fast-key 6))
+             (else #f))))))
+(define-syntax jolt-instance-site/i
+  (syntax-rules ()
+    ((_ site0 t0 val0)
+     (let* ((site site0) (t t0) (val val0) (st (vector-ref site 0)))
+       (if (and st (eq? t (vector-ref st 0))
+                (let ((k (instance-fast-kind val))) (and k (eq? k (vector-ref st 3))))
+                (fx=? (vector-ref st 5)
+                      (fx+ instance-arms-epoch (fx+ jch-graph-epoch jolt-proto-epoch))))
+           (vector-ref st 4)
+           (jolt-instance-site site t val))))))
 ;; (.indexOf "literal" x) on Chez (interop.clj string-direct-forms): a literal of
 ;; up to 64 characters becomes a case over them, each to its first index, for a
 ;; char or an ASCII code point -- rewrite-clj tests every character it reads for a
