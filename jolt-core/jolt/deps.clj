@@ -35,7 +35,7 @@
             [jolt.deps.ext :as ext]
             [jolt.deps.min-version :as minv]
             [jolt.deps.git :as git]
-            [jolt.deps.io :refer [getenv file-exists? mkdirs! rm-f mv! tmp-dir warn
+            [jolt.deps.io :refer [getenv file-exists? mkdirs! rm-f mv! tmp-dir warn warn-once
                                   sanitize]]
             [jolt.mvn-http :as http]))
 
@@ -1358,16 +1358,6 @@
 
 (defn- skip-local-deps? [repro?] (boolean repro?))
 
-(defonce ^:private warned-once (atom #{}))
-
-(defn- warn-once
-  "warn, once per process for a given message: one command reads the local file
-  more than once (its tasks, then the resolution)."
-  [& xs]
-  (let [msg (apply str xs)]
-    (when-not (contains? (first (swap-vals! warned-once conj msg)) msg)
-      (warn msg))))
-
 (defn- read-local-edn [project-dir repro?]
   (when-not (skip-local-deps? repro?)
     (let [path (local-deps-path project-dir)]
@@ -1382,17 +1372,12 @@
   [project-dir local-edn]
   (mapv #(assoc % :jolt.deps/root project-dir :jolt.deps/local true) (:jolt/native local-edn)))
 
-(defn- drop-unmatched-local-natives
-  "NATIVES (reconciled) without the deps.local.edn specs that overrode nothing —
-  still marked local, since overlaying a declaration clears the mark — each
-  warned about by its file and :name."
-  [project-dir natives]
-  (let [{local true kept false} (group-by #(boolean (:jolt.deps/local %)) natives)]
-    (doseq [spec local]
-      (warn-once (local-deps-path project-dir) ": ignoring the :jolt/native spec "
-                 (pr-str (or (:name spec) (dissoc spec :jolt.deps/root :jolt.deps/local)))
+(defn- drop-unmatched-local-natives [project-dir natives]
+  (let [[kept dropped] (decl/split-unmatched-local natives)]
+    (doseq [nm dropped]
+      (warn-once (local-deps-path project-dir) ": ignoring the :jolt/native spec " nm
                  ", which names no library the project or its dependencies declare"))
-    (if (seq local) (vec kept) natives)))
+    kept))
 
 (defn- read-project-edns
   "The project files resolve-project reads, merged: {:edn the merged deps.edn

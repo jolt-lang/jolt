@@ -91,6 +91,15 @@
                                                      (:jolt.deps/paths b)))))
     :else (dissoc a :jolt.deps/paths)))
 
+(defn split-unmatched-local
+  "[NATIVES-without-them names] for the deps.local.edn specs among reconciled
+  NATIVES that overrode nothing: still marked local, since overlaying a
+  declaration clears the mark. Each is named by its :name (pr-str'd)."
+  [natives]
+  (let [{local true kept false} (group-by #(boolean (:jolt.deps/local %)) natives)]
+    [(if (seq local) (vec kept) natives)
+     (map #(pr-str (or (:name %) (dissoc % :jolt.deps/root :jolt.deps/local))) local)]))
+
 (defn reconcile-natives
   "dedup-by native-key, but folding each dropped spec's unclaimed platform keys
   into the one that kept the identity. First-inclusion order is preserved."
