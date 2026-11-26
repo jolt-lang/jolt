@@ -556,7 +556,12 @@
     (cond ((null? xs) (reverse acc))
           ((keep? (car xs)) (loop (cdr xs) (cons (car xs) acc)))
           (else (loop (cdr xs) acc)))))
+;; Loads the shim that registers CLS when it is one that loads on first
+;; reference, so its signatures are there before the compiler asks; the Chez
+;; host sets it (lazy-shims.ss), the Gambit host has no such shims.
+(define method-sigs-load-class! (lambda (cls) #f))
 (define (method-sig-candidates cls method static? argc)
+  (method-sigs-load-class! cls)
   (sig-collapse-overrides
    (sig-keep (lambda (e)
              (and (eq? static? (vector-ref e 1))
@@ -967,7 +972,9 @@
 ;; java.util.zip and the java.io stream bases, every public method each class
 ;; answers (its inherited ones included, Object's left out), as JDK 21's
 ;; reflection lists them. A stream class not listed gets the complete sets of
-;; the bases it extends; method-sig-candidates collapses the repeats.
+;; the bases it extends; method-sig-candidates collapses the repeats. The GZIP
+;; streams' rows are in zip-gzip.ss, a shim that loads on first reference, which
+;; a lookup on its class triggers (method-sigs-load-class!).
 (register-method-sig! "java.util.zip.Adler32" "getValue" #f '() #f)
 (register-method-sig! "java.util.zip.Adler32" "reset" #f '() #f)
 (register-method-sig! "java.util.zip.Adler32" "update" #f '("int") #f)
@@ -1023,26 +1030,6 @@
 (register-method-sig! "java.util.zip.DeflaterOutputStream" "write" #f '("int") #f)
 (register-method-sig! "java.util.zip.DeflaterOutputStream" "write" #f '("[B") #f)
 (register-method-sig! "java.util.zip.DeflaterOutputStream" "write" #f '("[B" "int" "int") #f)
-(register-method-sig! "java.util.zip.GZIPInputStream" "available" #f '() #f)
-(register-method-sig! "java.util.zip.GZIPInputStream" "close" #f '() #f)
-(register-method-sig! "java.util.zip.GZIPInputStream" "mark" #f '("int") #f)
-(register-method-sig! "java.util.zip.GZIPInputStream" "markSupported" #f '() #f)
-(register-method-sig! "java.util.zip.GZIPInputStream" "read" #f '() #f)
-(register-method-sig! "java.util.zip.GZIPInputStream" "read" #f '("[B") #f)
-(register-method-sig! "java.util.zip.GZIPInputStream" "read" #f '("[B" "int" "int") #f)
-(register-method-sig! "java.util.zip.GZIPInputStream" "readAllBytes" #f '() "[B")
-(register-method-sig! "java.util.zip.GZIPInputStream" "readNBytes" #f '("int") "[B")
-(register-method-sig! "java.util.zip.GZIPInputStream" "readNBytes" #f '("[B" "int" "int") #f)
-(register-method-sig! "java.util.zip.GZIPInputStream" "reset" #f '() #f)
-(register-method-sig! "java.util.zip.GZIPInputStream" "skip" #f '("long") #f)
-(register-method-sig! "java.util.zip.GZIPInputStream" "skipNBytes" #f '("long") #f)
-(register-method-sig! "java.util.zip.GZIPInputStream" "transferTo" #f '("java.io.OutputStream") #f)
-(register-method-sig! "java.util.zip.GZIPOutputStream" "close" #f '() #f)
-(register-method-sig! "java.util.zip.GZIPOutputStream" "finish" #f '() #f)
-(register-method-sig! "java.util.zip.GZIPOutputStream" "flush" #f '() #f)
-(register-method-sig! "java.util.zip.GZIPOutputStream" "write" #f '("int") #f)
-(register-method-sig! "java.util.zip.GZIPOutputStream" "write" #f '("[B") #f)
-(register-method-sig! "java.util.zip.GZIPOutputStream" "write" #f '("[B" "int" "int") #f)
 (register-method-sig! "java.util.zip.Inflater" "end" #f '() #f)
 (register-method-sig! "java.util.zip.Inflater" "finished" #f '() #f)
 (register-method-sig! "java.util.zip.Inflater" "getAdler" #f '() #f)

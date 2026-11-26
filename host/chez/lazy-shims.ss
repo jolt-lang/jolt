@@ -307,3 +307,7 @@
                (map (lambda (k v) (cons k (vector-ref v 0))) (vector->list ks) (vector->list vs)))))
 (define (lazy-shims-load-all!)
   (for-each (lambda (p) (lazy-shim-load! p #f)) (reverse lazy-shim-order)))
+
+;; The compiler's signature lookup (records-interop.ss) loads the shim a class
+;; it asks about comes from, as any other first reference to the class does.
+(set! method-sigs-load-class! (lambda (cls) (lazy-shims-class! cls)))

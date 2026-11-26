@@ -277,3 +277,26 @@
 
 (reg-ctor! '("GZIPInputStream" "java.util.zip.GZIPInputStream") make-gzip-input-stream)
 (reg-ctor! '("GZIPOutputStream" "java.util.zip.GZIPOutputStream") make-gzip-output-stream)
+
+;; GZIPInputStream's and GZIPOutputStream's JDK 21 signatures, every public
+;; method each answers (records-interop.ss, the JDK signatures).
+(register-method-sig! "java.util.zip.GZIPInputStream" "available" #f '() #f)
+(register-method-sig! "java.util.zip.GZIPInputStream" "close" #f '() #f)
+(register-method-sig! "java.util.zip.GZIPInputStream" "mark" #f '("int") #f)
+(register-method-sig! "java.util.zip.GZIPInputStream" "markSupported" #f '() #f)
+(register-method-sig! "java.util.zip.GZIPInputStream" "read" #f '() #f)
+(register-method-sig! "java.util.zip.GZIPInputStream" "read" #f '("[B") #f)
+(register-method-sig! "java.util.zip.GZIPInputStream" "read" #f '("[B" "int" "int") #f)
+(register-method-sig! "java.util.zip.GZIPInputStream" "readAllBytes" #f '() "[B")
+(register-method-sig! "java.util.zip.GZIPInputStream" "readNBytes" #f '("int") "[B")
+(register-method-sig! "java.util.zip.GZIPInputStream" "readNBytes" #f '("[B" "int" "int") #f)
+(register-method-sig! "java.util.zip.GZIPInputStream" "reset" #f '() #f)
+(register-method-sig! "java.util.zip.GZIPInputStream" "skip" #f '("long") #f)
+(register-method-sig! "java.util.zip.GZIPInputStream" "skipNBytes" #f '("long") #f)
+(register-method-sig! "java.util.zip.GZIPInputStream" "transferTo" #f '("java.io.OutputStream") #f)
+(register-method-sig! "java.util.zip.GZIPOutputStream" "close" #f '() #f)
+(register-method-sig! "java.util.zip.GZIPOutputStream" "finish" #f '() #f)
+(register-method-sig! "java.util.zip.GZIPOutputStream" "flush" #f '() #f)
+(register-method-sig! "java.util.zip.GZIPOutputStream" "write" #f '("int") #f)
+(register-method-sig! "java.util.zip.GZIPOutputStream" "write" #f '("[B") #f)
+(register-method-sig! "java.util.zip.GZIPOutputStream" "write" #f '("[B" "int" "int") #f)
