@@ -129,6 +129,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - On x86-64 glibc, `jolt build` compiles each region function that has a loop
   twice, for AVX2 and the baseline, and the loader picks one for the CPU it
   runs on (gcc, or clang 18 and later). `-DJN_NO_CPU_CLONES` turns it off.
+- Common host operations are 2 to 7 times faster (#1713). On Chez,
+  `(:k rec)` and `(get rec :k)` on a defrecord read the field straight from a
+  per-site cache (19 and 38 ns to 5.5). `(instance? T x)` answers a repeat
+  inline for a record or a string, number, char, boolean, keyword or nil
+  (16 to 32 ns down to 9 to 15). `Matcher.group` and the group vectors of
+  `re-find`, `re-matches` and `re-seq` slice the matched string directly
+  (94 to 37 ns). A key a plain defrecord does not have no longer searches its
+  type's methods (155 to 31 ns), `satisfies?` on a record is keyed by the
+  protocol value (45 to 27 ns), char keys take the hash map's fast path, and a
+  map or keyword called as a fn goes straight to the lookup.
 
 ### Fixed
 

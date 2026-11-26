@@ -337,22 +337,41 @@
 (define (jolt-regex? x) (regex-t? x))
 (define (jolt-re-pattern x) (if (regex-t? x) x (jolt-regex x)))
 
+;; Group N's text of match M, or #f for a group that took no part (#1713). A
+;; match over a plain string carries irregex's string chunker, whose chunk is
+;; (str start end) with absolute indices, so the group is one substring of
+;; str: irregex-match-substring reached the same substring through its index
+;; check and the chunker's closures, ~50 ns of a ~95 ns .group against the
+;; JVM's 6. Any other chunker goes through irregex. N is a valid group index.
+;; The slots are read with fixnum arithmetic: irregex's own accessors
+;; (irregex.scm %irregex-match-start-chunk and friends: group n's start chunk,
+;; start index, end chunk and end index at 3+4n .. 6+4n) and its
+;; irregex-match-num-submatches use generic + * quotient, which cost more than
+;; the substring.
+(define (irx-group-substring m n)
+  (if (eq? (vector-ref m 1) irregex-basic-string-chunker)   ; irregex-match-chunker
+      (let* ((b (fx+ 3 (fx* n 4))) (sc (vector-ref m b)))
+        (and sc
+             (substring (car sc) (vector-ref m (fx+ b 1)) (vector-ref m (fx+ b 3)))))
+      (irregex-match-substring m n)))
+;; irregex-match-num-submatches, in fixnums
+(define (irx-num-submatches m) (fx- (fxquotient (fx- (vector-length m) 3) 4) 2))
 ;; An irregex match -> the Clojure result: whole string (no groups) or the
 ;; [whole g1 ... gn] vector (nil for a non-participating group).
 ;; The groups vector is built straight into its slot vector: it used to go
 ;; through a list and apply (a cons per group plus the list->vector copy) on
 ;; every capturing match.
 (define (irx-result m)
-  (let ((n (irregex-match-num-submatches m)))
-    (if (= n 0)
-        (irregex-match-substring m 0)
-        (let ((out (make-vector (+ n 1))))
+  (let ((n (irx-num-submatches m)))
+    (if (fx=? n 0)
+        (irx-group-substring m 0)
+        (let ((out (make-vector (fx+ n 1))))
           (let loop ((i 0))
-            (if (> i n)
+            (if (fx>? i n)
                 (make-pvec out)
-                (let ((s (irregex-match-substring m i)))
+                (let ((s (irx-group-substring m i)))
                   (vector-set! out i (if s s jolt-nil))
-                  (loop (+ i 1)))))))))
+                  (loop (fx+ i 1)))))))))
 
 (define (jolt-re-matches re s)
   (let* ((s (rx-charseq->string s))
@@ -512,7 +531,21 @@
 ;; could not select — the same shape of bug as a raw host condition escaping.
 (define (jolt-matcher-no-match)
   (jolt-throw (jolt-host-throwable "java.lang.IllegalStateException" "No match found")))
-(define (jolt-matcher-group m . n)
+;; .group with a group number in range is the common call (tools.reader reads
+;; every number literal through eight of them): no rest list, and no index
+;; check beyond the bounds test itself. Anything else (a name, an index out of
+;; range, no match yet) takes the general path and its JVM-worded errors.
+(define jolt-matcher-group
+  (case-lambda
+    ((m) (jolt-matcher-group-n m 0))
+    ((m n) (jolt-matcher-group-n m n))
+    ((m . n) (apply jolt-matcher-group-slow m n))))
+(define (jolt-matcher-group-n m n)
+  (let ((last (matcher-t-last m)))
+    (if (and last (fixnum? n) (fx>=? n 0) (fx<=? n (irx-num-submatches last)))
+        (let ((s (irx-group-substring last n))) (if s s jolt-nil))
+        (jolt-matcher-group-slow m n))))
+(define (jolt-matcher-group-slow m . n)
   (let ((last (matcher-t-last m)))
     (if last
         (let ((arg (if (pair? n) (car n) 0)))
@@ -526,7 +559,7 @@
                     (jolt-throw (jolt-host-throwable
                                  "java.lang.IllegalArgumentException"
                                  (string-append "No group with name <" arg ">")))))
-              (let ((s (irregex-match-substring last (matcher-group-index last arg))))
+              (let ((s (irx-group-substring last (matcher-group-index last arg))))
                 (if s s jolt-nil))))
         (jolt-matcher-no-match))))
 (define (jolt-matcher-group-count m) (irregex-num-submatches (matcher-t-irx m)))

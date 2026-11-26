@@ -436,6 +436,14 @@
     (cond
       dir  (order-args (fn [as] (str "(" dir " " (first as) ")")))
       idx  (order-args (fn [as] (str "(jrec-field-at " (first as) " " idx " " (emit key-node) ")")))
+      ;; a constant keyword key: the lookup (:k m [d]) is (Keyword.invoke is
+      ;; RT.get), so the same per-site cache serves it (#1713)
+      (and *const-pool* (= :const (:op key-node)) (keyword? (:val key-node)))
+      (let [site (hoist-const-per-site "(jolt-kw-site)")]
+        (note-tail-call! tail?)
+        (order-args (fn [as] (lookup-restore tail? (str (if (= :gambit (session/target)) "(jolt-kw-get-site " "(jolt-kw-get-site/i ")
+                                                        (first as) " " (second as) " " site
+                                                        (if (= 3 (count as)) (str " " (nth as 2)) "") ")")))))
       :else (do (note-tail-call! tail?)
                 (order-args (fn [as] (lookup-restore tail? (str "(jolt-get " (str/join " " as) ")"))))))))
 
@@ -458,7 +466,9 @@
       ;; jolt-get rather than allocate a cell per evaluation.
       *const-pool*
       (let [site (hoist-const-per-site "(jolt-kw-site)")]
-        (order-args (fn [as] (lookup-restore tail? (str "(jolt-kw-get-site " (first as) " " (emit fnode) " " site (defstr as) ")")))))
+        ;; on Chez the record-cache hit is open-coded (rt.ss jolt-kw-get-site/i)
+        (order-args (fn [as] (lookup-restore tail? (str (if (= :gambit (session/target)) "(jolt-kw-get-site " "(jolt-kw-get-site/i ")
+                                                        (first as) " " (emit fnode) " " site (defstr as) ")")))))
       :else (order-args (fn [as] (lookup-restore tail? (str "(jolt-get " (first as) " " (emit fnode) (defstr as) ")")))))))
 
 ;; A collection literal or value in call position.
@@ -917,7 +927,9 @@
       (instance-site-call? (:fnode c) arg-nodes)
       (let [site (hoist-const-per-site "(jolt-instance-site-make)")]
         (note-tail-call! tail?)
-        (order-args (fn [as] (str "(jolt-instance-site " site " " (first as) " " (second as) ")"))))
+        ;; on Chez a hit is open-coded (rt.ss jolt-instance-site/i)
+        (order-args (fn [as] (str (if (= :gambit (session/target)) "(jolt-instance-site " "(jolt-instance-site/i ")
+                                  site " " (first as) " " (second as) ")"))))
       (deftype-field-site-call? (:fnode c) arg-nodes)
       (let [site (hoist-const-per-site "(jrec-field-site-make)")]
         (note-tail-call! tail?)

@@ -2032,11 +2032,17 @@
     ;; the site bookkeeping
     ((and (pvec? f) (fixnum? a) (fx>=? a 0) (fx<? a (pvec-cnt f)))
      (pvec-nth-in-range f a))
+    ;; a map or a keyword as the fn -- (m k), (map :k xs) -- straight to the
+    ;; lookup jolt-invoke-t1 and jolt-get would reach two calls later (#1713)
+    ((pmap? f) (jolt-site-kept (pmap-fast-get f a jolt-nil)))
+    ((keyword-t? f) (jolt-site-kept (jolt-get a f)))
     (else (jolt-site-kept (jolt-invoke-t1 f a)))))
 (define (jolt-invoke2 f a b)
-  (if (procedure? f)
-      (jolt-site-kept (f a b))
-      (jolt-site-kept (jolt-invoke-t2 f a b))))
+  (cond
+    ((procedure? f) (jolt-site-kept (f a b)))
+    ((pmap? f) (jolt-site-kept (pmap-fast-get f a b)))
+    ((keyword-t? f) (jolt-site-kept (jolt-get a f b)))
+    (else (jolt-site-kept (jolt-invoke-t2 f a b)))))
 (define (jolt-invoke3 f a b c)
   (if (procedure? f)
       (jolt-site-kept (f a b c))

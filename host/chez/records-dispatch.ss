@@ -1681,9 +1681,22 @@
 ;; code means rather than the error. Any other non-protocol throws, with a
 ;; message naming what was passed.
 (define (jolt-satisfies? proto obj)
-  (if (jclass? proto)
-      (if (instance-check proto obj) #t #f)
-      (jolt-satisfies-protocol? proto obj)))
+  (if (and (jrec? obj) (pmap? proto))
+      ;; a record against a protocol value (#1713): the type's satisfies? table
+      ;; (slot 10, jrec-satisfies? below) also keeps the answer under the
+      ;; protocol MAP itself, eq?, so a repeat skips reading :name out of it.
+      ;; A protocol map is immutable, so its name and the answer stay the ones
+      ;; the name key holds, and the table retires with the rest of the vector.
+      (let* ((t (vector-ref (jrdesc-ifc-of obj) 10))
+             (hit (hashtable-ref t proto 'none)))
+        (if (eq? hit 'none)
+            (let ((ans (jolt-satisfies-protocol? proto obj)))
+              (jolt-with-mutex jrdesc-ifc-mutex (hashtable-set! t proto ans))
+              ans)
+            hit))
+      (if (jclass? proto)
+          (if (instance-check proto obj) #t #f)
+          (jolt-satisfies-protocol? proto obj))))
 (define kw-proto-name (keyword #f "name"))
 (define (jolt-satisfies-protocol? proto obj)
   (let* ((pn (jolt-get proto kw-proto-name jolt-nil))
