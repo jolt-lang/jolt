@@ -209,7 +209,10 @@
     (if (some? ps)
       (let [entry (method-overload-entry cls (:member f) acs)]
         (assoc (invoke (if (string? entry) (assoc f :entry entry) f) args) :arg-casts (vec ps)))
-      (invoke f args))))
+      ;; no overload fits: the Reflector's member when the runtime has one
+      ;; (records-interop.ss register-reflect-entry!)
+      (let [entry (when cls (method-overload-entry cls (:member f) acs))]
+        (invoke (if (string? entry) (assoc f :entry entry) f) args)))))
 (defn host-call-arg-casts [ctx cls method args env]
   (when cls
     (let [ps (method-param-classes cls method (mapv #(arg-jclass ctx % env) args))]
@@ -239,11 +242,28 @@
       :else
       (let [c (invoke-jvm-class f)]
         (when (and (string? c) (not= c "Object")) (tag-class ctx c))))))
+;; IfExpr: both branches typed, and the same class, or one null and the other
+;; not a primitive; the then branch's class unless it is null. A primitive
+;; result is left untyped here, as node-jclass types no primitive.
+(def ^:private jvm-prims #{"long" "double" "boolean" "int" "float" "char" "short" "byte"})
+(defn- if-jclass [t e]
+  (when (and t e)
+    (let [c (cond (= t e) t
+                  (and (= t "null") (not (jvm-prims e))) e
+                  (and (= e "null") (not (jvm-prims t))) t)]
+      (when-not (jvm-prims c) c))))
+;; The class the JVM compiler gives an expression, "null" for one it types as
+;; null (a nil literal, or a let, do or if that ends in one), or nil.
 (defn node-jclass [ctx node env]
   (case (:op node)
     :local (get (:jclasses env) (:name node))
     :host-new (tag-class ctx (:class node))
-    :const (const-jclass (:val node))
+    :const (if (nil? (:val node)) "null" (const-jclass (:val node)))
+    ;; LetExpr is its body's class; the let's own locals are left untyped
+    ;; rather than read from the outer env, where the same names may mean others
+    :let (node-jclass ctx (:body node)
+                      (update env :jclasses #(apply dissoc % (map first (:bindings node)))))
+    :if (if-jclass (arg-jclass ctx (:then node) env) (arg-jclass ctx (:else node) env))
     ;; one with an element computed at run time is a VectorExpr/SetExpr/MapExpr,
     ;; typed by its interface; all-constant elements make it a constant
     :vector (if (every? #(= :const (:op %)) (:items node))
@@ -267,11 +287,10 @@
     (if tag
       (tag-class ctx tag)
       (let [c (node-jclass ctx target env)] (when-not (= c "null") c)))))
-;; A let or loop local's class from its init: a nil literal gives the local the
-;; null type, which picks an overload as the literal would (String/valueOf of
-;; such a local is the char[] one).
-(defn init-jclass [ctx init env]
-  (if (and (= :const (:op init)) (nil? (:val init))) "null" (node-jclass ctx init env)))
+;; A let or loop local's class from its init: a nil gives the local the null
+;; type, which picks an overload as the literal would (String/valueOf of such a
+;; local is the char[] one).
+(defn init-jclass [ctx init env] (node-jclass ctx init env))
 (defn add-jclass [env nm c]
   (if c (assoc env :jclasses (assoc (:jclasses env) nm c)) env))
 

@@ -455,9 +455,28 @@
   (throw-jvm 'ClassCastException (jvm-checkcast-message from to)))
 (define (jolt-checkcast-fail x to)
   (throw-jvm 'ClassCastException (jvm-checkcast-message (jolt-cast-class-name x) to)))
-(define (jolt-reflect-cast-fail x to)
-  (throw-jvm 'ClassCastException
-             (string-append "Cannot cast " (jolt-cast-class-name x) " to " to)))
+(define (jolt-reflect-cast-fail x to . npe)
+  (if (and (pair? npe) (jolt-nil? x))
+      (throw-jvm 'NullPointerException (car npe))
+      (throw-jvm 'ClassCastException
+                 (string-append "Cannot cast " (jolt-cast-class-name x) " to " to))))
+;; ...and the NullPointerException a nil argument gets instead: Class.cast lets
+;; nil through, so it is the method body that fails, in the JDK's helpful-NPE
+;; words (JDK 21). The compareTo of each Comparable here reads a field of its
+;; argument, or calls a method on it, under the parameter's name.
+(define (jolt-compare-to-npe to)
+  (cond ((string=? to "java.lang.Long") "Cannot read field \"value\" because \"anotherLong\" is null")
+        ((string=? to "java.lang.Double") "Cannot read field \"value\" because \"anotherDouble\" is null")
+        ((string=? to "java.lang.Float") "Cannot read field \"value\" because \"anotherFloat\" is null")
+        ((string=? to "java.lang.String") "Cannot read field \"value\" because \"anotherString\" is null")
+        ((string=? to "java.lang.Character") "Cannot read field \"value\" because \"anotherCharacter\" is null")
+        ((string=? to "java.util.UUID") "Cannot read field \"mostSigBits\" because \"val\" is null")
+        ((string=? to "java.io.File") "Cannot invoke \"java.io.File.getPath()\" because \"f2\" is null")
+        ((string=? to "java.net.URI") "Cannot read field \"scheme\" because \"that\" is null")
+        (else jolt-nil)))
+;; compareTo's refusal of an argument of another class, or of nil
+(define (jolt-compare-to-fail x to)
+  (jolt-reflect-cast-fail x to (jolt-compare-to-npe to)))
 ;; A primitive array parameter's cast, emitted with the element KIND
 ;; (backend_scheme/interop.clj): the array's own kind answers before the class
 ;; name is built. natives-array.ss sets jolt-array-kind-of; a host with no
@@ -468,10 +487,29 @@
 (define (jolt-checkcast to x)
   (if (or (jolt-nil? x)
           (if (and (fx>? (string-length to) 0) (char=? (string-ref to 0) #\[))
-              (equal? (jolt-cast-class-name x) to)
+              (jvm-array-assignable? (jolt-cast-class-name x) to)
               (instance-check to x)))
       x
       (jolt-checkcast-fail x to)))
+;; Array covariance, as checkcast has it: a String[] is a CharSequence[] and an
+;; Object[], a String[][] an Object[][] and an Object[]; a primitive array is
+;; only its own class. FROM and TO are JVM array class names ("[Ljava.lang.String;").
+(define (jvm-array-assignable? from to)
+  (or (string=? from to)
+      (let ((fl (string-length from)) (tl (string-length to)))
+        (and (fx>? fl 1) (fx>? tl 1)
+             (char=? (string-ref from 0) #\[) (char=? (string-ref to 0) #\[)
+             (let ((f (substring from 1 fl)) (t (substring to 1 tl)))
+               (cond ((char=? (string-ref t 0) #\[)
+                      (and (char=? (string-ref f 0) #\[) (jvm-array-assignable? f t)))
+                     ((not (char=? (string-ref t 0) #\L)) #f)
+                     ;; an Object[] holds any reference component, arrays included
+                     ((string=? t "Ljava.lang.Object;")
+                      (or (char=? (string-ref f 0) #\L) (char=? (string-ref f 0) #\[)))
+                     ((char=? (string-ref f 0) #\L)
+                      (jch-isa? (substring f 1 (fx- (string-length f) 1))
+                                (substring t 1 (fx- (string-length t) 1))))
+                     (else #f)))))))
 
 ;; A primitive parameter's argument, both ways. A resolved call unboxes it as the
 ;; compiler does (HostExpr.emitUnboxArg: a checkcast to Number, then RT.intCast
@@ -585,9 +623,44 @@
   (apply string-append cls "/" method (map (lambda (p) (string-append " " p)) params)))
 (define (method-overload-entry cls method arg-classes)
   (let ((m (method-sig-pick cls method #t arg-classes)))
-    (or (and (vector? m)
-             (hashtable-ref method-overload-entries (sig-entry-key cls method (vector-ref m 2)) #f))
-        jolt-nil)))
+    (cond ((vector? m)
+           (hashtable-ref method-overload-entries (sig-entry-key cls method (vector-ref m 2)) jolt-nil))
+          ((and (not m) (sig-all-ref-classes? arg-classes))
+           (hashtable-ref method-overload-entries
+                          (sig-reflect-key cls method (length (seq->list (jolt-seq arg-classes))))
+                          jolt-nil))
+          (else jolt-nil))))
+;; A static call no overload fits goes through the Reflector, which picks by the
+;; arguments' runtime classes (after widening an Integer to a Long and a Float to
+;; a Double) and refuses the rest. When every argument has a class the compiler
+;; knows, the runtime classes are those too, so the call can take a member that
+;; refuses as the Reflector does: (Float/valueOf (Double/valueOf "1")). With an
+;; untyped argument it stays on the shim, which takes what the JVM compiler might
+;; have resolved from a primitive jolt does not type.
+(define (sig-reflect-key cls method argc)
+  (string-append cls "/" method " reflect " (number->string argc)))
+(define (register-reflect-entry! cls method argc entry)
+  (hashtable-set! method-overload-entries (sig-reflect-key cls method argc) entry))
+(define (sig-all-ref-classes? arg-classes)
+  (let loop ((as (seq->list (jolt-seq arg-classes))))
+    (or (null? as)
+        (and (string? (car as)) (sig-ref-class? (car as)) (loop (cdr as))))))
+(define (jolt-reflect-no-method name argc)
+  (throw-jvm 'IllegalArgumentException
+             (string-append "No matching method " name " found taking " (number->string argc) " args")))
+;; The Reflector's Long.valueOf and Double.valueOf at one argument: the String
+;; overload (nil included), else the primitive one for the box it takes.
+(define (jolt-reflect-long-value-of x)
+  (cond ((or (string? x) (jolt-nil? x)) (parse-int-or-throw x 10 "long"))
+        ((and (number? x) (exact? x) (integer? x)
+              (<= -9223372036854775808 x 9223372036854775807))
+         x)
+        (else (jolt-reflect-no-method "valueOf" 1))))
+(define (jolt-reflect-double-value-of x)
+  (cond ((or (string? x) (jolt-nil? x)) (->double x))
+        ((flonum? x) x)
+        ((jfloat? x) (jfloat-fl x))
+        (else (jolt-reflect-no-method "valueOf" 1))))
 (def-var! "jolt.host" "method-overload-entry" method-overload-entry)
 ;; The methods cls has under that name and arity. A static method belongs to
 ;; the class it is called on; an instance method is found through the class's
@@ -639,19 +712,23 @@
 (def-var! "jolt.host" "method-param-classes" method-param-classes)
 ;; Does an argument the compiler types as A (a JVM class name, "long"/"double"
 ;; for a numeric literal, "null" for nil, nil when it has no type and so is an
-;; Object) fit parameter P? Clojure's Compiler.paramArgTypeMatch, for the
-;; classes jolt registers.
+;; Object) fit parameter P? Clojure's Reflector.paramArgTypeMatch, which the
+;; compiler asks too: a primitive parameter takes its own box and a few
+;; primitives, never another box (a float parameter refuses a Double).
 (define (sig-arg-fits? p a)
   (let ((a (if (jolt-nil? a) "java.lang.Object" a)))
-    (cond ((member p '("long" "int" "short" "byte"))
-           (and (member a '("long" "int" "java.lang.Long" "java.lang.Integer")) #t))
-          ((member p '("double" "float"))
-           (and (member a '("double" "float" "java.lang.Double" "java.lang.Float")) #t))
+    (cond ((string=? p a) #t)
+          ((string=? p "int") (and (member a '("java.lang.Integer" "long" "java.lang.Long" "short" "byte")) #t))
+          ((string=? p "long") (and (member a '("java.lang.Long" "int" "short" "byte")) #t))
+          ((string=? p "float") (and (member a '("java.lang.Float" "double")) #t))
+          ((string=? p "double") (and (member a '("java.lang.Double" "float")) #t))
           ((string=? p "char") (string=? a "java.lang.Character"))
+          ((string=? p "short") (string=? a "java.lang.Short"))
+          ((string=? p "byte") (string=? a "java.lang.Byte"))
           ((string=? p "boolean") (string=? a "java.lang.Boolean"))
           ((string=? a "null") #t)
-          ((member a '("long" "int" "double" "float")) #f)
-          (else (or (string=? p a) (string=? p "java.lang.Object") (jch-isa? a p))))))
+          ((member a '("long" "int" "double" "float" "short" "byte" "char" "boolean")) #f)
+          (else (or (string=? p "java.lang.Object") (jch-isa? a p))))))
 ;; The compiler's result-class question: the class (cls).method (or the static
 ;; cls/method) returns, given the compiler's classes for the arguments, or nil.
 ;; One method of that arity is the one the JVM compiles against whatever the
@@ -720,13 +797,16 @@
 (define (jolt-num-compare-to n o)
   (let ((ratio? (and (number? n) (exact? n) (not (integer? n))))
         (flo (lambda (x) (cond ((jfloat? x) (jfloat-fl x)) ((flonum? x) x) (else #f)))))
-    (when (and ratio? (not (or (number? o) (jfloat? o) (jolt-nil? o))))
-      (jolt-checkcast-fail o "java.lang.Number"))
+    (when (and ratio? (not (or (number? o) (jfloat? o))))
+      ;; Numbers.compare asks the nil for its class first
+      (if (jolt-nil? o)
+          (throw-jvm 'NullPointerException "Cannot invoke \"Object.getClass()\" because \"x\" is null")
+          (jolt-checkcast-fail o "java.lang.Number")))
     (unless (or ratio?
                 (cond ((jfloat? n) (jfloat? o))
                       ((flonum? n) (flonum? o))
                       (else (and (number? o) (exact? o) (integer? o)))))
-      (jolt-reflect-cast-fail o (cond ((jfloat? n) "java.lang.Float")
+      (jolt-compare-to-fail o (cond ((jfloat? n) "java.lang.Float")
                                       ((flonum? n) "java.lang.Double")
                                       (else "java.lang.Long"))))
     (let ((a (or (flo n) n)) (b (or (flo o) (jolt-need-num o))))
@@ -739,6 +819,71 @@
                   ((and (fl= x 0.0) (not (eqv? x y))) (if (eqv? x -0.0) -1 1))
                   (else 0)))
           (cond ((< a b) -1) ((> a b) 1) (else 0))))))
+
+;; JVM exception ctors -> a typed host throwable carrying the canonical :jolt/class
+;; (so class / instance? / getMessage / ex-message reflect the real type) and the
+;; message. Supports (E. msg), (E. msg cause), (E. cause), and (E.), and the
+;; protected (E. msg cause enableSuppression writableStackTrace) a proxy calls:
+;; enableSuppression false makes addSuppressed record nothing.
+;; A throwable a constructor was handed CAUSE for: a nil one is still a cause
+;; given (rt.ss jolt-cause-given-nil).
+(define (throwable-given canonical msg cause)
+  (if (jolt-nil? cause)
+      (jolt-host-throwable/nil-cause canonical msg)
+      (jolt-host-throwable canonical msg cause)))
+(define (make-exc-ctor canonical)
+  (lambda args
+    (let* ((a0 (if (pair? args) (car args) jolt-nil))
+           (rest (if (pair? args) (cdr args) '()))
+           (cause (if (pair? rest) (car rest) jolt-nil)))
+      (cond
+        ;; (E. msg cause enableSuppression writableStackTrace)
+        ((and (pair? rest) (pair? (cdr rest)))
+         (let ((t (throwable-given canonical (if (or (string? a0) (jolt-nil? a0)) a0 (jolt-str-render-one a0)) cause)))
+           (when (and (pair? (cddr rest)) (null? (cdddr rest)) (not (jolt-truthy? (cadr rest))))
+             (throwable-disable-suppression! t))
+           t))
+        ((string? a0) (if (pair? rest)
+                          (throwable-given canonical a0 cause)
+                          (jolt-host-throwable canonical a0)))
+        ((jolt-nil? a0) (if (pair? rest)
+                            (throwable-given canonical jolt-nil cause)
+                            (jolt-host-throwable canonical jolt-nil)))
+        ;; (E. cause): a lone throwable arg is the cause, and the message is the
+        ;; cause's toString, as Throwable(Throwable) sets it on the JVM —
+        ;; (ExecutionException. (IllegalStateException. "bad")) has the message
+        ;; "java.lang.IllegalStateException: bad", not nil.
+        ((and (null? rest) (ex-info-map? a0))
+         (jolt-host-throwable canonical (jolt-str-render-one a0) a0))
+        (else (jolt-host-throwable canonical (jolt-str-render-one a0) cause))))))
+
+;; toString (str/print) for throwable records: Throwable's "ClassName: message",
+;; the ": message" dropped when there is none. Only ExceptionInfo's own toString
+;; appends its data. A throwable of another class can carry data here too — a
+;; read error keeps its diagnostic position on its RuntimeException — and
+;; printing that into its toString broke the text a caller builds from it, the
+;; ReaderException's message first among them.
+;; A CompilerException's toString is its message alone, then its cause's message
+;; on a line of its own when the cause is an IExceptionInfo.
+(register-str-render! jolt-ex-info-record?
+  (lambda (x)
+    (let* ((class-name (jolt-ex-info-record-class-name x))
+           (msg (jolt-ex-info-record-message x))
+           (data (jolt-ex-info-record-data x)))
+      (if (equal? class-name "clojure.lang.Compiler$CompilerException")
+          (let ((c (jolt-ex-info-record-cause x)))
+            (string-append (if (jolt-nil? msg) "" (jolt-str-render-one msg))
+                           (if (and (jolt-ex-info-record? c)
+                                    (member (jolt-ex-info-record-class-name c)
+                                            '("clojure.lang.ExceptionInfo" "clojure.lang.Compiler$CompilerException")))
+                               (string-append "\n" (let ((m (jolt-ex-info-record-message c)))
+                                                      (if (jolt-nil? m) "null" (jolt-str-render-one m))))
+                               "")))
+      (string-append class-name
+                     (if (jolt-nil? msg) "" (string-append ": " (jolt-str-render-one msg)))
+                     (if (or (jolt-nil? data) (not (equal? class-name "clojure.lang.ExceptionInfo")))
+                         ""
+                         (string-append " " (jolt-pr-str data))))))))
 
 ;; ---- java.lang.Throwable: the surface EVERY throwable inherits ---------------
 ;; On the JVM these are declared on Throwable itself, so every exception class has
@@ -1061,6 +1206,8 @@
           '("java.lang.Long" "java.lang.Double" "java.lang.Float")
           '("long" "double" "float"))
 (register-static-method! "java.lang.Long" "valueOf" '("java.lang.String" "int") "java.lang.Long")
+(for-each (lambda (c) (register-reflect-entry! c "valueOf" 1 "valueOf(reflect)"))
+          '("java.lang.Long" "java.lang.Double" "java.lang.Float"))
 (register-static-method! "java.lang.Long" "decode" '("java.lang.String") "java.lang.Long")
 (register-static-method! "java.lang.Character" "valueOf" '("char") "java.lang.Character")
 ;; UUID, URI, File

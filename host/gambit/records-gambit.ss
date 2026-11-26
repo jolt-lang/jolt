@@ -3648,8 +3648,7 @@
        (cond
          ((or (char? o) (jsurr? o))
           (- (char->integer obj) (char-or-unit->integer o)))
-         ((jolt-nil? o) (throw-jvm 'NullPointerException jolt-nil))
-         (else (jolt-reflect-cast-fail o "java.lang.Character")))))
+         (else (jolt-compare-to-fail o "java.lang.Character")))))
     (else (dispatch-miss obj method-name rest))))
 
 (define (rd-coll-mutator-call obj method-name rest)

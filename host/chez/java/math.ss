@@ -731,6 +731,12 @@
 
 (register-class-statics! "Float"
   (list (cons "parseFloat" jolt-parse-float) (cons "valueOf" jolt-parse-float)
+        ;; the Reflector's, for a call no overload fits (records-interop.ss):
+        ;; a Float or a String, never a Double
+        (cons "valueOf(reflect)" (lambda (x)
+                                   (cond ((or (string? x) (jolt-nil? x)) (jolt-parse-float x))
+                                         ((jfloat? x) x)
+                                         (else (jolt-reflect-no-method "valueOf" 1)))))
         (cons "toString" (lambda (x) (jolt-str-render-one (flt-shortest x))))
         (cons "compare" jolt-float-compare)
         (cons "isNaN" (lambda (x) (nan? (jolt-double x))))

@@ -843,6 +843,8 @@
         (cons "parseLong" (lambda (s . r) (parse-int-or-throw s (if (null? r) 10 (jnum->exact (car r))) "long")))
         (cons "decode" (lambda (s) (decode-or-throw s "long")))
         (cons "valueOf" (lambda (s . r) (parse-int-or-throw s (if (null? r) 10 (jnum->exact (car r))) "long")))
+        ;; the Reflector's, for a call no overload fits (records-interop.ss)
+        (cons "valueOf(reflect)" jolt-reflect-long-value-of)
         (cons "compare" (lambda (x y) (let ((a (jnum->exact x)) (b (jnum->exact y)))
                                         (->num (cond ((< a b) -1) ((> a b) 1) (else 0))))))
         ;; toHexString/toOctalString/toBinaryString are UNSIGNED (the value's 64-bit
@@ -951,6 +953,7 @@
   (list (cons "TYPE" "double")
         (cons "parseDouble" parse-double-or-throw)
         (cons "valueOf" ->double)
+        (cons "valueOf(reflect)" jolt-reflect-double-value-of)
         (cons "toString" (lambda (x) (jolt-str-render-one (->double x))))
         ;; a Float argument widens, as the double parameter takes it
         (cons "isNaN" (lambda (x) (let ((d (jfloat-unbox x))) (and (flonum? d) (nan? d)))))

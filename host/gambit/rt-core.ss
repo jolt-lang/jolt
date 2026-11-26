@@ -1325,9 +1325,7 @@
     ;; refuses another class with Class.cast's wording, as natives-str.ss does
     ((string=? method "compareTo")
      (let ((o (arg 0)))
-       (cond ((string? o) (jolt-strcmp s o))
-             ((jolt-nil? o) (jolt-need-str o))
-             (else (jolt-reflect-cast-fail o "java.lang.String")))))
+       (if (string? o) (jolt-strcmp s o) (jolt-compare-to-fail o "java.lang.String"))))
     ((string=? method "strip") (str-strip s #t #t))
     ((string=? method "stripLeading") (str-strip s #t #f))
     ((string=? method "stripTrailing") (str-strip s #f #t))

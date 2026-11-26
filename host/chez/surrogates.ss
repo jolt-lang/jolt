@@ -40,7 +40,7 @@
         (cons "compareTo" (lambda (u o)
                             (if (or (char? o) (jsurr? o))
                                 (- (jsurr-unit u) (char-or-unit->integer o))
-                                (jolt-reflect-cast-fail o "java.lang.Character"))))
+                                (jolt-compare-to-fail o "java.lang.Character"))))
         (cons "toString" (lambda (u) jolt-replacement-string))))
 (register-method-arm! arm-priority-float
   (lambda (obj method-name rest-args)

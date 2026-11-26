@@ -215,6 +215,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Throwable.initCause` exists, with the JDK's refusals; `(Character. \a)`
   constructs; BigDecimal `min`/`max` take only a BigDecimal; a TreeMap's
   natural-order ClassCastException names both classes' modules.
+- `compareTo` of nil throws the JDK's NullPointerException on Long, Double,
+  Float, String, Character, UUID, File, URI and Ratio, not a
+  ClassCastException. An array argument casts covariantly (a `String[]` passes
+  for a `CharSequence[]`). Overload matching follows Clojure's
+  `paramArgTypeMatch`, so `(Float/valueOf (Double/valueOf "1"))` throws "No
+  matching method valueOf found taking 1 args" as on the JVM. A nil reached
+  through `let`, `if` or `do` keeps the null type, so `(String/valueOf (let []
+  nil))` picks `char[]`. On Gambit, `(Exception. "o" nil)` counts as having its
+  cause set, and `str` of a throwable is `java.lang.Exception: msg` rather than
+  `#object[...]`.
 - A float prints with the JDK's shortest digits at a power of two, where the
   shortest decimal that reads back can lie on the far side of the float:
   `(str (float (Math/pow 2 -96)))` is `1.2621775E-29`, not `1.26217745E-29`
