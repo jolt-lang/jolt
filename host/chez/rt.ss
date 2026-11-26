@@ -3571,11 +3571,19 @@
 ;; fresh descriptor), so the field is one slot read. The procedure path was four
 ;; calls deep, 19 ns against the JVM's 2.6 (#1713). Anything else -- a map, the
 ;; first lookup, another type -- is jolt-kw-get-site as before; a map pays one
-;; pair? test for this.
+;; pair? test for this. A default is an argument, so it is evaluated (after the
+;; receiver) before the test, hit or not: (:k rec (swap! a inc)) runs the swap!
+;; on every call, as the procedure path and the JVM do.
 (define-syntax jolt-kw-get-site/i
   (syntax-rules ()
-    ((_ m0 k site0 d ...)
-     (let* ((m m0) (site site0) (c (vector-ref site 1)))
+    ((_ m0 k site0)
+     (let* ((m m0) (site site0)) (jolt-kw-get-site/hit m k site)))
+    ((_ m0 k site0 d0)
+     (let* ((m m0) (site site0) (d d0)) (jolt-kw-get-site/hit m k site d)))))
+(define-syntax jolt-kw-get-site/hit
+  (syntax-rules ()
+    ((_ m k site d ...)
+     (let ((c (vector-ref site 1)))
        (if (and (pair? c) (eq? (car c) (jrec-pic-desc/i m)))
            (if (record? m (record-type-descriptor jrec*))
                (jrec*-slot/u m (cdr c))
