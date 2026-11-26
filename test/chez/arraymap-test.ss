@@ -242,12 +242,17 @@
 ;; hash-mode map, a record, a nil receiver and a default all keep their old
 ;; path. Only a site inside a def gets a cell (a bare top-level form has no
 ;; constant pool to hold it).
+;; On Chez the site's head is jolt-kw-get-site/i (rt.ss), which open-codes a
+;; record's cached field read and is jolt-kw-get-site for anything else.
 (ok "a keyword-invoke site inside a def emits the site lookup over a hoisted cell"
     (let ((e (emitf "(defn kw-site-f [m] (:a m))")))
-      (and (has? e "(jolt-kw-get-site ") (has? e "(jolt-kw-site)"))))
+      (and (has? e "(jolt-kw-get-site/i ") (has? e "(jolt-kw-site)"))))
 (ok "a keyword-invoke with a default keeps the default arity"
     (let ((e (emitf "(defn kw-site-g [m] (:a m 0))")))
-      (has? e "(jolt-kw-get-site ")))
+      (and (has? e "(jolt-kw-get-site/i ") (has? e " 0)"))))
+(ok "(get m :k) with a constant keyword takes the same site"
+    (let ((e (emitf "(defn kw-site-h [m] [(get m :a) (get m :b 0)])")))
+      (and (has? e "(jolt-kw-get-site/i ") (has? e "(jolt-kw-site)"))))
 (is "site lookup: hit, miss, default, nil receiver"
     "(let [f (fn [m] (:c m)) g (fn [m] (:c m :none))] [(f {:a 1 :b 2 :c 3}) (f {:a 1}) (g {:a 1}) (f nil) (g nil)])"
     "[3 nil :none nil :none]")
