@@ -398,7 +398,10 @@
   {:suite "reader / namespaced-map namespace" :expr "(try (read-string \"#::nosuchalias{:a 1}\") (catch Throwable e (ex-message e)))" :expected "\"Unknown auto-resolved namespace alias: nosuchalias\""}
   {:suite "reader / namespaced-map boundary" :expr "[(try (read-string \"#:foo/bar :a\") (catch Throwable e (ex-message e))) (try (read-string \"#::nosuch :a\") (catch Throwable e (ex-message e))) (try (read-string \"#:foo (1)\") (catch Throwable e (ex-message e)))]" :expected "[\"Namespaced map must specify a map\" \"Namespaced map must specify a map\" \"Namespaced map must specify a map\"]"}
   {:suite "reader / namespaced-map boundary" :expr "[(try (read-string \"#: {:a 1}\") (catch Throwable e (ex-message e))) (try (read-string \"#:: :a\") (catch Throwable e (ex-message e)))]" :expected "[\"Namespaced map must specify a namespace\" \"Namespaced map must specify a namespace\"]"}
-  {:suite "hostctor" :expr "(String/format \"%d-%s\" 5 \"x\")" :expected "\"5-x\""}
+  {:suite "hostctor" :expr "(String/format \"%d-%s\" (object-array [5 \"x\"]))" :expected "\"5-x\""}
+  ;; three arguments are format(Locale, String, Object...): the JDK casts the
+  ;; first to Locale
+  {:suite "hostctor" :expr "(try (String/format \"%d-%s\" 5 \"x\") (catch ClassCastException e (.getMessage e)))" :expected "\"class java.lang.String cannot be cast to class java.util.Locale (java.lang.String and java.util.Locale are in module java.base of loader 'bootstrap')\""}
   {:suite "hostctor" :expr "[(.format (java.text.NumberFormat/getInstance) 1234567.5) (.format (java.text.NumberFormat/getIntegerInstance) 1234567)]" :expected "[\"1,234,567.5\" \"1,234,567\"]"}
   {:suite "hostobj" :expr "(try (throw (ex-info \"x\" {})) (catch Throwable e [(.getNextException e) (vec (.getStackTrace e))]))" :expected "[nil []]"}
   {:suite "hostobj" :expr "[(some? (ClassLoader/getSystemClassLoader)) (some? (.getContextClassLoader (Thread/currentThread)))]" :expected "[true true]"}
@@ -1681,7 +1684,7 @@
   ;; which names the class (Clojure 1.12.0: "No matching method valueOf found
   ;; taking 2 args for class java.lang.String").
   {:suite "str" :expr "(try (String/valueOf (char-array \"abc\") 0) (catch IllegalArgumentException e (.getMessage e)))" :expected "\"No matching method valueOf found taking 2 args for class java.lang.String\""}
-  {:suite "str" :expr "(try (String/valueOf 5 1 2) (catch ClassCastException e (.getMessage e)))" :expected "\"class java.lang.Long cannot be cast to class [C\""}
+  {:suite "str" :expr "(try (String/valueOf 5 1 2) (catch ClassCastException e (.getMessage e)))" :expected "\"class java.lang.Long cannot be cast to class [C (java.lang.Long and [C are in module java.base of loader 'bootstrap')\""}
   {:suite "javastatic" :expr "(try (System/getenv \"HOME\" 1) (catch IllegalArgumentException e (.getMessage e)))" :expected "\"No matching method getenv found taking 2 args for class java.lang.System\""}
   {:suite "javastatic" :expr "(map? (System/getenv))" :expected "true"}
   ;; A member that picks its overload out of a rest list states the JVM's

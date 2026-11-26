@@ -237,21 +237,37 @@
         (or (str/includes? p ".") (str/starts-with? p "[")) (checkcast-emit p a)
         (get unbox-entries p) (str "(" (get unbox-entries p) " " a ")")
         :else a))
-(defn cast-args [node args]
+(defn- cast-args [node args]
   (let [ps (:arg-casts node)]
     (if (and (seq ps) (= (count ps) (count args)))
       (mapv arg-cast-emit ps args)
       args)))
+;; The call K builds over the receiver T (nil for a static call) and ARGS, with
+;; the arguments cast. The JVM casts them left to right after evaluating the
+;; receiver, so with two or more casts, which one fails first is fixed by binding
+;; the receiver and the cast arguments in order rather than leaving them to
+;; operand order.
+(defn cast-call [node t args k]
+  (let [cs (cast-args node args)]
+    (if (< (count (filter true? (map not= cs args))) 2)
+      (k t cs)
+      (let [tt (when t (fresh-label "_ct$"))
+            as (mapv (fn [_] (fresh-label "_ca$")) cs)]
+        (str "(let* (" (when t (str "(" tt " " t ")"))
+             (apply str (map (fn [a e] (str " (" a " " e ")")) as cs))
+             ") " (k tt as) ")")))))
 
 ;; EMIT lowers the receiver and arguments when the node does not carry them
 ;; already bound (the back end's own emit: this namespace sits below it).
+(declare host-call-emit*)
 (defn host-call-emit [emit node]
   (let [m (:method node)
         chez? (not= :gambit (target))
         t (or (:sited-target node) (emit (:target node)))
-        args (or (:sited-args node) (map emit (:args node)))
-        args (cast-args node args)
-        direct (when chez? (proven-receiver-emit node m t args))]
+        args (or (:sited-args node) (map emit (:args node)))]
+    (cast-call node t args (fn [t args] (host-call-emit* node m chez? t args)))))
+(defn- host-call-emit* [node m chez? t args]
+  (let [direct (when chez? (proven-receiver-emit node m t args))]
     (cond
       direct direct
       (supported-host-methods m)

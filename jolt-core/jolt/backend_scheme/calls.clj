@@ -630,11 +630,11 @@
 ;; A host static method call, through a per-site cache inside a pool.
 ;; A host static method call, through a per-site cache inside a pool. A call the
 ;; analyzer resolved to one overload casts its arguments first (:arg-casts,
-;; interop.clj cast-args, handed in: this namespace loads before that one) and calls the overload's own member when it has one
+;; interop.clj cast-call, handed in: this namespace loads before that one) and calls the overload's own member when it has one
 ;; (:entry on the head).
-(defn emit-host-static-call [tail? fnode order-args node cast-args]
+(defn emit-host-static-call [tail? fnode order-args node cast-call]
   (let [member (or (:entry fnode) (:member fnode))
-        order-args (fn [f] (order-args (fn [as] (f (cast-args node as)))))]
+        order-args (fn [f] (order-args (fn [as] (cast-call node nil as (fn [_ as] (f as))))))]
     (if (do (note-tail-call! tail?) (and *const-pool* (var-cache?)))
       (let [site (hoist-const-per-site "(host-static-site-make)")
             proc (fn [n] (str "(" (if (= :gambit (session/target)) "host-static-proc-site" "host-static-proc-site/i")
