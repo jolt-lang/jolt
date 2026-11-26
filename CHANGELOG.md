@@ -196,6 +196,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `binding` it no longer throws `Can't dynamically bind non-dynamic var`.
 - `jolt.parser.combinators/any-of` carries its docstring; it sat after the
   argument vector, where it was a body expression.
+- `jolt.deps/add-deps` loads the added libraries' `:jolt/native` libraries,
+  each on the first require of one of its namespaces, as a dependency in
+  `deps.edn` does. It left them out, so a script that added jolt-lang/crypto
+  at run time bound `EVP_*` to nothing ("no entry for EVP_sha256"), or on
+  macOS to a BoringSSL copy already in the process, which aborted the first
+  `MessageDigest` update. A library already on the roots registers nothing
+  twice.
 
 ### Internal
 
