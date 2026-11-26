@@ -702,11 +702,16 @@
         ((and (number? x) (exact? x)) (jolt-wrap64 (truncate x)))
         ;; Flonum bounds, so the clamp is flonum-vs-flonum (the exact bounds are
         ;; bignums on every Chez); an infinity clamps through the same compares.
-        ((flonum? x) (cond ((nan? x) 0)
-                           ((>= x 9223372036854775808.0) 9223372036854775807)
-                           ((<= x -9223372036854775808.0) -9223372036854775808)
-                           (else (jolt-flonum->integer x))))
+        ((flonum? x) (jolt-unchecked-long-of-double x))
+        ;; Float.longValue() is the same clamp on the float's value; the
+        ;; generic truncate below would wrap 2^64 (an infinity) to 0.
+        ((jfloat? x) (jolt-unchecked-long-of-double (jfloat-fl x)))
         (else (jolt-wrap64 (jolt-cast-truncate-slow x)))))
+(define (jolt-unchecked-long-of-double x)
+  (cond ((nan? x) 0)
+        ((>= x 9223372036854775808.0) 9223372036854775807)
+        ((<= x -9223372036854775808.0) -9223372036854775808)
+        (else (jolt-flonum->integer x))))
 (define (jolt-unchecked-int x)
   (cond
     ((fixnum? x)
@@ -719,12 +724,14 @@
     ;; #x10FFFF rather than the JVM's 16 bits.
     ((char? x) (char->integer x))
     ((jsurr? x) (jsurr-unit x))
-    ((flonum? x)
-     ;; double->int clamps like Java; flonum bounds keep the compares cheap
-     (cond ((nan? x) 0)
-           ((>= x 2147483648.0) 2147483647)
-           ((<= x -2147483648.0) -2147483648)
-           (else (jolt-flonum->integer x))))
+    ;; double->int and float->int clamp like Java; flonum bounds keep the
+    ;; compares cheap
+    ((or (flonum? x) (jfloat? x))
+     (let ((x (if (jfloat? x) (jfloat-fl x) x)))
+       (cond ((nan? x) 0)
+             ((>= x 2147483648.0) 2147483647)
+             ((<= x -2147483648.0) -2147483648)
+             (else (jolt-flonum->integer x)))))
     (else
      (let ((i (bitwise-and (jolt-unchecked-long x) #xffffffff)))
        (if (>= i #x80000000) (- i #x100000000) i)))))

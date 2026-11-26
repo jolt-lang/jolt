@@ -1386,6 +1386,23 @@ if [ "$got_um_bin" != "$umwant" ]; then
   echo "  FAIL: top-level (set! *unchecked-math* …) in a built binary — want \`$umwant\`, got \`$got_um_bin\`"; exit 1
 fi
 
+# Negative constants past the fixnum range are bignums, and a built binary's
+# units are vfasl images. Stock Chez's vfasl writer stored a negative bignum's
+# two's-complement bits as its magnitude, so -2^60-1 printed as
+# -17293822569102704639N (chez-patches/0012). -2^63 is in the list because it
+# is the one value that survived by coincidence. `run -m` never vfasls, so it is
+# the same app's control.
+nbapp="$root/test/chez/negative-bignum-app"
+nbwant="-1152921504606846977 -9223372036854775808 -9223372036854775807 -7046029254386353131 -18446744073709551621N -18446744073709551621/2 -6832837858993532755"
+nbout="$(dirname "$out")/negative-bignum-bin"
+if ! JOLT_PWD="$nbapp" "$jolt" build -m nbapp.main -o "$nbout" >/dev/null 2>&1; then
+  echo "  FAIL: jolt build of the negative-bignum app exited non-zero"; exit 1
+fi
+got_nb_bin="$(cd / && "$nbout" 2>&1 | tail -1)"
+if [ "$got_nb_bin" != "$nbwant" ]; then
+  echo "  FAIL: negative bignum constants in a built binary — want \`$nbwant\`, got \`$got_nb_bin\`"; exit 1
+fi
+
 # -main is user code after the load, so both the CLI's `run -m` and a built
 # binary's launcher run it under clojure.main's compiler-flag frame: a set! in
 # -main is legal and reads back. Before the fix both threw "Can't
