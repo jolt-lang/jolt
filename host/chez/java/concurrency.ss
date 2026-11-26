@@ -4402,7 +4402,13 @@
   (let ((pool-st (vector-ref (jhost-state sf) 9)))
     (when (and (vector? pool-st) (stpe-remove-on-cancel? pool-st))
       (jolt-with-mutex (vector-ref pool-st 2)
-        (vector-set! pool-st 13 (remq sf (vector-ref pool-st 13)))))))
+        (let ((d (vector-ref pool-st 13)))
+          (vector-set! pool-st 13 (remq sf d))
+          ;; the head left: the worker timing it re-polls, so a shut-down pool
+          ;; with nothing left delayed terminates now, as remove's tryTerminate does
+          (when (and (pair? d) (eq? (car d) sf))
+            (vector-set! pool-st 14 #f)
+            (jolt-cv-wake! (vector-ref pool-st 3))))))))
 (derive-host-methods! "scheduled-executor" "executor-service"
   (list (cons "setRemoveOnCancelPolicy" (lambda (self v)
           (hashtable-set! stpe-remove-on-cancel (jhost-state self) (jolt-truthy? v))
