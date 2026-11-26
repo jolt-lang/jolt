@@ -1582,6 +1582,9 @@
 (define (jts? x) #f)
 (define (jfile? x) #f)
 (define (jbigdec? x) #f)
+;; records-interop.ss's Number.intValue reads a BigDecimal's integer part only
+;; behind jbigdec?, which nothing here satisfies
+(define (jbd->integer x) (error "jbd->integer: no BigDecimal on the gambit target" x))
 
 ;; ---- concurrency tier stubs (demo boot: single-threaded) ---------------------
 ;; java/concurrency.ss + natives-queue.ss are excluded from this boot. Gambit
