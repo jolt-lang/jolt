@@ -6,9 +6,11 @@
 ;;   bin/jolt run tools/native-emit-diff.clj BASE-DIR CANDIDATE-DIR [ALLOW]
 ;;
 ;; A region whose C differs fails the run unless ALLOW, a regex, matches its
-;; source; the allowed ones are listed. Regions only one side compiled (a row
-;; the change adds, or one the other checkout cannot compile) are listed and do
-;; not fail it. The idea is scriptc's zero-cost gate (scripts/zero-cost-gate.mjs).
+;; source; the allowed ones are listed. Both sides run the candidate's
+;; harness, so a region only the candidate compiled is a row the base cannot
+;; compile (listed, not a failure), and one only the base compiled is a row the
+;; candidate no longer compiles, or never reached because its run crashed: that
+;; fails the run unless ALLOW matches it. The idea is scriptc's zero-cost gate (scripts/zero-cost-gate.mjs).
 (ns native-emit-diff
   (:require [clojure.string :as str]))
 
@@ -40,14 +42,16 @@
       differs (remove #(= (:c (base %)) (:c (cand %))) both)
       {allowed true failing false} (group-by #(boolean (and allow (re-find allow (:src (cand %))))) differs)
       added (remove #(contains? base %) (keys cand))
-      removed (remove #(contains? cand %) (keys base))]
+      removed (remove #(contains? cand %) (keys base))
+      {removed-ok true lost false} (group-by #(boolean (and allow (re-find allow (:src (base %))))) removed)]
   (println "native-emit-diff:" (count both) "regions on both sides,"
            (- (count both) (count differs)) "identical," (count allowed) "allowed,"
            (count failing) "differ;" (count added) "only in the candidate," (count removed) "only in the base")
   (doseq [k allowed] (println "  allowed" k (short-src (:src (cand k)))))
   (doseq [k added] (println "  only in the candidate" k (short-src (:src (cand k)))))
-  (doseq [k removed] (println "  only in the base" k (short-src (:src (base k)))))
+  (doseq [k removed-ok] (println "  only in the base (allowed)" k (short-src (:src (base k)))))
+  (doseq [k lost] (println "  ONLY IN THE BASE" k (short-src (:src (base k)))))
   (doseq [k failing]
     (println "  DIFFERS" k (short-src (:src (cand k))))
     (println "   " (first-difference (:c (base k)) (:c (cand k)))))
-  (System/exit (if (seq failing) 1 0)))
+  (System/exit (if (or (seq failing) (seq lost)) 1 0)))

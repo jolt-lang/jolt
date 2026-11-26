@@ -1931,14 +1931,21 @@
 (def-var! "jolt.ffi" "stack-args-correct?" ffi-stack-args-correct?)
 
 ;; The native-region JIT's name resolver (java/natives-array.ss jolt-mir-find!):
-;; the C entry point of a callable answering the address of a C name, by Chez's
-;; own foreign-entry, or 0. Made here because sa-foreign-callable expands to
-;; jolt-ffi-callable-body above. It lives as long as the process: MIR keeps no
-;; pointer to it past a compile, but every compile passes it.
+;; the C entry point of a callable answering the address of a C name, or 0.
+;; jolt_mir.c asks it for a name the process's global scope lacks. It looks
+;; where a defcfn binding of the name would land: each library ffi/load-library
+;; or :jolt/native opened (RTLD_LOCAL, so invisible to a global dlsym), in
+;; declaration order, then Chez's own foreign-entry (the objects Chez loaded).
+;; Made here because sa-foreign-callable expands to jolt-ffi-callable-body
+;; above. It lives as long as the process: MIR keeps no pointer to it past a
+;; compile, but every compile passes it.
 (define (jolt-mir-resolver-entry)
   (let ((resolver (sa-foreign-callable
                    (lambda (name)
-                     (if (sa-foreign-entry? name) (sa-foreign-entry-address name) 0))
+                     (let ((rs (jolt-ffi-native-resolvers name)))
+                       (cond ((pair? rs) (cdar rs))
+                             ((sa-foreign-entry? name) (sa-foreign-entry-address name))
+                             (else 0))))
                    (string) uptr)))
     (sa-lock-object resolver)
     (sa-foreign-callable-entry-point resolver)))
