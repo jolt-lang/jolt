@@ -678,6 +678,19 @@
            :jvm "throws IllegalArgumentException"
            :jolt "128515"}
    :note "Deliberate superset of the JVM, following jolt's code-point string model."}
+  ;; The same model at a Writer: a char handed to write(int) is a code point, so
+  ;; a library that writes text char by char, (doseq [c s] (.write w (int c))),
+  ;; passes U+10000..U+10FFFF whole. The JDK keeps the int's low 16 bits, which
+  ;; would write a different character without an error. Pinned in unit.edn
+  ;; ("char / code points").
+  {:category :string-model
+   :behavior "Writer.write(int) with a supplementary code point"
+   :jvm "keeps the low 16 bits: (.write w (int 0x1F512)) writes U+F512"
+   :jolt "writes the code point whole; past U+10FFFF and below 0 it keeps the low 16 bits as the JDK does"
+   :check {:expr "(let [w (java.io.StringWriter.)] (.write w (int 0x1F512)) (mapv int (str w)))"
+           :jvm "[62738]"
+           :jolt "[128274]"}
+   :note "Deliberate superset of the JVM: a jolt char is a code point, so the JDK's truncation could only lose one."}
   ;; The same model the other way round: no string holds half of a surrogate
   ;; pair, so indexing a string never produces one. A parser asked to reject a
   ;; lone surrogate has nothing to reject — instaparse's abnf unicode-test
