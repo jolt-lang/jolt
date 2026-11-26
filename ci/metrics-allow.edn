@@ -49,10 +49,4 @@
   {:path "compatibility/bencode/core.clj" :name "read-netstring"
    :why "nrepl/bencode's public API, for scripts that call it; nothing in jolt does"}
   {:path "compatibility/bencode/core.clj" :name "write-netstring"
-   :why "nrepl/bencode's public API, for scripts that call it; nothing in jolt does"}
-  {:path "compatibility/jsonista/core.clj" :name "read-value"
-   :why "jsonista's public API, for libraries that call it (muuntaja); nothing in jolt does"}
-  {:path "compatibility/jsonista/core.clj" :name "write-value-as-bytes"
-   :why "jsonista's public API, for libraries that call it (muuntaja); nothing in jolt does"}
-  {:path "compatibility/jsonista/core.clj" :name "java-collection-module"
-   :why "jsonista's public API, for libraries that call it; nothing in jolt does"}]}
+   :why "nrepl/bencode's public API, for scripts that call it; nothing in jolt does"}]}
