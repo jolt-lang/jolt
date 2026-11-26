@@ -199,22 +199,44 @@
     (when (true? (method-param-classes cls method (mapv #(arg-jclass ctx % env) args) true))
       (analysis-error :analyze/ambiguous-method
                       (str "More than one matching method found: " method)))))
+;; (f args) whose f is a Class/staticMethod: the same tie check
+(defn check-static-invoke! [ctx f args env]
+  (when (= :host-static (:op f))
+    (check-static-call! ctx (tag-class ctx (:class f)) (:member f) args env)))
 (defn host-call-arg-casts [ctx cls method args env]
   (when cls
     (let [ps (method-param-classes cls method (mapv #(arg-jclass ctx % env) args))]
       (cond (true? ps) (analysis-error :analyze/ambiguous-method
                                        (str "More than one matching method found: " method))
             (some? ps) (vec ps)))))
+;; The class of a constant: a constant collection is the JVM's ConstantExpr,
+;; typed by its concrete class.
+(defn- const-jclass [v]
+  (cond (string? v) "java.lang.String" (keyword? v) "clojure.lang.Keyword"
+        (vector? v) "clojure.lang.PersistentVector"
+        (set? v) "clojure.lang.PersistentHashSet" :else nil))
+;; (jolt.host/static-member "C" "m") with constant arguments
+(defn- static-member-call? [f args]
+  (and (= :var (:op f)) (= "jolt.host" (str (:ns f))) (= "static-member" (str (:name f)))
+       (every? #(= :const (:op %)) args)))
+(defn- invoke-jclass [ctx node env]
+  (let [f (:fn node)]
+    (cond
+      (= :host-static (:op f))
+      (call-return-class ctx (tag-class ctx (:class f)) (:member f) true (:args node) env)
+      ;; (Class/member) with no arguments: a static field or a no-arg static
+      ;; method, decided at run time (jolt.host/static-member)
+      (static-member-call? f (:args node))
+      (let [[c m] (map :val (:args node))]
+        (when (and (string? c) (string? m)) (call-return-class ctx (tag-class ctx c) m true [] env)))
+      :else
+      (let [c (invoke-jvm-class f)]
+        (when (and (string? c) (not= c "Object")) (tag-class ctx c))))))
 (defn node-jclass [ctx node env]
   (case (:op node)
     :local (get (:jclasses env) (:name node))
     :host-new (tag-class ctx (:class node))
-    :const (let [v (:val node)]
-             (cond (string? v) "java.lang.String" (keyword? v) "clojure.lang.Keyword"
-                   ;; a constant collection is the JVM's ConstantExpr, typed
-                   ;; by its concrete class
-                   (vector? v) "clojure.lang.PersistentVector"
-                   (set? v) "clojure.lang.PersistentHashSet" :else nil))
+    :const (const-jclass (:val node))
     ;; one with an element computed at run time is a VectorExpr/SetExpr/MapExpr,
     ;; typed by its interface; all-constant elements make it a constant
     :vector (if (every? #(= :const (:op %)) (:items node))
@@ -226,20 +248,16 @@
     :bigdec "java.math.BigDecimal"
     :do (node-jclass ctx (:ret node) env)
     :host-call (call-return-class ctx (:target-class node) (:method node) false (:args node) env)
-    :invoke (let [f (:fn node)]
-              (cond
-                (= :host-static (:op f))
-                (call-return-class ctx (tag-class ctx (:class f)) (:member f) true (:args node) env)
-                ;; (Class/member) with no arguments: a static field or a no-arg
-                ;; static method, decided at run time (jolt.host/static-member)
-                (and (= :var (:op f)) (= "jolt.host" (str (:ns f))) (= "static-member" (str (:name f)))
-                     (every? #(= :const (:op %)) (:args node)))
-                (let [[c m] (map :val (:args node))]
-                  (when (and (string? c) (string? m)) (call-return-class ctx (tag-class ctx c) m true [] env)))
-                :else
-                (let [c (invoke-jvm-class f)]
-                  (when (and (string? c) (not= c "Object")) (tag-class ctx c)))))
+    :invoke (invoke-jclass ctx node env)
     nil))
+;; The class a (.method target ...) call's target has: its ^Tag, else what the
+;; analyzed target node is known to be.
+(defn host-call-target-class [ctx raw target env]
+  (let [m (cond (form-sym? raw) (form-sym-meta raw)
+                (form-list? raw) (form-coll-meta raw)
+                :else nil)
+        tag (when (map? m) (get m :tag))]
+    (if tag (tag-class ctx tag) (node-jclass ctx target env))))
 (defn add-jclass [env nm c]
   (if c (assoc env :jclasses (assoc (:jclasses env) nm c)) env))
 
