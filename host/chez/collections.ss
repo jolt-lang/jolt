@@ -14,14 +14,17 @@
 ;; ============================================================================
 ;; No copy here is a checked Scheme loop: the runtime compiles at
 ;; optimize-level 2, where such a loop pays a type and bounds check per element
-;; (a 64-slot copy measured 390ns). Whole vectors and computed ranges (a node
-;; update, vec-copy-range) are the target's block copy INTO A FRESH
-;; vector (sa-vector-copy / sa-subvector): no initializing fill and no write
-;; barrier per slot, 19ns for 32 slots against 82 for the unchecked loop below
-;; and 86 for Chez's vector-copy!, which is that same barriered loop. What still
-;; copies into a vector made first (the HAMT node edits, the array-map's append/remove)
-;; runs the unchecked loop or the checked bulk move. Never a bare vector-copy:
-;; the vendored irregex redefines that name at top level as a one-argument loop.
+;; (a 64-slot copy measured 390ns). Whole vectors, computed ranges, and appends
+;; (a node update, vec-copy-range, vec-append2) are the target's block copy
+;; INTO A FRESH vector (sa-vector-copy / sa-subvector / sa-vector-append): no
+;; initializing fill and no write barrier per slot, 19ns for 32 slots against
+;; 82 for the unchecked loop below and 86 for Chez's vector-copy!, which is
+;; that same barriered loop. vec-remove2 block-copies the longer surviving side
+;; with sa-subvector and fills only the shorter side (at most half the slots,
+;; none at the ends); what still copies into a vector made first (the HAMT node
+;; edits) runs the unchecked loop or the checked bulk move. Never a bare
+;; vector-copy: the vendored irregex redefines that name at top level as a
+;; one-argument loop.
 (define (vec-copy-range v start end) (sa-subvector v start end))
 ;; slots 0..n-1 of v into out, unchecked: out was just made at least n long
 (define (vec-fill-prefix! out v n)
@@ -37,21 +40,39 @@
   (let ((out (sa-vector-copy v)))
     (vector-set! out i x)
     out))
-;; the two below serve the array-mode map's k/v slot vector
+;; Constant read-only pad vectors for sa-vector-append: appending a non-empty
+;; vector to a pad avoids allocating a throwaway tail vector while keeping
+;; sa-vector-append's unbarriered block copy. Callers MUST guard (fx=? n 0)
+;; so sa-vector-append always receives a non-empty prefix and returns a fresh
+;; vector; never mutate a pad vector.
+(define vec-pad-1 (vector #f))
+(define vec-pad-2 (vector #f #f))
+(define vec-pad-3 (vector #f #f #f))
+(define vec-pad-4 (vector #f #f #f #f))
+(define vec-pad-6 (vector #f #f #f #f #f #f))
+(define vec-pad-8 (vector #f #f #f #f #f #f #f #f))
+;; the two below serve the array-mode map's k/v slot vector (and vec-remove2
+;; also drops entries from HAMT nodes)
 (define (vec-append2 v k x)           ; copy of v with k and x appended
-  (let* ((n (vector-length v)) (out (make-vector (fx+ n 2))))
-    (vec-fill-prefix! out v n)
-    (vector-set! out n k) (vector-set! out (fx+ n 1) x)
-    out))
+  (let ((n (vector-length v)))
+    (if (fx=? n 0)
+        (vector k x)
+        (let ((out (sa-vector-append v vec-pad-2)))
+          (sa-uvector-set! out n k)
+          (sa-uvector-set! out (sa-ufx+ n 1) x)
+          out))))
 (define (vec-remove2 v i)             ; copy of v with slots i and i+1 dropped
-  (let* ((n (vector-length v)) (out (make-vector (fx- n 2))))
-    (vec-fill-prefix! out v i)
-    ;; the tail, shifted down two: j runs i+2..n-1 into i..n-3
-    (let loop ((j (fx+ i 2)))
-      (when (sa-ufx<? j n)
-        (sa-uvector-set! out (sa-ufx- j 2) (sa-uvector-ref v j))
-        (loop (sa-ufx+ j 1))))
-    out))
+  (let* ((n (vector-length v)) (m (fx- n 2)))
+    (if (fx<=? (fx+ i i) m)
+        (let ((out (sa-subvector v 2 n)))
+          (when (fx>? i 0) (vec-fill-prefix! out v i))
+          out)
+        (let ((out (sa-subvector v 0 m)))
+          (let loop ((j (fx+ i 2)))
+            (when (sa-ufx<? j n)
+              (sa-uvector-set! out (sa-ufx- j 2) (sa-uvector-ref v j))
+              (loop (sa-ufx+ j 1))))
+          out))))
 
 ;; ============================================================================
 ;; persistent vector — 32-way trie + tail (Clojure's PersistentVector)
@@ -105,9 +126,12 @@
 
 ;; trailing helpers over Scheme vectors used by the trie
 (define (vec-snoc v x)                 ; copy v with x appended
-  (let* ((n (vector-length v)) (out (make-vector (fx+ n 1))))
-    (sa-vector-copy-range! out 0 v 0 n)
-    (vector-set! out n x) out))
+  (let ((n (vector-length v)))
+    (if (fx=? n 0)
+        (vector x)
+        (let ((out (sa-vector-append v vec-pad-1)))
+          (sa-uvector-set! out n x)
+          out))))
 (define (vec-drop-last v) (vec-copy-range v 0 (fx- (vector-length v) 1)))
 (define (vec-take v n) (vec-copy-range v 0 n))
 (define (vec-set-or-snoc v i x)        ; replace index i, or append when i = length

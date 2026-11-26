@@ -163,6 +163,42 @@
 ;; --- value-level spot checks the representation must keep --------------------
 (is "lookup by kind" "[(get {:a 1} 'a) (get {'a 1} :a) (get {\"a\" 1} 'a) (get {1 :i} 1.0) (get {1 :i} 1) (get {nil :n} nil)]" "[nil nil nil nil :i :n]")
 (is "replace keeps position, append goes last" "(keys (assoc (assoc {:a 1 :b 2} :a 9) :c 3))" "(:a :b :c)")
+(ok "vec-append2 copies and appends across empty, small and 24-key slot vectors"
+    (for-all
+      (lambda (nk)
+        (let* ((v (list->vector (iota (* 2 nk))))
+               (orig (vector-copy v))
+               (out (vec-append2 v 'k 'x))
+               (want (list->vector (append (iota (* 2 nk)) (list 'k 'x)))))
+          (and (not (eq? out v))
+               (equal? v orig)
+               (equal? out want))))
+      '(0 1 2 3 8 24 63)))
+(ok "vec-remove2 drops slots i and i+1 at every position without mutating input"
+    (for-all
+      (lambda (nk)
+        (let* ((n (* 2 nk))
+               (v (list->vector (iota n)))
+               (orig (vector-copy v)))
+          (let loop ((i 0))
+            (or (= i n)
+                (let* ((out (vec-remove2 v i))
+                       (want (list->vector
+                               (let lp ((j 0) (acc '()))
+                                 (cond ((= j n) (reverse acc))
+                                       ((or (= j i) (= j (+ i 1))) (lp (+ j 1) acc))
+                                       (else (lp (+ j 1) (cons j acc))))))))
+                  (and (not (eq? out v))
+                       (equal? v orig)
+                       (equal? out want)
+                       (loop (+ i 2))))))))
+      '(1 2 3 4 5 8 24)))
+(ok "vec-remove2 handles odd-length HAMT node arrays (entries + branches)"
+    (let* ((v '#(k0 v0 k1 v1 b0))
+           (orig (vector-copy v)))
+      (and (equal? (vec-remove2 v 0) '#(k1 v1 b0))
+           (equal? (vec-remove2 v 2) '#(k0 v0 b0))
+           (equal? v orig))))
 (is "transient dissoc! swaps the last entry in" "(keys (persistent! (dissoc! (transient {:a 1 :b 2 :c 3}) :a)))" "(:c :b)")
 (is "equal across modes" "[(= {:a 1 :b 2} (hash-map :b 2 :a 1)) (= (hash {:a 1 :b 2}) (hash (hash-map :b 2 :a 1)))]" "[true true]")
 (is "reduce-kv folds in place" "(reduce-kv (fn [a k v] (if (= k :b) (reduced a) (+ a v))) 0 (array-map :a 1 :b 2 :c 3))" "1")
@@ -375,5 +411,31 @@
                      (empty? (clojure.set/difference s bigger)))))
          (finally (.setDynamic v false))))"
     "true")
+;; --- vec-append2 / vec-snoc single-allocation (no throwaway tail vector) -----
+(let* ((v6 (vector (kw "a") 1 (kw "b") 2 (kw "c") 3))
+       (kd (kw "d"))
+       (b-base (bytes-of (lambda () v6)))
+       (b-mk8  (bytes-of (lambda () (make-vector 8))))
+       (b-app2 (bytes-of (lambda () (vec-append2 v6 kd 4))))
+       (b-mk7  (bytes-of (lambda () (make-vector 7))))
+       (b-snoc (bytes-of (lambda () (vec-snoc v6 99)))))
+  (printf "  vec-append2 bytes on 6-slot vec: ~a (make-vector 8: ~a); vec-snoc: ~a (make-vector 7: ~a)\n"
+          (- b-app2 b-base) (- b-mk8 b-base) (- b-snoc b-base) (- b-mk7 b-base))
+  (ok "vec-append2 allocates only the output vector (no throwaway 2-slot vector)"
+      (= b-app2 b-mk8))
+  (ok "vec-snoc allocates only the output vector (block copy via pad)"
+      (= b-snoc b-mk7))
+  (ok "vec-snoc preserves contents for lengths 0..32"
+      (let lp ((n 0))
+        (or (fx>? n 32)
+            (let* ((v (list->vector (iota n)))
+                   (r (vec-snoc v 'end)))
+              (and (fx=? (vector-length r) (fx+ n 1))
+                   (eq? (vector-ref r n) 'end)
+                   (let ck ((i 0))
+                     (or (fx=? i n)
+                         (and (fx=? (vector-ref r i) i) (ck (fx+ i 1)))))
+                   (lp (fx+ n 1))))))))
+
 (printf "arraymap-test: ~a/~a passed\n" (- total fails) total)
 (exit (if (= fails 0) 0 1))
