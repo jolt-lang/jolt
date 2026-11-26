@@ -68,10 +68,11 @@
   ([p] (or-else p (m/return nil)))
   ([p default] (or-else p (m/return default))))
 
-(defn any-of [& ps]
+(defn any-of
   "(a|b|c|...)
 
   Parse application any of the given parsers."
+  [& ps]
   (reduce or-else ps))
 
 (def space

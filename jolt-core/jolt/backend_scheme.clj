@@ -463,15 +463,14 @@
 
 ;; A collection literal or value in call position.
 (defn- emit-coll-call [tail? fnode arg-nodes args]
-  (do
-   (note-tail-call! tail?)
-   (ordered-call (cons fnode arg-nodes) (cons (emit fnode) args)
-                (fn [[c & as]]
-                  (lookup-restore tail?
-                    (str (if (= :vector (:op fnode))
-                           "(jolt-vec-invoke1 "
-                           "(jolt-get ")
-                         c " " (str/join " " as) ")"))))))
+  (note-tail-call! tail?)
+  (ordered-call (cons fnode arg-nodes) (cons (emit fnode) args)
+               (fn [[c & as]]
+                 (lookup-restore tail?
+                   (str (if (= :vector (:op fnode))
+                          "(jolt-vec-invoke1 "
+                          "(jolt-get ")
+                        c " " (str/join " " as) ")")))))
 
 ;; An :invoke's emission context, built once by emit-invoke and read by the arms
 ;; below: the node and its callee, whether the call is in tail position, TWO
@@ -588,23 +587,23 @@
         n (count args)
         callee (if (<= n 4)
                  (str (if (or (:tail? c) (trace-frames?)) "jolt-invoke-t" "jolt-invoke") n)
-                 "jolt-invoke")]
-    (let [fsrc (emit (:fnode c))
-          chez? (not= :gambit (session/target))
-          ;; the protocol call site keys on the callee's var cell as emitted, so
-          ;; a call whose arguments are bound to temporaries first (any argument
-          ;; that is not a plain local or constant) is still recognized; the
-          ;; temporary already holds the var's value, read ahead of the
-          ;; arguments as the fn position is
-          pcell (and chez? (second (re-find var-cell-deref-re fsrc)))
-          ;; pooled: the full site. No pool (a bare top-level expression, run
-          ;; once): only the declared-impl test, since there is no load-time
-          ;; slot to remember the protocol fn in
-          pooled? (boolean (and pcell *const-pool*))
-          pk (and chez? (= :var (:op (:fnode c))) (seq args) (var-cache?) (not (seed-mint?))
-                  (or pooled? (nil? *const-pool*))
-                  (let [pk (protocol-call-key nil (:ns (:fnode c)) (:name (:fnode c)) n)]
-                    (when-not (nil? pk) pk)))]
+                 "jolt-invoke")
+        fsrc (emit (:fnode c))
+        chez? (not= :gambit (session/target))
+        ;; the protocol call site keys on the callee's var cell as emitted, so
+        ;; a call whose arguments are bound to temporaries first (any argument
+        ;; that is not a plain local or constant) is still recognized; the
+        ;; temporary already holds the var's value, read ahead of the
+        ;; arguments as the fn position is
+        pcell (and chez? (second (re-find var-cell-deref-re fsrc)))
+        ;; pooled: the full site. No pool (a bare top-level expression, run
+        ;; once): only the declared-impl test, since there is no load-time
+        ;; slot to remember the protocol fn in
+        pooled? (boolean (and pcell *const-pool*))
+        pk (and chez? (= :var (:op (:fnode c))) (seq args) (var-cache?) (not (seed-mint?))
+                (or pooled? (nil? *const-pool*))
+                (let [pk (protocol-call-key nil (:ns (:fnode c)) (:name (:fnode c)) n)]
+                  (when-not (nil? pk) pk)))]
     (ordered-call (cons (:fnode c) (:arg-nodes c)) (cons fsrc args)
                   (fn [operands]
                     (let [cell (and chez? (second (re-find var-cell-deref-re (first operands))))]
@@ -613,7 +612,7 @@
                         (emit-proto-site-call c (if cell (str "(jolt-var-fn " cell ")") (first operands))
                                               operands callee pk pooled?)
                         cell (emit-open-call c (str "(jolt-var-fn " cell ")") operands callee)
-                        :else (emit-call (:tail? c) callee operands (:tl c) (:ich c)))))))))
+                        :else (emit-call (:tail? c) callee operands (:tl c) (:ich c))))))))
 
 ;; The default value of a lookup's optional third operand, as spliced text.
 (defn- default-arg-str [as] (if (> (count as) 1) (str " " (nth as 1)) ""))
@@ -1341,18 +1340,18 @@
                 (str "(jolt-inline-mark! " d " " (chez-str-lit tok) ")")
                 d)
             creg (trace-callsite-reg)
-            freg (fnsrc-flush)]
-      ;; a def evaluates to its VAR ((var? (def x)) is true), so the source
-      ;; and callsite registrations must not be the value of the form —
-      ;; bind the def's result, register, and hand the var back. The fnsrc
-      ;; registrations run BEFORE the form: they are static data, and the
-      ;; form's own evaluation may already dump a closure it just created.
-      (let [pre (if (= freg "") "" (str "(begin" freg " "))
-            post (if (= freg "") "" ")")
-            body (if (= (str reg creg) "") d
-                     (let [v (fresh-label "_dv$")]
-                       (str "(let ((" v " " d "))" reg creg " " v ")")))]
-        (str pre body post)))))
+            freg (fnsrc-flush)
+          ;; a def evaluates to its VAR ((var? (def x)) is true), so the source
+          ;; and callsite registrations must not be the value of the form —
+          ;; bind the def's result, register, and hand the var back. The fnsrc
+          ;; registrations run BEFORE the form: they are static data, and the
+          ;; form's own evaluation may already dump a closure it just created.
+          pre (if (= freg "") "" (str "(begin" freg " "))
+          post (if (= freg "") "" ")")
+          body (if (= (str reg creg) "") d
+                   (let [v (fresh-label "_dv$")]
+                     (str "(let ((" v " " d "))" reg creg " " v ")")))]
+      (str pre body post))))
 
 ;; throw, with the site the reporter needs.
 (defn- emit-throw-node [node]

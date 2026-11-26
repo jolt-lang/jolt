@@ -339,7 +339,7 @@
     :as triage-data}]
   (let [loc (str (or path source "REPL") ":" (or line 1) (if column (str ":" column) ""))
         class-name (name (or class ""))
-        simple-class (if class (or (first (re-find #"([^.])++$" class-name)) class-name))
+        simple-class (when class (or (first (re-find #"([^.])++$" class-name)) class-name))
         cause-type (if (contains? #{"Exception" "RuntimeException"} simple-class)
                      "" ;; omit, not useful
                      (str " (" simple-class ")"))]

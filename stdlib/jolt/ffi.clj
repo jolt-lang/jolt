@@ -1844,42 +1844,41 @@
                       {:jolt/ffi-option args})))))
 
 (defn- def-cfn-form [name docstring attrs args]
-  (do
-    (when (< (count args) 3)
-      (throw (ex-info "jolt.ffi/defcfn: expected a C symbol, an argtype vector and a return type"
-                      {:name name})))
-    (when (and attrs (contains? attrs :library))
-      (throw (ex-info "jolt.ffi/defcfn: :library has no jolt equivalent — a declared :jolt/native resolves its own symbols through its own handle, ahead of the global namespace"
-                      {:name name})))
-    (let [tail (vec (drop 3 args))
-          option? (and (pos? (count tail))
-                       (or (= :blocking (nth tail 0)) (map? (nth tail 0))))
-          option (if option? [(nth tail 0)] [])
-          tail (if option? (vec (rest tail)) tail)
-          binding (cfn-form (nth args 0) (nth args 1) (nth args 2) option "defcfn")
-          ;; A bare binding of a :float or :double result always answers that
-          ;; kind, so the var declares it (:jolt/num-ret) and arithmetic over a
-          ;; call unboxes it. A wrapper fn answers whatever it returns, and a
-          ;; :capture-native-error binding answers a [result errno] vector.
-          ret (nth args 2)
-          num-ret (when (and (contains? #{:float :double} ret)
-                             (zero? (count tail))
-                             (not (and option? (map? (nth option 0))
-                                       (get (nth option 0) :capture-native-error))))
-                    ret)
-          attrs (if num-ret (assoc (or attrs {}) :jolt/num-ret num-ret) attrs)
-          named (if attrs (with-meta name (merge (or (meta name) {}) attrs)) name)
-          value (if (zero? (count tail))
-                  binding
-                  (let [raw (nth tail 0)]
-                    (when-not (symbol? raw)
-                      (throw (ex-info "jolt.ffi/defcfn: the wrapper form names the raw binding with a symbol after the return type"
-                                      {:name name :got raw})))
-                    (list 'clojure.core/let (vector raw binding)
-                          (cons 'clojure.core/fn (cons name (vec (rest tail)))))))]
-      (if docstring
-        (list 'def named docstring value)
-        (list 'def named value)))))
+  (when (< (count args) 3)
+    (throw (ex-info "jolt.ffi/defcfn: expected a C symbol, an argtype vector and a return type"
+                    {:name name})))
+  (when (and attrs (contains? attrs :library))
+    (throw (ex-info "jolt.ffi/defcfn: :library has no jolt equivalent — a declared :jolt/native resolves its own symbols through its own handle, ahead of the global namespace"
+                    {:name name})))
+  (let [tail (vec (drop 3 args))
+        option? (and (pos? (count tail))
+                     (or (= :blocking (nth tail 0)) (map? (nth tail 0))))
+        option (if option? [(nth tail 0)] [])
+        tail (if option? (vec (rest tail)) tail)
+        binding (cfn-form (nth args 0) (nth args 1) (nth args 2) option "defcfn")
+        ;; A bare binding of a :float or :double result always answers that
+        ;; kind, so the var declares it (:jolt/num-ret) and arithmetic over a
+        ;; call unboxes it. A wrapper fn answers whatever it returns, and a
+        ;; :capture-native-error binding answers a [result errno] vector.
+        ret (nth args 2)
+        num-ret (when (and (contains? #{:float :double} ret)
+                           (zero? (count tail))
+                           (not (and option? (map? (nth option 0))
+                                     (get (nth option 0) :capture-native-error))))
+                  ret)
+        attrs (if num-ret (assoc (or attrs {}) :jolt/num-ret num-ret) attrs)
+        named (if attrs (with-meta name (merge (or (meta name) {}) attrs)) name)
+        value (if (zero? (count tail))
+                binding
+                (let [raw (nth tail 0)]
+                  (when-not (symbol? raw)
+                    (throw (ex-info "jolt.ffi/defcfn: the wrapper form names the raw binding with a symbol after the return type"
+                                    {:name name :got raw})))
+                  (list 'clojure.core/let (vector raw binding)
+                        (cons 'clojure.core/fn (cons name (vec (rest tail)))))))]
+    (if docstring
+      (list 'def named docstring value)
+      (list 'def named value))))
 
 ;; A docstring and a C symbol are both strings, so the C symbol is found by the
 ;; shape around it rather than by counting from either end: it is the first

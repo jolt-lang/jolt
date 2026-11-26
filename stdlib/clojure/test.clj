@@ -143,7 +143,7 @@
     (str (reverse (map (fn [v] (or (:name (meta v)) (:name v))) *testing-vars*))
          " (" file ":" line ")")))
 
-(def *initial-report-counters* {:test 0, :pass 0, :fail 0, :error 0})
+(def ^:dynamic *initial-report-counters* {:test 0, :pass 0, :fail 0, :error 0})
 
 ;; The reference's report methods bump *report-counters* and nothing else; jolt's
 ;; also feed a process-wide atom that the harnesses read through n-pass/n-fail/
