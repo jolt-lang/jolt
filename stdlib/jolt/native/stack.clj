@@ -141,13 +141,13 @@
                   ;; over the frame budget: the largest site goes to the heap
                   (if (> (reduce + 0 (map cands st)) max-frame-elems)
                     (recur (settle (disj st (apply max-key cands st)) @*srcs*))
-                    st))]
-      (let [sites (select-keys cands stack)
-            scalar (scalar-sites body @*srcs* sites)]
-        {:sites sites
-         :holders (set (for [[id s] @*srcs* :when (and (seq s) (every? stack s))] id))
-         :scalar (into {} (for [[id s] @*srcs* :when (and (= 1 (count s)) (scalar (first s)))]
-                            [id (first s)]))}))))
+                    st))
+          sites (select-keys cands stack)
+          scalar (scalar-sites body @*srcs* sites)]
+      {:sites sites
+       :holders (set (for [[id s] @*srcs* :when (and (seq s) (every? stack s))] id))
+       :scalar (into {} (for [[id s] @*srcs* :when (and (= 1 (count s)) (scalar (first s)))]
+                          [id (first s)]))})))
 
 (def ^:private none {:sites {} :holders #{} :scalar {}})
 

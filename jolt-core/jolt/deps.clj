@@ -417,25 +417,24 @@
   coordinates are unknown and for a dep whose effective POM wouldn't build. It
   skips a dependency it can't read a literal version for rather than failing."
   [pom]
-  (do
-    (when-let [xml (if (jar-path? pom)
-                     (jolt.host/jar-entry-string pom)
-                     (when (file-exists? pom) (slurp pom)))]
-      (let [grab (fn [tag block] (second (re-find (re-pattern (str "<" tag ">(.*?)</" tag ">")) block)))]
-        (into {}
-          (for [[_ block] (re-seq #"(?s)<dependency>(.*?)</dependency>" xml)
-                :let [g (grab "groupId" block) a (grab "artifactId" block)
-                      v (grab "version" block) scope (grab "scope" block)
-                      optional (grab "optional" block)]
-                ;; Maven does not inherit optional deps or test/provided/system
-                ;; scope transitively — so a cljc lib's optional ClojureScript
-                ;; toolchain (clojurescript, closure-compiler) stays out.
-                :when (and g a v
-                           (not (#{"test" "provided" "system"} scope))
-                           (not= "true" optional)
-                           (not (and (= g "org.clojure") (= a "clojure")))
-                           (re-matches #"[0-9A-Za-z.\-]+" v))]
-            [(symbol g a) {:mvn/version v}]))))))
+  (when-let [xml (if (jar-path? pom)
+                   (jolt.host/jar-entry-string pom)
+                   (when (file-exists? pom) (slurp pom)))]
+    (let [grab (fn [tag block] (second (re-find (re-pattern (str "<" tag ">(.*?)</" tag ">")) block)))]
+      (into {}
+        (for [[_ block] (re-seq #"(?s)<dependency>(.*?)</dependency>" xml)
+              :let [g (grab "groupId" block) a (grab "artifactId" block)
+                    v (grab "version" block) scope (grab "scope" block)
+                    optional (grab "optional" block)]
+              ;; Maven does not inherit optional deps or test/provided/system
+              ;; scope transitively — so a cljc lib's optional ClojureScript
+              ;; toolchain (clojurescript, closure-compiler) stays out.
+              :when (and g a v
+                         (not (#{"test" "provided" "system"} scope))
+                         (not= "true" optional)
+                         (not (and (= g "org.clojure") (= a "clojure")))
+                         (re-matches #"[0-9A-Za-z.\-]+" v))]
+          [(symbol g a) {:mvn/version v}])))))
 
 (defn- jar-root?
   "Is `root` a jar rather than a directory? The loader reads a .jar/.zip root
