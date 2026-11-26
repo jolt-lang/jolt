@@ -234,8 +234,9 @@
         root (peek via)
         m {:via (mapv entry via) :trace (mapv ste-vec (trace-of (or root o)))}
         m (let [c (msg-of root)] (if c (assoc m :cause c) m))
-        m (let [d (ex-data root)] (if d (assoc m :data d) m))]
-    (let [phase (:clojure.error/phase (ex-data o))] (if phase (assoc m :phase phase) m))))
+        m (let [d (ex-data root)] (if d (assoc m :data d) m))
+        phase (:clojure.error/phase (ex-data o))]
+    (if phase (assoc m :phase phase) m)))
 
 ;; Clojure 1.11 map transformers. An empty-map base keeps insertion order;
 ;; transformed keys canonicalize via assoc (collisions: last entry in seq order

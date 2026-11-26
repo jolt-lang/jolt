@@ -2,7 +2,7 @@
 ;;
 ;;   jolt ci/metrics-gate.clj <report.edn> <ci/metrics-allow.edn>
 ;;
-;; The report is jolt-metrics' --format edn output. Two checks:
+;; The report is jolt-metrics' --format edn output. Three checks:
 ;;
 ;; * Critical findings. Under each path prefix in :critical-free, any CRITICAL
 ;;   finding in the refactoring queue fails the gate (a function past a hard
@@ -16,13 +16,30 @@
 ;;   a deliberate re-export, upstream code kept as written. A finding not on it
 ;;   fails the gate, and so does an entry that no longer matches a finding, so
 ;;   the list can't go stale.
+;;
+;; * Lint findings. An :error lint always fails. A :warning lint, and a
+;;   performance-rule lint at any level, fails unless :lints in the allowlist
+;;   covers it. An entry names a path, a rule and how many findings of that rule
+;;   the file keeps, so it survives lines moving but not a new finding; a count
+;;   that no longer matches fails either way. Other :info lints are reported
+;;   but don't gate. Findings an ignore marker or a .jolt-metrics.edn :linters
+;;   level leaves out never reach the report, so they need no entry.
+;;
+;; Every allowlist entry needs a :why.
 (require '[clojure.edn :as edn]
          '[clojure.string :as str])
+
+(def ^:private perf-rules
+  "jolt-metrics' performance rules: each one is needless work, so it gates at
+  whatever level the config gives it."
+  #{:str-accumulation :concat-accumulation :contains-on-sequential
+    :linear-membership :copying-pop :last-on-vector :lazy-into})
 
 (defn- finding-key [kind f]
   (case kind
     :unused-requires [(:path f) (:lib f)]
-    (:unused-private :unused-public) [(:path f) (:name f)]))
+    (:unused-private :unused-public) [(:path f) (:name f)]
+    :lints [(:path f) (:rule f)]))
 
 (defn- under? [prefixes path]
   (some #(str/starts-with? path %) prefixes))
@@ -50,16 +67,61 @@
                   " — it is no longer reported; remove it from " allow-path)))]
     p))
 
+(defn- gated? [l]
+  (and (not= :error (:level l))
+       (or (= :warning (:level l)) (contains? perf-rules (:rule l)))))
+
+(defn- lint-line [l]
+  (str (:path l) ":" (:line l) ":" (:column l) " " (name (:level l)) " "
+       (name (:rule l)) " — " (:message l)))
+
+(defn- lint-problems [lints allow allow-path]
+  (let [found (group-by #(finding-key :lints %) (filter gated? lints))
+        allowed (into {} (map (fn [a] [(finding-key :lints a) a]) (:lints allow)))]
+    (concat
+     (for [l lints :when (= :error (:level l))]
+       (str "lint " (lint-line l) " — an error can't be allowlisted; fix it"))
+     (for [[k ls] (sort-by key found)
+           :let [n (count ls) a (get allowed k)]
+           :when (not= n (:count a))
+           p (if (and a (< (:count a) n))
+               [(str "lint " (pr-str k) ": " n " found, " allow-path " allows " (:count a)
+                     " — fix the new one(s), or raise :count with the reason")]
+               (if a
+                 [(str "stale lint entry " (pr-str k) ": " n " found, " allow-path
+                       " allows " (:count a) " — lower its :count to " n)]
+                 (for [l (sort-by :line ls)]
+                   (str "lint " (lint-line l) " — fix it, or add {:path " (pr-str (:path l))
+                        " :rule " (:rule l) " :count " n " :why ...} to " allow-path))))]
+       p)
+     (for [[k _] (sort-by key allowed) :when (not (contains? found k))]
+       (str "stale lint entry " (pr-str k)
+            (if (some #(and (= :error (:level %)) (= k (finding-key :lints %))) lints)
+              " — :error findings can't be allowlisted; remove it from "
+              " — it is no longer reported; remove it from ")
+            allow-path)))))
+
+(defn- why-problems [allow allow-path]
+  (for [kind [:unused-requires :unused-private :unused-public :lints]
+        a (get allow kind)
+        :when (str/blank? (:why a))]
+    (str kind " entry " (pr-str a) " in " allow-path " has no :why")))
+
 (defn -main [report-path allow-path]
   (let [report (edn/read-string (slurp report-path))
         allow (edn/read-string (slurp allow-path))
-        problems (concat (critical-problems report (:critical-free allow))
-                         (unused-problems (:cleanup report) allow allow-path))]
+        lints (:lints report)
+        problems (concat (why-problems allow allow-path)
+                         (critical-problems report (:critical-free allow))
+                         (unused-problems (:cleanup report) allow allow-path)
+                         (lint-problems lints allow allow-path))]
     (doseq [p problems] (println p))
     (if (seq problems)
       (do (println (str "metrics gate: " (count problems) " problem(s)")) (System/exit 1))
       (println (str "metrics gate: no critical findings under "
                     (str/join ", " (:critical-free allow))
-                    " and no unused code beyond the allowlist")))))
+                    ", no unused code or gated lint findings beyond the allowlist ("
+                    (count (filter gated? lints)) " allowlisted lint findings, "
+                    (count (remove gated? lints)) " ungated :info)")))))
 
 (apply -main *command-line-args*)
