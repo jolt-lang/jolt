@@ -149,7 +149,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Common host operations are 2 to 7 times faster (#1713). On Chez,
   `(:k rec)` and `(get rec :k)` on a defrecord read the field straight from a
   per-site cache (19 and 38 ns to 5.5); the inline read is emitted only for a
-  key some defrecord declares, so a map's lookup is not slowed by it.
+  key some defrecord declares, so a map's lookup is not slowed by it. A
+  default, as in `(:k rec (f))`, is still evaluated on every call.
   `(instance? T x)` answers a repeat inline for a record or a string, number,
   char, boolean, keyword or nil (16 to 32 ns down to 9 to 15).
   `Matcher.group` and the group vectors of `re-find`, `re-matches` and
