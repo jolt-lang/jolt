@@ -1498,6 +1498,9 @@
 ;; an image as itself. records-interop.ss's throwable-cause adds what initCause
 ;; set.
 (define jolt-cause-given-nil (keyword "jolt" "cause-given-nil"))
+;; every ex-info's class name is this one string, so a test for an ExceptionInfo
+;; is an eq? (records-interop.ss throwable-field-cause, ex-cause)
+(define jolt-ex-info-class-name "clojure.lang.ExceptionInfo")
 (define (jolt-ex-info-cause v)
   (let ((c (jolt-ex-info-record-cause v))) (if (eq? c jolt-cause-given-nil) jolt-nil c)))
 
@@ -1976,7 +1979,7 @@
 ;; ex-data is nil.
 (define (jolt-ex-info msg data . more)
   (jolt-capture-throwable!
-    (make-jolt-ex-info-record "clojure.lang.ExceptionInfo" msg
+    (make-jolt-ex-info-record jolt-ex-info-class-name msg
                               (if (null? more) jolt-nil (car more))
                               (if (jolt-nil? data) empty-pmap data) 0)))
 ;; A host-constructed throwable (RuntimeException. etc.): a jolt-ex-info-record

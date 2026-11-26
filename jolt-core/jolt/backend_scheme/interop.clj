@@ -229,8 +229,11 @@
       (let [v (fresh-label "_cc$")]
         (str "(let ((" v " " e ")) (if (" p " " v ") " v " (jolt-checkcast " lit " " v ")))"))
       (str "(jolt-checkcast " lit " " e ")"))))
+(def ^:private array-kinds
+  {"[B" "byte" "[I" "int" "[J" "long" "[D" "double" "[F" "float" "[C" "char" "[S" "short" "[Z" "boolean"})
 (defn- arg-cast-emit [p a]
   (cond (or (nil? p) (= p "java.lang.Object")) a
+        (get array-kinds p) (str "(jolt-checkcast-kind '" (get array-kinds p) " " (chez-str-lit p) " " a ")")
         (or (str/includes? p ".") (str/starts-with? p "[")) (checkcast-emit p a)
         (get unbox-entries p) (str "(" (get unbox-entries p) " " a ")")
         :else a))

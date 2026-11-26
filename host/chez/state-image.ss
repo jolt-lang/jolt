@@ -1880,6 +1880,9 @@
                       (hashtable-set! memo x nx)
                       (let ((c (walk cause (cons "cause" path)))
                             (d (walk data (cons "data" path))))
+                        ;; a given-nil cause read back marks the process as
+                        ;; having one, as constructing it does (records-interop.ss)
+                        (when (eq? c jolt-cause-given-nil) (throwable-given-cause jolt-nil))
                         (let ((out (make-jolt-ex-info-record class-name message c d error-offset)))
                           (hashtable-set! memo x out)
                           out)))

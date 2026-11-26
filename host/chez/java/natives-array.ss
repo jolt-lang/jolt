@@ -2136,3 +2136,7 @@
                                                 ((jolt-native-entry sym) "jit")
                                                 (else jolt-nil))))))
                    (jolt-native-registered)))))
+
+;; records-interop.ss jolt-checkcast-kind: an array's element kind, for the
+;; cast a resolved call emits on a primitive array parameter.
+(set! jolt-array-kind-of (lambda (x) (and (jolt-array? x) (jolt-array-kind x))))

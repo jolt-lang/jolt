@@ -458,6 +458,13 @@
 (define (jolt-reflect-cast-fail x to)
   (throw-jvm 'ClassCastException
              (string-append "Cannot cast " (jolt-cast-class-name x) " to " to)))
+;; A primitive array parameter's cast, emitted with the element KIND
+;; (backend_scheme/interop.clj): the array's own kind answers before the class
+;; name is built. natives-array.ss sets jolt-array-kind-of; a host with no
+;; arrays answers #f, and the general cast decides.
+(define jolt-array-kind-of (lambda (x) #f))
+(define (jolt-checkcast-kind kind to x)
+  (if (or (jolt-nil? x) (eq? (jolt-array-kind-of x) kind)) x (jolt-checkcast to x)))
 (define (jolt-checkcast to x)
   (if (or (jolt-nil? x)
           (if (and (fx>? (string-length to) 0) (char=? (string-ref to 0) #\[))
@@ -521,7 +528,7 @@
            (if (= bits 32) (jvm-number-value (inexact x) 32) (jvm-wrap (truncate x) bits)))
           (else (jvm-wrap x bits)))))
 (define (jolt-box-arg x kind bits)
-  (cond ((and (fixnum? x) (= bits 64)) x)
+  (cond ((and (fixnum? x) (or (fx=? bits 64) (and (fx>=? x -2147483648) (fx<=? x 2147483647)))) x)
         ((jolt-nil? x)
          (throw-jvm 'NullPointerException
                     "Cannot invoke \"Object.getClass()\" because \"arg\" is null"))
@@ -539,9 +546,25 @@
 ;; result, which the JVM compiler does not type as a class. Filled at load,
 ;; before any thread can read it.
 (define method-sigs-tbl (make-hashtable string-hash string=?))
+;; Until method-sigs-frozen? (the end of this file), registration is the boot's,
+;; before any other thread runs, and writes the table in place. After it, a
+;; shim that loads on first reference (zip-gzip.ss) registers while another
+;; thread may be compiling and reading the table without a lock, and a Chez
+;; hashtable read during a write that grows it can fault, so a later
+;; registration writes a copy and publishes it whole.
+(define method-sigs-frozen? #f)
+(define method-sigs-mu (make-mutex))
 (define (register-method-sig! cls method static? params ret)
-  (hashtable-set! method-sigs-tbl method
-                  (cons (vector cls static? params ret) (hashtable-ref method-sigs-tbl method '()))))
+  (let ((add! (lambda (t)
+                (hashtable-set! t method
+                                (cons (vector cls static? params ret) (hashtable-ref t method '()))))))
+    (if method-sigs-frozen?
+        (jolt-with-mutex method-sigs-mu
+          (let ((t (hashtable-copy method-sigs-tbl #t)))
+            (add! t)
+            (memory-order-release)
+            (set! method-sigs-tbl t)))
+        (add! method-sigs-tbl))))
 ;; An instance method, and optionally the class it returns.
 (define (register-method-params! cls method params . ret)
   (register-method-sig! cls method #f params (if (pair? ret) (car ret) #f)))
@@ -765,20 +788,25 @@
 ;; on a throwable that has a cause, or in a program that never calls initCause,
 ;; takes no lock.
 (define throwable-cause-tbl (make-ephemeron-eq-hashtable))
-(define throwable-cause-tbl-used? #f)        ; set under the mutex, before the first write
+;; #t once anything has made a cause the field alone cannot answer: an
+;; initCause (set under the mutex, before its write) or a constructor given a
+;; nil cause. While it is #f a cause is the field, which is ex-cause's one test.
+(define throwable-cause-special? #f)
 (define (throwable-cause-entry k)
-  (and throwable-cause-tbl-used?
+  (and throwable-cause-special?
        (jolt-with-mutex throwable-suppressed-mu (hashtable-ref throwable-cause-tbl k #f))))
 ;; What the field says of R, a throwable record: 'unset, or the cause.
 (define (throwable-field-cause r)
   (let ((c (jolt-ex-info-record-cause r)))
     (cond ((eq? c jolt-cause-given-nil) jolt-nil)
           ((not (jolt-nil? c)) c)
+          ;; eq? for every ex-info this process made; a name read back from
+          ;; an image is an equal string
           ((let ((n (jolt-ex-info-record-class-name r)))
-             (or (eq? n jolt-ex-info-class-name) (equal? n jolt-ex-info-class-name)))
+             (or (eq? n jolt-ex-info-class-name)
+                 (and (string? n) (fx=? (string-length n) 26) (string=? n jolt-ex-info-class-name))))
            jolt-nil)
           (else 'unset))))
-(define jolt-ex-info-class-name "clojure.lang.ExceptionInfo")
 (define (throwable-cause v)
   (let ((r (throwable-identity v)))
     (if (jolt-ex-info-record? r)
@@ -788,7 +816,11 @@
               c))
         (let ((e (throwable-cause-entry r))) (if e (car e) jolt-nil)))))
 ;; The field a constructor stores for a cause it was given.
-(define (throwable-given-cause c) (if (jolt-nil? c) jolt-cause-given-nil c))
+(define (throwable-given-cause c)
+  (if (jolt-nil? c)
+      (begin (unless throwable-cause-special? (set! throwable-cause-special? #t))
+             jolt-cause-given-nil)
+      c))
 ;; Throwable.initCause: the cast of the argument, then the JDK's two checks, in
 ;; its order, each refusal carrying the throwable as its cause. The check and
 ;; the write are one step under the mutex, so of two threads only one sets it.
@@ -802,7 +834,7 @@
               (jolt-with-mutex throwable-suppressed-mu
                 (cond ((hashtable-ref throwable-cause-tbl k #f) 'set)
                       ((eq? (throwable-identity c) k) 'self)
-                      (else (set! throwable-cause-tbl-used? #t)
+                      (else (set! throwable-cause-special? #t)
                             (hashtable-set! throwable-cause-tbl k (list c))
                             'ok))))))
     (case outcome
@@ -1233,3 +1265,5 @@
 (register-method-sig! "java.io.FilterOutputStream" "write" #f '("[B") #f)
 (register-method-sig! "java.io.FilterOutputStream" "write" #f '("int") #f)
 (register-method-sig! "java.io.FilterOutputStream" "write" #f '("[B" "int" "int") #f)
+;; the boot's registrations are done (register-method-sig!)
+(set! method-sigs-frozen? #t)
