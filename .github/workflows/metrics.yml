@@ -1,21 +1,30 @@
 name: metrics
 
 # Publishes the findings as a report, and fails the build (ci/metrics-gate.clj) on
-# a critical finding under a path ci/metrics-allow.edn holds critical-free, or on
-# unused code beyond that file's allowlist.
+# a critical finding under a path ci/metrics-allow.edn holds critical-free, on
+# unused code beyond that file's allowlist, or on a lint finding it doesn't list.
+# On a pull request the report opens with what the refactoring queue gained and
+# lost since the base's report, which main pushes upload.
 on:
   push:
     branches: [main]
   pull_request:
+
+permissions:
+  contents: read
+  # gh run download fetches the baseline report from a main run
+  actions: read
 
 concurrency:
   group: metrics-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
-  # jolt runs the gate script. jolt-metrics is the latest release's standalone
-  # binary, so its fixes arrive without a change here.
-  JOLT_VERSION: v0.8.27
+  # jolt runs the gate script. jolt-metrics is pinned: the gate counts lint
+  # findings per rule, so a release with new rules needs the allowlist updated
+  # in the same change, and a baseline only compares like with like.
+  JOLT_VERSION: v0.8.30
+  JOLT_METRICS_VERSION: v0.8.0
 
 jobs:
   report:
@@ -36,24 +45,65 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download --repo jlt-commons/jolt-metrics --pattern '*-x86_64-linux.tar.gz' --dir "$RUNNER_TEMP"
+          gh release download "$JOLT_METRICS_VERSION" --repo jlt-commons/jolt-metrics --pattern '*-x86_64-linux.tar.gz' --dir "$RUNNER_TEMP"
           tar xzf "$RUNNER_TEMP"/jolt-metrics-*-x86_64-linux.tar.gz -C "$RUNNER_TEMP"
           mkdir -p "$HOME/.local/bin"
           install "$RUNNER_TEMP"/jolt-metrics-*-x86_64-linux/jolt-metrics "$HOME/.local/bin/"
-          gh release view --repo jlt-commons/jolt-metrics --json tagName -q '"jolt-metrics " + .tagName'
+      - name: Fetch the baseline report
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          # the main run for the PR's merge base, else the latest main runs
+          base=$(git merge-base HEAD "origin/$BASE_REF" || true)
+          runs=$( { [ -n "$base" ] && gh run list --workflow metrics.yml --branch main --event push \
+                      --commit "$base" --limit 1 --json databaseId -q '.[].databaseId'
+                    gh run list --workflow metrics.yml --branch main --event push \
+                      --limit 5 --json databaseId -q '.[].databaseId'; } || true)
+          dir="$RUNNER_TEMP/baseline"
+          for id in $runs; do
+            rm -rf "$dir"
+            if gh run download "$id" --name metrics-report-edn --dir "$dir" 2>/dev/null &&
+               [ -s "$dir/metrics-report.edn" ]; then
+              echo "baseline: main run $id"
+              echo "METRICS_BASELINE=$dir/metrics-report.edn" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          echo "no baseline report from main; the report runs without one"
       - name: Run jolt-metrics
         run: |
-          jolt-metrics . metrics-report.md --top 50
-          # the summary stops before the long per-file tables
-          awk '/^## Cleanup candidates/{exit} {print}' metrics-report.md >> "$GITHUB_STEP_SUMMARY"
-      - name: Check for critical findings and unused code
+          jolt-metrics . metrics-report.md --top 50 ${METRICS_BASELINE:+--baseline "$METRICS_BASELINE"}
+          {
+            # open with the comparison, then the summary up to the long per-file tables
+            awk '/^## Since the baseline/{p=1; print; next} p && /^## /{exit} p' metrics-report.md
+            if [ "$GITHUB_EVENT_NAME" = pull_request ] && [ -z "$METRICS_BASELINE" ]; then
+              printf 'No baseline report from main was found, so nothing to compare with.\n\n'
+            fi
+            awk '/^## Since the baseline/{skip=1; next} skip && /^## /{skip=0}
+                 /^## Cleanup candidates/{exit} !skip' metrics-report.md
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Write the EDN report
         run: |
-          # the gate reads the queue and cleanup only, so it skips the slow
-          # search for abstraction opportunities
+          # the gate reads the queue, cleanup and lints only, so it skips the
+          # slow search for abstraction opportunities
           jolt-metrics . metrics-report.edn --format edn --no-abstractions
-          jolt ci/metrics-gate.clj metrics-report.edn ci/metrics-allow.edn
+      - name: Check for critical findings, unused code and lint findings
+        run: jolt ci/metrics-gate.clj metrics-report.edn ci/metrics-allow.edn
       - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: metrics-report
           path: metrics-report.md
+      # the next pull requests' baseline. The comparison reports what moved but
+      # doesn't gate: a queue entry's score folds in its callers across the
+      # project and its file's recent churn, so it moves with unrelated commits
+      # and with the calendar, and "worse" isn't a finding the PR made.
+      - uses: actions/upload-artifact@v6
+        if: always() && github.event_name == 'push'
+        with:
+          name: metrics-report-edn
+          path: metrics-report.edn
+          retention-days: 90
+          if-no-files-found: ignore
