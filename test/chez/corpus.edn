@@ -1908,7 +1908,8 @@
   {:suite "interop / String methods" :label "String/valueOf num" :expected "\"42\"" :actual "(String/valueOf 42)" :portability :jvm}
   {:suite "interop / String methods" :label "String/valueOf str" :expected "\"hi\"" :actual "(String/valueOf \"hi\")" :portability :jvm}
   {:suite "interop / String methods" :label "String/valueOf kw" :expected "\":k\"" :actual "(String/valueOf :k)" :portability :jvm}
-  {:suite "interop / String methods" :label "String/valueOf nil" :expected "\"null\"" :actual "(String/valueOf nil)" :portability :jvm}
+  {:suite "interop / String methods" :label "String/valueOf nil" :expected :throws :actual "(String/valueOf nil)" :portability :jvm}
+  {:suite "interop / String methods" :label "String/valueOf of an untyped nil" :expected "\"null\"" :actual "((fn [x] (String/valueOf x)) nil)" :portability :jvm}
   {:suite "interop / String methods" :label "instance? CharSequence" :expected "true" :actual "(instance? CharSequence \"aaa\")" :portability :common}
   {:suite "interop / String methods" :label "instance? CharSequence non-str" :expected "false" :actual "(instance? CharSequence 42)" :portability :common}
   {:suite "interop / String methods" :label "unsupported method throws" :expected :throws :actual "(.frobnicate \"abc\")" :portability :jvm}
