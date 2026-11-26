@@ -328,13 +328,13 @@
         (recur (inc i) (next xs))))
     ret))
 
-;; Wrapping (unchecked) coercions: truncate to the width and sign-fold like the
-;; JVM primitive conversions ((unchecked-byte 200) is -56); unchecked-char wraps
-;; into char range. unchecked-long/int/float are host natives (converters.ss).
+;; Wrapping (unchecked) coercions: narrow through int as Number.byteValue does (a
+;; double clamps at 32 bits first; a char is no Number, so num raises) and sign-fold
+;; ((unchecked-byte 200) is -56). unchecked-long/int/float are host natives.
 (defn unchecked-byte [x]
-  (let [b (bit-and (unchecked-long x) 0xff)] (if (< b 128) b (- b 256))))
+  (let [b (bit-and (unchecked-int (if (char? x) (num x) x)) 0xff)] (if (< b 128) b (- b 256))))
 (defn unchecked-short [x]
-  (let [s (bit-and (unchecked-long x) 0xffff)] (if (< s 32768) s (- s 65536))))
+  (let [s (bit-and (unchecked-int (if (char? x) (num x) x)) 0xffff)] (if (< s 32768) s (- s 65536))))
 (defn unchecked-char [x] (char (bit-and (unchecked-long x) 0xffff)))
 ;; unchecked-float rounds to single precision (flsingle) in converters.ss.
 (defn unchecked-double [x] (double x))

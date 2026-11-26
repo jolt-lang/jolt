@@ -188,6 +188,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Negative integer constants past the fixnum range keep their value in a `jolt
+  build` binary: `-1152921504606846977` printed as `-17293822569102704639N`
+  there (and right under `jolt -M`), as did every negative bignum except
+  `-2^63`. Chez's vfasl writer stored the two's complement of a negative
+  bignum as its magnitude; jolt's Chez carries a patch for it.
+- `unchecked-long` and `unchecked-int` of a float clamp like a double's:
+  `(unchecked-long Float/NEGATIVE_INFINITY)` is `-9223372036854775808` (it
+  printed `-0`), and `unchecked-byte`/`unchecked-short` clamp at the int range
+  first, so `(unchecked-short 1e10)` is `-1` rather than `-7168`.
 - A host method call whose argument is of the wrong class words its
   `ClassCastException` as the JVM does for that call: the checkcast's message
   when the compiler knows the receiver's class (a hint, a constructor, a
