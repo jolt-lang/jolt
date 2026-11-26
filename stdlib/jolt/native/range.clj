@@ -276,9 +276,13 @@
         static (and nonneg
                     (or (and arr (some (fn [[b k]] (and (= b [:len arr]) (neg? k))) bounds))
                         (< (ri 1) ((alen env (:arr node)) 0))))
-        guarded (and nonneg (not static) arr (contains? *params* arr) (< (ri 1) imax))
-        rel (when (and nonneg (not static) (not guarded) arr (contains? *params* arr))
+        ;; a symbolic bound first: the guard it needs (m <= len, or one length
+        ;; below another) holds for real inputs, where the index's interval
+        ;; alone can ask for a length no array has (an i below a long m is
+        ;; only known below 2^31 - 1)
+        rel (when (and nonneg (not static) arr (contains? *params* arr))
               (first (filter (fn [[b _]] (and (guardable? b) (not= b [:len arr]))) bounds)))
+        guarded (and nonneg (not static) (not rel) arr (contains? *params* arr) (< (ri 1) imax))
         in-bounds (boolean (or static guarded rel))]
     (when guarded (swap! *needs* update arr (fnil max -1) (ri 1)))
     (when rel (swap! *rels* conj (into [arr] rel)))
@@ -381,10 +385,17 @@
         lens0 (mapv (fn [b] (let [a (get-in env [:len-of (:id b)])]
                               (when-not (contains? ids a) a)))
                     bs)
-        lid (:loop-id node)]
+        lid (:loop-id node)
+        needs0 @*needs*
+        rels0 @*rels*]
     (swap! *loopvars* assoc lid (mapv :id bs))
     (loop [round 0 cur inits lens lens0]
       (swap! *recurs* assoc lid [])
+      ;; the guard's needs and relations come from the final round only, as
+      ;; the facts do: an early round's narrower intervals ask for less of
+      ;; one check and more of another (x.len > 3 from i in 0..3)
+      (reset! *needs* needs0)
+      (reset! *rels* rels0)
       (let [env' (reduce (fn [e [b r a]]
                            (-> e (assoc-in [:r (:id b)] r) (assoc-in [:ub (:id b)] #{})
                                (update :alen dissoc (:id b))
