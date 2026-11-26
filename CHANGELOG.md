@@ -230,7 +230,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a `BufferedWriter`, as the JDK does, where it used to fail on its first write
   with `OutputStream/write: unsupported argument`. `autoFlush` is honoured, so
   `println`, `printf` and `format` flush. A `PrintStream` target such as
-  `System/out` is written as before.
+  `System/out` is written as before. `(PrintWriter. "out.txt")` and
+  `(PrintWriter. file)` open the file, with an optional charset second; they
+  failed on their first write.
 - `Character/digit` reads non-ASCII decimal digits and fullwidth letters, and
   answers `-1` for a radix outside 2..36. `Character/getNumericValue` and
   `Character/forDigit` exist.

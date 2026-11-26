@@ -915,10 +915,17 @@
            (jolt-truthy? (instance-check pw-output-stream t)))
       (host-new "java.io.BufferedWriter" (apply host-new "java.io.OutputStreamWriter" t cs-args))
       t))
+;; PrintWriter(fileName[, csn | charset]) and PrintWriter(File[, ...]) open the
+;; file as a FileOutputStream (truncating it, FileNotFoundException when it
+;; cannot), with no autoFlush: their second argument is the charset.
 (define (make-print-writer args)
   (let* ((t0 (if (pair? args) (car args) jolt-nil))
-         (auto? (and (pair? args) (pair? (cdr args)) (jolt-truthy? (cadr args))))
-         (t (pw-wrap-output-stream t0 (if (and (pair? args) (pair? (cdr args))) (cddr args) '()))))
+         (rest (if (pair? args) (cdr args) '()))
+         (file? (or (string? t0) (jolt-file? t0)))
+         (auto? (and (not file?) (pair? rest) (jolt-truthy? (car rest))))
+         (t (if file?
+                (pw-wrap-output-stream (host-new "java.io.FileOutputStream" t0) rest)
+                (pw-wrap-output-stream t0 (if (pair? rest) (cdr rest) '())))))
     (make-jhost "print-writer" (vector t #f (pw-writer-target? t) auto?))))
 (define (pw-auto-flush! self)
   (let ((st (jhost-state self)))
