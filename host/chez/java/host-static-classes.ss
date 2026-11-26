@@ -3915,6 +3915,116 @@
     ((a cmp) (arrays-sort! a 0 #f cmp))
     ((a from to) (arrays-sort! a from to jolt-compare))
     ((a from to cmp) (arrays-sort! a from to cmp))))
+
+;; --- Arrays.compare / compareUnsigned / mismatch ----------------------------
+;; Each answers what the element type's own compare does at the first index the
+;; two ranges differ, then the length difference: Byte/Short/Character.compare
+;; are x - y, Integer/Long/Double.compare are -1, 0 or 1. A reference array's
+;; elements compare with compareTo, a null element before any other.
+;; Arrays.rangeCheck, as fill above throws it, after the NPE a null array gets.
+(define (arrays-null-array name)
+  (throw-jvm 'NullPointerException
+             (string-append "Cannot read the array length because \"" name "\" is null")))
+(define (arrays-range-check! a f t name)
+  (when (jolt-nil? a) (arrays-null-array name))
+  (cond ((> f t)
+         (throw-jvm 'IllegalArgumentException
+                    (string-append "fromIndex(" (number->string f)
+                                   ") > toIndex(" (number->string t) ")")))
+        ((< f 0) (arrays-range-throw f))
+        ((> t (ja-len a)) (arrays-range-throw t))))
+(define (arrays-sign n) (cond ((< n 0) -1) ((> n 0) 1) (else 0)))
+;; Double.compare: -0.0 before 0.0, NaN after everything and equal to itself.
+(define (arrays-fl-compare x y)
+  (cond ((fl<? x y) -1)
+        ((fl>? x y) 1)
+        ((eqv? x y) 0)
+        ((flnan? x) (if (flnan? y) 0 1))
+        ((flnan? y) -1)
+        ((eqv? x -0.0) -1)              ; x is -0.0, y is 0.0
+        (else 1)))
+(define (arrays-elem-compare kind x y unsigned?)
+  (case kind
+    ((byte) (if unsigned? (fx- (fxand x 255) (fxand y 255)) (fx- x y)))
+    ((short) (if unsigned? (fx- (fxand x #xFFFF) (fxand y #xFFFF)) (fx- x y)))
+    ((char) (fx- (char->integer x) (char->integer y)))
+    ((int) (arrays-sign (if unsigned? (- (logand x #xFFFFFFFF) (logand y #xFFFFFFFF)) (- x y))))
+    ((long) (arrays-sign (if unsigned?
+                             (- (logand x #xFFFFFFFFFFFFFFFF) (logand y #xFFFFFFFFFFFFFFFF))
+                             (- x y))))
+    ((boolean) (cond ((eq? x y) 0) (x 1) (else -1)))
+    ((double float) (arrays-fl-compare x y))
+    (else (cond ((eq? x y) 0)
+                ((jolt-nil? x) -1)
+                ((jolt-nil? y) 1)
+                (else (jnum->exact (jolt-compare x y)))))))
+;; The two ranges' elements are equal as mismatch reads them: a primitive by its
+;; bits (so NaN matches NaN and -0.0 does not match 0.0), a reference element by
+;; equals.
+(define (arrays-elem-same? kind x y)
+  (if (na-ref-kind? kind) (objects-equals? x y) (eqv? x y)))
+(define (arrays-backing a) (jolt-array-vec a))
+;; An element as its backing holds it: a float[] element stays a flonum, so the
+;; double compare reads it directly.
+(define (arrays-backing-ref v i)
+  (cond ((fxvector? v) (fxvector-ref v i))
+        ((vector? v) (vector-ref v i))
+        ((string? v) (string-ref v i))
+        ((bytevector? v) (bytevector-s8-ref v i))
+        (else (flvector-ref v i))))
+(define (arrays-compare-range a af at b bf bt unsigned?)
+  (let ((kind (jolt-array-kind a)) (va (arrays-backing a)) (vb (arrays-backing b))
+        (n (min (- at af) (- bt bf))))
+    (let loop ((i 0))
+      (if (= i n)
+          (- (- at af) (- bt bf))
+          (let ((c (arrays-elem-compare kind (arrays-backing-ref va (+ af i)) (arrays-backing-ref vb (+ bf i))
+                                        unsigned?)))
+            (if (eqv? c 0) (loop (+ i 1)) c))))))
+(define (arrays-mismatch-range a af at b bf bt)
+  (let ((kind (jolt-array-kind a)) (va (arrays-backing a)) (vb (arrays-backing b))
+        (la (- at af)) (lb (- bt bf)))
+    (let ((n (min la lb)))
+      (let loop ((i 0))
+        (cond ((= i n) (if (= la lb) -1 n))
+              ((arrays-elem-same? kind (arrays-backing-ref va (+ af i)) (arrays-backing-ref vb (+ bf i)))
+               (loop (+ i 1)))
+              (else i))))))
+;; The two-array forms accept null arrays (null before any array); the range
+;; forms do not.
+(define (arrays-compare-entry unsigned?)
+  (case-lambda
+    ((a b)
+     (cond ((eq? a b) 0)
+           ((jolt-nil? a) -1)
+           ((jolt-nil? b) 1)
+           (else (arrays-compare-range a 0 (ja-len a) b 0 (ja-len b) unsigned?))))
+    ((a af at b bf bt)
+     (let ((af (jnum->exact af)) (at (jnum->exact at)) (bf (jnum->exact bf)) (bt (jnum->exact bt)))
+       (arrays-range-check! a af at "a")
+       (arrays-range-check! b bf bt "b")
+       (arrays-compare-range a af at b bf bt unsigned?)))))
+;; compareUnsigned exists for the integral arrays only, as on the JVM.
+(define (arrays-unsigned-check! a)
+  (unless (or (jolt-nil? a) (memq (jolt-array-kind a) '(byte short int long)))
+    (throw-jvm 'IllegalArgumentException "No matching field or method: java.util.Arrays/compareUnsigned")))
+(define arrays-compare (arrays-compare-entry #f))
+(define arrays-compare-unsigned
+  (let ((f (arrays-compare-entry #t)))
+    (case-lambda
+      ((a b) (arrays-unsigned-check! a) (arrays-unsigned-check! b) (f a b))
+      ((a af at b bf bt) (arrays-unsigned-check! a) (arrays-unsigned-check! b) (f a af at b bf bt)))))
+(define arrays-mismatch
+  (case-lambda
+    ((a b)
+     (when (jolt-nil? a) (arrays-null-array "a"))
+     (when (jolt-nil? b) (arrays-null-array "b"))
+     (arrays-mismatch-range a 0 (ja-len a) b 0 (ja-len b)))
+    ((a af at b bf bt)
+     (let ((af (jnum->exact af)) (at (jnum->exact at)) (bf (jnum->exact bf)) (bt (jnum->exact bt)))
+       (arrays-range-check! a af at "a")
+       (arrays-range-check! b bf bt "b")
+       (arrays-mismatch-range a af at b bf bt)))))
 (let ((arrays-statics
        (list
          (cons "equals" (lambda (a b)
@@ -3958,6 +4068,9 @@
                                    (sys-arraycopy a f out 0 (min len (- alen f)))
                                    out))))
          (cons "sort" arrays-sort)
+         (cons "compare" arrays-compare)
+         (cons "compareUnsigned" arrays-compare-unsigned)
+         (cons "mismatch" arrays-mismatch)
          (cons "deepEquals" (lambda (a b) (objects-deep-equals? a b)))
          ;; Arrays.toString is "[a, b]" — comma-separated element toString, "null"
          ;; for a nil array. It used to print the elements as a jolt VECTOR, which

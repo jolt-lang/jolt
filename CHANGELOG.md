@@ -100,6 +100,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   own frames and suppressed beneath it. `CompletableFuture.whenComplete` now adds a
   throwable from its action to the failure it was handed, so that known divergence
   is gone.
+- `java.util.Arrays/compare`, `compareUnsigned` and `mismatch`, with their range
+  forms (`(Arrays/compareUnsigned a aFrom aTo b bFrom bTo)`), so two byte
+  arrays compare without a hand-written loop. `compare` answers what the
+  element type's own compare does (`Byte.compare` is `x - y`, `Double.compare`
+  puts NaN last and -0.0 before 0.0) and then the length difference, with a
+  null array first. `compareUnsigned` takes byte, short, int and long arrays,
+  and its order is the order UTF-8 keys sort in.
 
 ### Changed
 
