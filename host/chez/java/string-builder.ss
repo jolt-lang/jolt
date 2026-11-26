@@ -117,7 +117,7 @@
         (let ((out (substring (vector-ref st 0) 0 n)))
           (vector-set! st 3 out)
           out)
-        (let ((out (make-string n)) (fl (vector-ref st 6)))
+        (let ((out (make-string n #\nul)) (fl (vector-ref st 6)))
           (sa-string-copy-range! out 0 (vector-ref st 0) 0 fl)
           (%sb-copy-pending! out n pend)
           (vector-set! st 3 out)
@@ -131,11 +131,15 @@
   (syntax-rules () ((_ st) (let ((s st)) (or (vector-ref s 3) (%sb-materialize! s))))))
 ;; Room in buf for one more char after its N, grown to the logical capacity
 ;; (which the caller has already raised past N).
+;; The buffer's own length is not capacity(): that stays the logical number in
+;; slot 7, and the buffer grows by doubling from 8, since a reader's builder holds
+;; one short token. The explicit fill matters: Chez's one-argument make-string
+;; takes a slower path than a filled one (16 chars: 20.8 against 14.9 ns).
 (define (%sb-buf-room! st n)
   (let ((b (vector-ref st 0)))
     (if (fx<? n (string-length b))
         b
-        (let ((nb (make-string (fxmax (vector-ref st 7) (fx+ n 1)))))
+        (let ((nb (make-string (fxmax 8 (fx* 2 n)) #\nul)))
           ;; a fresh builder's first char has nothing to carry over, and the
           ;; library copy's argument checks were a third of that append
           (unless (fx=? n 0) (sa-string-copy-range! nb 0 b 0 n))
@@ -365,7 +369,7 @@
                 (%sb-flushed st)
                 (let ((n (vector-ref st 1)))
                   (when (fx<? n (vector-ref st 7))
-                    (let ((nb (make-string n)))
+                    (let ((nb (make-string n #\nul)))
                       (sa-string-copy-range! nb 0 (vector-ref st 0) 0 n)
                       (vector-set! st 0 nb)
                       (vector-set! st 7 n)))))
