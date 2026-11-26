@@ -183,7 +183,7 @@ CI-GATES := submodules values flonumprint recordinline corpus nsaudit unit docum
   protoret accfix pic narrow directlink linkedrace mintgate directcall defmetacells staticsite arraymap hamt recfast recfold arraybacking largebytesgc largefxgc unitcontext numeric oparity s64wrap toplevelinline mathfl flonumdisp flarr \
   fnform poolshape coreproc traceemit traceeval tracecompilecost degradedbacktrace \
   inline inline-body guardedinline dcerefs shakelocal manifestcheck readmecheck portcheck mirrordrift regexdfacheck regexdfa regexanchor regexanchorprims regexanchorcheck regexreplace regexsyntax regexbacktrack deadhost recordshadow emittedheads adaptercheck hostprops normalizecheck hostregistry hostarity enummodel imagecoverage lazyshims foreignhandles dispatchalloc hostsite regexmatcher winpath winplatform winparity statlayout lockcheck mmepochcheck parkcheck shelloutcheck errnocheck irvalidate seeddefs devbootsmoke \
-  gatebootsmoke aotcachesmoke aotworkersmoke aotcachepathsmoke aotcachesourcepathsmoke aotcachestarfilesmoke aotfingerprint vfaslceiling vfaslstrings buildscaling buildnatives buildsegments compilepathsmoke makefilesmoke versionsmoke attributioncheck noticecheck \
+  gatebootsmoke aotcachesmoke aotworkersmoke aotcachepathsmoke aotcachesourcepathsmoke aotcachestarfilesmoke aotfingerprint vfaslceiling vfaslstrings vfaslbignums buildscaling buildnatives buildsegments compilepathsmoke makefilesmoke versionsmoke attributioncheck noticecheck \
   systemstreams closedstdout stderrsplit filelock deleteonclose userdirpaths mimetypes utf8decode \
   certify gambitcheck gambitkernel gambitgencheck gambitseedcheck gambitboot gambiteval gambitunbound gambitvars gambitstatics gambittwins gambitprofile grenadinecheck fibers fiberspoll gosm asynctimer ticks interruptnest monitorescape windescape threadsafety maskedacquire ioerrno cas flow native nativesan nativebuild
 TEST-GATES := submodules selfhost ci
@@ -1820,6 +1820,12 @@ vfaslceiling:
 # kernel (or under JOLT_REQUIRE_LOCKFREE_CHEZ=1); a stock one reports and passes.
 vfaslstrings:
 	@$(CHEZ) --script test/chez/vfasl-shared-strings-test.ss
+
+# Negative bignum constants keep their value in a vfasl image (chez-patches/
+# 0012): stock Chez stored a negative bignum's two's-complement bits as its
+# magnitude, so a built binary printed -2^60-1 as -17293822569102704639.
+vfaslbignums:
+	@$(CHEZ) --script test/chez/vfasl-negative-bignum-test.ss
 
 # The build-side shapes `jolt build`'s back-end cost depends on (#1059): small
 # init procedures, the back end's collect trip, a failed vfasl that says so, and
