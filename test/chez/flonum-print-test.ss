@@ -17,6 +17,7 @@
 ;; subnormals, scaled uniforms), so the reference and the JDK agree there too.
 (import (chezscheme))
 (load "host/chez/scheme-adapter-runtime.ss")
+(load "host/chez/fx-digits.ss")
 (load "host/chez/number-print.ss")
 
 ;; --- reference ---------------------------------------------------------------

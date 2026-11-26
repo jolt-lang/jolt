@@ -1115,8 +1115,9 @@
     jrdesc-ifc-mutex
     (hashtable-set! jrdesc-ifc-tbl d v)))
 
-(define (jrdesc-ifc-epoch)
-  (fx+ jch-graph-epoch jolt-proto-epoch))
+(define-syntax jrdesc-ifc-epoch
+  (syntax-rules ()
+    ((_) (fx+ jch-graph-epoch jolt-proto-epoch))))
 
 (define (jrdesc-derive-ifc d record?)
   (let ((tag (jrdesc-tag d))

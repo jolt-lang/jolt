@@ -64,6 +64,7 @@
 ;; Before everything else that locks: jolt-with-mutex is a MACRO, so it has to be
 ;; defined before any file that uses it is loaded. It depends on nothing but Chez.
 (load "host/chez/locks.ss")
+(load "host/chez/fx-digits.ss")
 (load "host/chez/values.ss")
 (load "host/chez/hasheq.ss")
 ;; Resolve a libc entry point at RUN time; #f when the entry doesn't exist
