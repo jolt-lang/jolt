@@ -458,6 +458,16 @@
       (make-symbol-t (intern-symbol-string ns) name meta #f #f)))
 (define (jolt-symbol ns name) (make-symbol-t/pooled ns name jolt-nil))
 (define (jolt-symbol/meta ns name meta) (make-symbol-t/pooled ns name meta))
+;; A symbol clojure.core/symbol builds at run time from strings (#1713). Its
+;; strings are NOT pooled. The JVM's Symbol.intern does not .intern() them
+;; either: only a class file's literals are interned, so (identical? (name
+;; (symbol s)) (name (symbol s))) is false there, while two quoted '?a share
+;; a name, which jolt-symbol keeps. Pooling cost tools.reader ~95 ns per
+;; symbol it read: a front-cache miss and insert, then the pool probe, for a
+;; string made a moment before and never seen again. Equality falls back to
+;; string=? (jolt=2-sym), and the hash finds the name's memo cell when the
+;; symbol is first hashed (hasheq.ss symbol-hasheq). NS is #f or a string.
+(define (jolt-symbol/unpooled ns name) (make-symbol-t ns name jolt-nil #f #f))
 
 ;; ns/name identical means the hasheq is identical, so a symbol rebuilt only to
 ;; change its metadata inherits the cache instead of recomputing it. with-meta on
