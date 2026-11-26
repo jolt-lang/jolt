@@ -186,7 +186,7 @@
     (throw-jvm 'IllegalArgumentException "No matching ctor found for class java.util.jar.JarOutputStream"))
   (unless (<= 1 (length args) 2) (no-ctor))
   (when (and (pair? (cdr args)) (not (or (jolt-nil? (cadr args)) (jar-manifest? (cadr args)))))
-    (zip-class-cast (cadr args) "java.util.jar.Manifest"))
+    (jolt-checkcast-fail (cadr args) "java.util.jar.Manifest"))
   (let ((self (make-zip-output-stream* "java.util.jar.JarOutputStream" (list (car args)))))
     (jolt-with-mutex jarout-first-mu (hashtable-set! jarout-first (zout-of self) #t))
     (when (pair? (cdr args))
