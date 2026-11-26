@@ -370,9 +370,9 @@
     ((not (fixnum? cp)) #f)
     ((and (fx>=? cp 48) (fx<=? cp 57)) (fx- cp 48))
     ((or (fx<? cp 128) (fx>? cp #x10FFFF) (and (fx>=? cp #xD800) (fx<=? cp #xDFFF))) #f)
-    ((eq? (char-general-category (integer->char cp)) 'Nd)
+    ((eq? (char-jdk-category (integer->char cp)) 'Nd)
      (let loop ((p (fx- cp 1)) (n 1))
-       (if (eq? (char-general-category (integer->char p)) 'Nd)
+       (if (eq? (char-jdk-category (integer->char p)) 'Nd)
            (loop (fx- p 1) (fx+ n 1))
            (fxmodulo (fx- n 1) 10))))
     (else #f)))
@@ -987,7 +987,7 @@
              (integer->char cp))))))
 (define (char-category-in? x cats)
   (let ((c (scalar-char x)))
-    (and c (memq (char-general-category c) cats) #t)))
+    (and c (memq (char-jdk-category c) cats) #t)))
 ;; general-category symbol -> java.lang.Character.getType constant. 17 is unused
 ;; on the JVM as well; Cs is listed for the record, though no char here carries it.
 (define char-category-types
@@ -998,14 +998,14 @@
 (define (char-type x)
   (let ((c (scalar-char x)))
     (if c
-        (cdr (assq (char-general-category c) char-category-types))
+        (cdr (assq (char-jdk-category c) char-category-types))
         (let ((cp (char->cp x)))   ; a surrogate unit or a non-scalar int
           (if (and (fixnum? cp) (fx>=? cp #xD800) (fx<=? cp #xDFFF)) 19 0)))))
 (register-class-statics! "java.lang.Character"
   (list (cons "TYPE" "char")
         (cons "getType" (lambda (c) (->num (char-type c))))
-        (cons "isUpperCase" (lambda (c) (let ((ch (scalar-char c))) (and ch (char-upper-case? ch)))))
-        (cons "isLowerCase" (lambda (c) (let ((ch (scalar-char c))) (and ch (char-lower-case? ch)))))
+        (cons "isUpperCase" (lambda (c) (let ((ch (scalar-char c))) (and ch (char-jdk-upper-case? ch)))))
+        (cons "isLowerCase" (lambda (c) (let ((ch (scalar-char c))) (and ch (char-jdk-lower-case? ch)))))
         (cons "isDigit" (lambda (c) (char-category-in? c '(Nd))))
         (cons "isLetter" (lambda (c) (char-category-in? c '(Lu Ll Lt Lm Lo))))
         (cons "isLetterOrDigit" (lambda (c) (char-category-in? c '(Lu Ll Lt Lm Lo Nd))))
@@ -1071,7 +1071,7 @@
         (cons "isTitleCase" (lambda (c) (char-category-in? c '(Lt))))
         ;; a surrogate is defined: its category is Cs (SURROGATE), not Cn
         (cons "isDefined" (lambda (c) (not (fx=? (char-type c) 0))))
-        (cons "isAlphabetic" (lambda (c) (let ((ch (scalar-char c))) (and ch (char-alphabetic? ch)))))
+        (cons "isAlphabetic" (lambda (c) (let ((ch (scalar-char c))) (and ch (char-jdk-alphabetic? ch)))))
         (cons "isSpaceChar" (lambda (c) (char-category-in? c '(Zs Zl Zp))))
         (cons "isISOControl" (lambda (c) (let ((cp (char->cp c)))
                                            (or (and (>= cp 0) (<= cp #x1F)) (and (>= cp #x7F) (<= cp #x9F))))))

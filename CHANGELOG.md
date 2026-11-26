@@ -12,32 +12,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`deps.local.edn`: per-machine overrides merged over deps.edn.** A project's
   `deps.local.edn` (or the file `$JOLT_DEPS_LOCAL` names, relative to the
   project) merges over its deps.edn the way deps.edn merges over the user's,
-  and is meant to stay out of version control. Its `:jolt/native` specs are the
+  and is meant to stay out of version control. Relative paths in it, `:jolt/native`
+  candidates and `:local/root` alike, resolve against the project wherever the
+  file is. Its `:jolt/native` specs are the
   closest declarations of all: `{:name "sqlite3" :linux ["/opt/sqlite/lib/libsqlite3.so.0"]}`
   overrides just that path for a library the project or any dependency
   declares, and keeps the rest of the spec, including loading on the
-  dependency's first require. `-Srepro` leaves the file out; `-Sdescribe` and
-  `-Sverbose` name it.
+  dependency's first require. A spec there that names no declared library is
+  ignored with a warning rather than becoming a required one. `-Srepro` leaves
+  the file out, its `:tasks` included; `-Sdescribe` and `-Sverbose` name it.
 - **`jolt.configure` finds native libraries on this machine.** A task
   `configure {:exec-fn jolt.configure/configure!}` (`jolt run configure`) looks
   for each `:jolt/native` library the project resolves to whose declared
   candidates do not open, and records the paths it finds in `deps.local.edn`,
-  like `./configure`. It reads pkg-config `.pc` files, Homebrew's `opt/` links,
-  the dynamic linker's `/etc/ld.so.conf`, the library-path variables and the
-  usual system directories itself, without running pkg-config, ldconfig or
-  brew, and takes a file only if it opens. A spec can steer it with
+  like `./configure`. It reads pkg-config `.pc` files (`${pcfiledir}` included),
+  Homebrew's `opt/` links, the library-path variables, `~/.local/lib` and the
+  Homebrew, MacPorts and NixOS lib directories, then the dynamic linker's
+  `/etc/ld.so.conf` and the usual system directories itself, without running
+  pkg-config, ldconfig or brew, and takes a file only if it opens. A spec that
+  declares a versioned file (`libssl.3.dylib`, `libssl.so.3`) gets that file and
+  no other version of the library; an unversioned one matches by name. A path
+  under Homebrew's Cellar is recorded through the formula's `opt/` link, which
+  survives an upgrade. A spec can steer it with
   `:pkg-config`, `:brew` and `:search`. `--all`, `--dry-run`, `--no-verify`,
   `--file` and library names limit or redirect it; `find-library`, `discover`
   and `pkg-config` are callable directly.
 - **A bare `:jolt/native` filename is looked for.** A candidate with no path
   in it, like `"libcrypto.3.dylib"`, is tried beside the deps.edn that declared
   it first, then wherever the platform's loader finds it, and when neither
-  opens it, autodiscovery searches the places `jolt.configure` does (pkg-config
-  libdirs, Homebrew, including every formula's `opt/*/lib`, the linker's
-  configured directories, the library-path variables, the system directories)
-  for that exact file. Discovery runs only after every candidate has failed, so
-  a library that already loads costs nothing more. `JOLT_NATIVE_DISCOVER=0`
-  turns it off. A built binary loads its candidates as before.
+  opens it, autodiscovery looks for that exact file in the spec's `:search`
+  directories, then where `jolt.configure` does (pkg-config libdirs, Homebrew,
+  the library-path variables and `~/.local/lib`, the linker's configured
+  directories, the system directories, and every Homebrew formula's
+  `opt/*/lib`). Discovery runs only after every candidate has failed, and never
+  for an `:optional` library, so a library that loads, or an optional one that
+  is absent, costs nothing more. `JOLT_NATIVE_DISCOVER=0` turns it off. A built
+  binary loads its candidates as before.
 
 - The JIT compiles a native region for the CPU it runs on: it defines the C
   macro of each feature the machine has (`__AVX2__`, `__FMA__`, `__ARM_NEON`
@@ -73,7 +83,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `getSuppressed` returns a fresh `Throwable[]` in the order they were added, adding
   `nil` throws `NullPointerException` ("Cannot suppress a null exception.") and adding
   a throwable to itself throws `IllegalArgumentException` ("Self-suppression not
-  permitted") with that throwable as its cause. `printStackTrace` prints each
+  permitted") with that throwable as its cause, a proxy's included; one built
+  with `enableSuppression` false (a proxy's 4-argument constructor) records
+  nothing. `printStackTrace` prints each
   suppressed throwable after the frames, as a `Suppressed:` line one tab in with its
   own frames and suppressed beneath it. `CompletableFuture.whenComplete` now adds a
   throwable from its action to the failure it was handed, so that known divergence
@@ -89,9 +101,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (each `:build` still runs only for the files its own deps.edn declares). A
   project's `:jolt/provides` claim on a class takes it from a dependency's, and
   a library's from the libraries it depends on, instead of being refused as a
-  conflict; two unrelated libraries claiming one class are still refused. The
-  resolved libraries are ordered so each precedes the libraries it depends on,
-  which also changes the source-root order when a project names B ahead of A.
+  conflict; two unrelated libraries claiming one class are still refused.
 
 - `jolt.native` regions always run as native code. Outside a `jolt build`
   binary (the REPL, `jolt run`) a region is now compiled in process by MIR's C
@@ -131,7 +141,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs on (gcc, or clang 18 and later). `-DJN_NO_CPU_CLONES` turns it off.
 - Common host operations are 2 to 7 times faster (#1713). On Chez,
   `(:k rec)` and `(get rec :k)` on a defrecord read the field straight from a
-  per-site cache (19 and 38 ns to 5.5). `(instance? T x)` answers a repeat
+  per-site cache (19 and 38 ns to 5.5); the inline read is emitted only for a
+  key some defrecord declares, so a map's lookup is not slowed by it.
+  `(instance? T x)` answers a repeat
   inline for a record or a string, number, char, boolean, keyword or nil
   (16 to 32 ns down to 9 to 15). `Matcher.group` and the group vectors of
   `re-find`, `re-matches` and `re-seq` slice the matched string directly
@@ -159,9 +171,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Matcher.start(g)`/`.end(g)` answer `-1` for a group that took no part in
   the match (they answered `false`), and `group`/`start`/`end` of a group
   number out of range throw `IndexOutOfBoundsException: No group N`.
+  `start` and `end` take a group name, as `group` does; an unknown name throws
+  `IllegalArgumentException: No group with name <n>`.
 - `Character/digit` reads non-ASCII decimal digits and fullwidth letters, and
   answers `-1` for a radix outside 2..36. `Character/getNumericValue` and
   `Character/forDigit` exist.
+- `Character`'s classification (`getType`, `isDigit`, `isLetter`,
+  `isLetterOrDigit`, `isUpperCase`, `isAlphabetic` and the rest, `digit`) and
+  regex Unicode classes like `\p{L}` and `\p{Nd}` follow JDK 21's Unicode 15
+  data. They read Chez's newer tables, so the digits and letters Unicode added
+  since counted as digits and letters. `\p{Cn}` and `\p{C}` no longer fail to
+  compile.
+- `Math` double functions and `clojure.math` take a `BigDecimal` as its double
+  value, so `(Math/sqrt 4M)` is `2.0`; they threw `ClassCastException`.
 - Under the JIT on macOS arm64, a small array a native region kept on the stack
   started out with garbage instead of zeros: the JIT's prelude did not declare
   `memset`, and an undeclared call there passes its arguments where `memset`
