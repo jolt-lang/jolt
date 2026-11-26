@@ -1483,26 +1483,28 @@
 ;; #f. A field and not a side table: it costs a store, where a table shared across
 ;; threads needed a lock and an insert (~130ns per ex-info), and it dies with the
 ;; exception -- a weak table kept every entry forever, since the captured frames
-;; hold the throwable they were capturing. The layout is image surface: images
-;; drop the capture (a continuation cannot be written) and read the v1 layout
-;; through a legacy arm (state-image.ss); the v1 uid is retired.
+;; hold the throwable they were capturing. The cause is mutable for
+;; Throwable.initCause, which sets an unset cause once (records-interop.ss), so a
+;; cause is always the field and ex-cause stays a field read. The layout is
+;; image surface: images drop the capture (a continuation cannot be written) and
+;; read the v1 and v2 layouts through a legacy arm (state-image.ss); those uids
+;; are retired.
 (define-record-type (jolt-ex-info-record make-jolt-ex-info-record* jolt-ex-info-record?)
-  (fields class-name message cause data (mutable error-offset) (mutable capture))
-  (nongenerative jolt-ex-info-record-v2))
+  (fields class-name message (mutable cause) data (mutable error-offset) (mutable capture))
+  (nongenerative jolt-ex-info-record-v3))
 (define (make-jolt-ex-info-record class-name message cause data error-offset)
   (make-jolt-ex-info-record* class-name message cause data error-offset #f))
-;; The cause field's value for a cause a constructor was GIVEN as nil
-;; ((Exception. "m" nil)): the JVM tells it from no cause at all (initCause then
-;; refuses), so the field holds this keyword rather than nil, and every reader
-;; that means "the cause" goes through jolt-ex-info-cause. A keyword travels in
-;; an image as itself. records-interop.ss's throwable-cause adds what initCause
-;; set.
+;; A throwable whose cause is set to nil (a constructor given nil, or
+;; initCause(nil)): the JVM tells it from no cause at all (initCause then
+;; refuses). The cause field stays nil, so every reader of the cause is
+;; unchanged, and this keyword marks the record's error-offset slot instead,
+;; which only a ParseException's int or a detail vector otherwise holds
+;; (records-interop.ss throwable-field-cause). A keyword travels in an image as
+;; itself.
 (define jolt-cause-given-nil (keyword "jolt" "cause-given-nil"))
 ;; every ex-info's class name is this one string, so a test for an ExceptionInfo
 ;; is an eq? (records-interop.ss throwable-field-cause, ex-cause)
 (define jolt-ex-info-class-name "clojure.lang.ExceptionInfo")
-(define (jolt-ex-info-cause v)
-  (let ((c (jolt-ex-info-record-cause v))) (if (eq? c jolt-cause-given-nil) jolt-nil c)))
 
 ;; --- exceptions --------------------------------------------------------------
 ;; throw raises a Chez condition WRAPPING the jolt value; catch (emitted as
@@ -1995,6 +1997,11 @@
     (jolt-ex-info-record-error-offset-set! t detail)
     t))
 
+;; ...and one constructed with a nil cause GIVEN, marked as set
+;; (jolt-cause-given-nil) in the one allocation.
+(define (jolt-host-throwable/nil-cause class-name msg)
+  (jolt-capture-throwable!
+    (make-jolt-ex-info-record class-name msg jolt-nil jolt-nil jolt-cause-given-nil)))
 (define (jolt-host-throwable class-name msg . more)
   (jolt-capture-throwable!
     (make-jolt-ex-info-record class-name msg

@@ -798,27 +798,19 @@
   (jolt-with-mutex throwable-suppressed-mu
     (hashtable-set! throwable-no-suppression-tbl (throwable-identity v) #t)))
 ;; A throwable's cause, the JVM way: unset until a constructor or initCause
-;; sets it, and settable once. A constructor's cause is the record's field: a
-;; cause, nil for none, or jolt-cause-given-nil (rt.ss) for a cause given as nil;
-;; an ExceptionInfo's every constructor passes one. The field is fixed (the
-;; layout is image surface), so what initCause sets lives beside it in a table,
-;; as the suppressed lists do. The table is only consulted for a throwable whose
-;; field says "unset", and only once anything has been written to it, so ex-cause
-;; on a throwable that has a cause, or in a program that never calls initCause,
-;; takes no lock.
+;; sets it, and settable once. The cause is the record's field (mutable for
+;; initCause); a cause set to nil leaves the field nil and marks the error-offset
+;; slot with jolt-cause-given-nil (rt.ss); an ExceptionInfo's every constructor
+;; passes one. A throwable whose error-offset already holds a ParseException's
+;; offset or a detail vector has no room for the mark, so an initCause(nil) on
+;; one is remembered in a table, read only by initCause. A raw Chez condition
+;; has no fields at all, and its initCause lives in the same table.
 (define throwable-cause-tbl (make-ephemeron-eq-hashtable))
-;; #t once anything has made a cause the field alone cannot answer: an
-;; initCause (set under the mutex, before its write) or a constructor given a
-;; nil cause. While it is #f a cause is the field, which is ex-cause's one test.
-(define throwable-cause-special? #f)
-(define (throwable-cause-entry k)
-  (and throwable-cause-special?
-       (jolt-with-mutex throwable-suppressed-mu (hashtable-ref throwable-cause-tbl k #f))))
-;; What the field says of R, a throwable record: 'unset, or the cause.
+;; What R, a throwable record, says of its cause: 'unset, or the cause.
 (define (throwable-field-cause r)
   (let ((c (jolt-ex-info-record-cause r)))
-    (cond ((eq? c jolt-cause-given-nil) jolt-nil)
-          ((not (jolt-nil? c)) c)
+    (cond ((not (jolt-nil? c)) c)
+          ((eq? (jolt-ex-info-record-error-offset r) jolt-cause-given-nil) jolt-nil)
           ;; eq? for every ex-info this process made; a name read back from
           ;; an image is an equal string
           ((let ((n (jolt-ex-info-record-class-name r)))
@@ -828,18 +820,11 @@
           (else 'unset))))
 (define (throwable-cause v)
   (let ((r (throwable-identity v)))
-    (if (jolt-ex-info-record? r)
-        (let ((c (throwable-field-cause r)))
-          (if (eq? c 'unset)
-              (let ((e (throwable-cause-entry r))) (if e (car e) jolt-nil))
-              c))
-        (let ((e (throwable-cause-entry r))) (if e (car e) jolt-nil)))))
-;; The field a constructor stores for a cause it was given.
-(define (throwable-given-cause c)
-  (if (jolt-nil? c)
-      (begin (unless throwable-cause-special? (set! throwable-cause-special? #t))
-             jolt-cause-given-nil)
-      c))
+    (cond ((jolt-ex-info-record? r) (jolt-ex-info-record-cause r))
+          ((condition? r)
+           (let ((e (jolt-with-mutex throwable-suppressed-mu (hashtable-ref throwable-cause-tbl r #f))))
+             (if e (car e) jolt-nil)))
+          (else jolt-nil))))
 ;; Throwable.initCause: the cast of the argument, then the JDK's two checks, in
 ;; its order, each refusal carrying the throwable as its cause. The check and
 ;; the write are one step under the mutex, so of two threads only one sets it.
@@ -847,15 +832,18 @@
   (unless (or (jolt-nil? c) (instance-check throwable-type-sym c))
     (jolt-reflect-cast-fail c "java.lang.Throwable"))
   (let* ((k (throwable-identity v))
+         (rec? (jolt-ex-info-record? k))
          (outcome
-          (if (and (jolt-ex-info-record? k) (not (eq? (throwable-field-cause k) 'unset)))
-              'set
-              (jolt-with-mutex throwable-suppressed-mu
-                (cond ((hashtable-ref throwable-cause-tbl k #f) 'set)
-                      ((eq? (throwable-identity c) k) 'self)
-                      (else (set! throwable-cause-special? #t)
-                            (hashtable-set! throwable-cause-tbl k (list c))
-                            'ok))))))
+          (jolt-with-mutex throwable-suppressed-mu
+            (cond ((or (and rec? (not (eq? (throwable-field-cause k) 'unset)))
+                       (hashtable-ref throwable-cause-tbl k #f))
+                   'set)
+                  ((eq? (throwable-identity c) k) 'self)
+                  ((not rec?) (hashtable-set! throwable-cause-tbl k (list c)) 'ok)
+                  ((not (jolt-nil? c)) (jolt-ex-info-record-cause-set! k c) 'ok)
+                  ((eqv? (jolt-ex-info-record-error-offset k) 0)
+                   (jolt-ex-info-record-error-offset-set! k jolt-cause-given-nil) 'ok)
+                  (else (hashtable-set! throwable-cause-tbl k (list c)) 'ok)))))
     (case outcome
       ((ok) v)
       ((set) (jolt-throw (jolt-host-throwable "java.lang.IllegalStateException"
@@ -864,15 +852,7 @@
                                               v)))
       (else (jolt-throw (jolt-host-throwable "java.lang.IllegalArgumentException"
                                              "Self-causation not permitted" v))))))
-;; The cause an image writes for a throwable record (state-image.ss): its
-;; effective one, so a cause initCause set travels in the field, and an
-;; initCause'd nil as jolt-cause-given-nil, both reading back as set.
-(define (throwable-image-cause r)
-  (let ((c (jolt-ex-info-record-cause r)))
-    (if (jolt-nil? c)
-        (let ((e (throwable-cause-entry r)))
-          (cond ((not e) c) ((jolt-nil? (car e)) jolt-cause-given-nil) (else (car e))))
-        c)))
+
 (define (throwable-add-suppressed! v other)
   (cond
     ((not (or (jolt-nil? other) (instance-check throwable-type-sym other)))

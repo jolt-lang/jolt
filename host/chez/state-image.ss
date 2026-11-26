@@ -51,6 +51,10 @@
 ;; throwable is written as a copy without it. Formats 8 and older carry the v1
 ;; layout, which restores through image-legacy-ex-info? below.
 ;;
+;; Version 17: a throwable is jolt-ex-info-record-v3, whose cause is mutable
+;; (Throwable.initCause); formats 16 and older carry v2 (or v1), which restore
+;; through image-legacy-ex-info? as well, the first five fields being the same.
+;;
 ;; Version 10 (also): an async channel is async-chan-v4, which counts the
 ;; threads waiting on it; async-chan-v3 restores through image-legacy-coll?.
 ;;
@@ -82,8 +86,8 @@
 ;; held a (key . value) pair per slot under one bitmap. Formats 15 and older
 ;; carry v1 tries, which restore through image-legacy-pmap? below. A rekeyed
 ;; map now names its mode ('hash-map / 'array-map where 15 wrote 'map).
-(define jolt-image-format-version 16)
-(define jolt-image-read-versions '(2 3 4 5 6 7 8 9 10 11 12 13 14 15 16))
+(define jolt-image-format-version 17)
+(define jolt-image-read-versions '(2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17))
 
 ;; A map the walk rebuilds, from (key . value) entries in iteration order, in the
 ;; mode the original had: a literal's rules would turn a small hash map into an
@@ -523,13 +527,15 @@
                      (string=? (substring n 0 9) "chez-jrec")))))))
 (define (legacy-ref-val x)
   ((record-accessor (record-rtd x) 0) x))
-;; A throwable from a format <= 8 image: the v1 layout (class-name message cause
-;; data error-offset), with no capture field. Its uid is retired, so the fasl
-;; materializes the old rtd and the instance answers #f to jolt-ex-info-record?.
+;; A throwable from a format <= 16 image: the v1 layout (class-name message cause
+;; data error-offset, format <= 8) or v2 (the same and a capture). Their uids
+;; are retired, so the fasl materializes the old rtd and the instance answers #f
+;; to jolt-ex-info-record?.
 (define (image-legacy-ex-info? x)
   (and (record? x)
        (record-rtd x)
-       (eq? (record-type-uid (record-rtd x)) 'jolt-ex-info-record-v1)))
+       (memq (record-type-uid (record-rtd x)) '(jolt-ex-info-record-v1 jolt-ex-info-record-v2))
+       #t))
 ;; A map from an image written before the meta slot (format <= 7). Two
 ;; generations: chez-pmap-v5 (root cnt hasheq) is the current layout minus the
 ;; slot; chez-pmap-v4 (root cnt order hasheq all-kw, format <= 6) has a trie
@@ -1395,7 +1401,7 @@
                               (walk-ex-info-fields
                                 x (jolt-ex-info-record-class-name x)
                                 (jolt-ex-info-record-message x)
-                                (throwable-image-cause x)
+                                (jolt-ex-info-record-cause x)
                                 (jolt-ex-info-record-data x)
                                 (jolt-ex-info-record-error-offset x) path))
                              ((pair? x) (walk-pair x path))
@@ -1880,9 +1886,6 @@
                       (hashtable-set! memo x nx)
                       (let ((c (walk cause (cons "cause" path)))
                             (d (walk data (cons "data" path))))
-                        ;; a given-nil cause read back marks the process as
-                        ;; having one, as constructing it does (records-interop.ss)
-                        (when (eq? c jolt-cause-given-nil) (throwable-given-cause jolt-nil))
                         (let ((out (make-jolt-ex-info-record class-name message c d error-offset)))
                           (hashtable-set! memo x out)
                           out)))

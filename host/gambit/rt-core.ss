@@ -140,18 +140,17 @@
 ;; equals). get / keyword lookup: MISS (record is NOT ILookup).
 ;; error-offset stores ParseException.getErrorOffset (0 when not set).
 (define-record-type jolt-ex-info-record
-  (fields class-name message cause data (mutable error-offset))
-  (nongenerative jolt-ex-info-record-v1))
-;; The cause field's value for a cause a constructor was GIVEN as nil
-;; ((Exception. "m" nil)): the JVM tells it from no cause at all (initCause then
-;; refuses), so the field holds this keyword rather than nil, and every reader
-;; that means "the cause" goes through jolt-ex-info-cause. A keyword travels in
-;; an image as itself. records-interop.ss's throwable-cause adds what initCause
-;; set.
+  (fields class-name message (mutable cause) data (mutable error-offset))
+  (nongenerative jolt-ex-info-record-v2))
+;; A throwable whose cause is set to nil (a constructor given nil, or
+;; initCause(nil)): the JVM tells it from no cause at all (initCause then
+;; refuses). The cause field stays nil, so every reader of the cause is
+;; unchanged, and this keyword marks the record's error-offset slot instead,
+;; which only a ParseException's int or a detail vector otherwise holds
+;; (records-interop.ss throwable-field-cause). A keyword travels in an image as
+;; itself.
 (define jolt-cause-given-nil (keyword "jolt" "cause-given-nil"))
 (define jolt-ex-info-class-name "clojure.lang.ExceptionInfo")
-(define (jolt-ex-info-cause v)
-  (let ((c (jolt-ex-info-record-cause v))) (if (eq? c jolt-cause-given-nil) jolt-nil c)))
 
 ;; --- exceptions --------------------------------------------------------------
 ;; throw raises a Chez condition WRAPPING the jolt value; catch (emitted as
@@ -468,6 +467,11 @@
 ;; ex-message all reflect the real type.
 ;; java.text.ParseException carries an int error offset (getErrorOffset). Stored
 ;; in the record's error-offset field.
+;; ...and one constructed with a nil cause GIVEN, marked as set
+;; (jolt-cause-given-nil) in the one allocation.
+(define (jolt-host-throwable/nil-cause class-name msg)
+  (jolt-capture-throwable!
+    (make-jolt-ex-info-record class-name msg jolt-nil jolt-nil jolt-cause-given-nil)))
 (define (jolt-host-throwable class-name msg . more)
   (jolt-capture-throwable!
     (make-jolt-ex-info-record class-name msg

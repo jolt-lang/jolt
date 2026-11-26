@@ -296,14 +296,7 @@
                     ((throwable-proxy? e) (record-method-dispatch e "getMessage" jolt-nil))
                     (else jolt-nil))))
 (def-var! "clojure.core" "ex-cause"
-  (lambda (e) (cond ((jolt-ex-info-record? e)
-                     (let ((c (jolt-ex-info-record-cause e)))
-                       ;; a cause in the field is the answer; a nil or the
-                       ;; given-nil sentinel asks further only once something
-                       ;; has made a cause the field cannot tell (records-interop.ss)
-                       (if (or (jolt-nil? c) (eq? c jolt-cause-given-nil))
-                           (if throwable-cause-special? (throwable-cause e) jolt-nil)
-                           c)))
+  (lambda (e) (cond ((jolt-ex-info-record? e) (jolt-ex-info-record-cause e))
                     ((throwable-proxy? e) (record-method-dispatch e "getCause" jolt-nil))
                     (else jolt-nil))))
 ;; Throwable->map: the seed prelude version reads ex-data/ex-message/ex-cause

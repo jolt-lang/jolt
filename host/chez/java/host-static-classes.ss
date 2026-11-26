@@ -2674,6 +2674,12 @@
 ;; enableSuppression false makes addSuppressed record nothing.
 ;; Derived from the ONE exception hierarchy in class-hierarchy.ss: every
 ;; jch-isa? -> Throwable gets a ctor with no second list to maintain.
+;; A throwable a constructor was handed CAUSE for: a nil one is still a cause
+;; given (rt.ss jolt-cause-given-nil).
+(define (throwable-given canonical msg cause)
+  (if (jolt-nil? cause)
+      (jolt-host-throwable/nil-cause canonical msg)
+      (jolt-host-throwable canonical msg cause)))
 (define (make-exc-ctor canonical)
   (lambda args
     (let* ((a0 (if (pair? args) (car args) jolt-nil))
@@ -2682,16 +2688,15 @@
       (cond
         ;; (E. msg cause enableSuppression writableStackTrace)
         ((and (pair? rest) (pair? (cdr rest)))
-         (let ((t (jolt-host-throwable canonical (if (or (string? a0) (jolt-nil? a0)) a0 (jolt-str-render-one a0))
-                                       (throwable-given-cause cause))))
+         (let ((t (throwable-given canonical (if (or (string? a0) (jolt-nil? a0)) a0 (jolt-str-render-one a0)) cause)))
            (when (and (pair? (cddr rest)) (null? (cdddr rest)) (not (jolt-truthy? (cadr rest))))
              (throwable-disable-suppression! t))
            t))
         ((string? a0) (if (pair? rest)
-                          (jolt-host-throwable canonical a0 (throwable-given-cause cause))
+                          (throwable-given canonical a0 cause)
                           (jolt-host-throwable canonical a0)))
         ((jolt-nil? a0) (if (pair? rest)
-                            (jolt-host-throwable canonical jolt-nil (throwable-given-cause cause))
+                            (throwable-given canonical jolt-nil cause)
                             (jolt-host-throwable canonical jolt-nil)))
         ;; (E. cause): a lone throwable arg is the cause, and the message is the
         ;; cause's toString, as Throwable(Throwable) sets it on the JVM —
