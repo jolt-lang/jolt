@@ -195,6 +195,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   String, Character, File, UUID, URI and BigDecimal. `Keyword` and `Symbol`
   have `compareTo`, `Character.compareTo` answers the code unit difference, and
   `cast` and `Class.cast` name both classes.
+- A float prints with the JDK's shortest digits at a power of two, where the
+  shortest decimal that reads back can lie on the far side of the float:
+  `(str (float (Math/pow 2 -96)))` is `1.2621775E-29`, not `1.26217745E-29`
+  (also 2^87 and 2^90).
 - `Base64$Decoder.wrap(InputStream)` returns a decoding stream (#1872). It
   decodes as it reads, as the JDK's does, so a source that stays open (a pipe,
   a socket) gives the bytes decoded so far without waiting for its end.

@@ -697,11 +697,21 @@
                (d (let loop ((n (if (or (< m 1/1000) (>= m 10000000)) 2 1)))
                     (if (> n 9)
                         (inexact m)
+                        ;; the nearest N-digit decimal, else the one on the
+                        ;; float's other side: at a power of two the float
+                        ;; below is half as far as the one above, so the
+                        ;; farther neighbour can read back when the nearer
+                        ;; does not (2^-96 is 1.2621775E-29, as the JDK says)
                         (let* ((s (expt 10 (- e10 (- n 1))))
-                               (cand (* (round (/ m s)) s)))
-                          (if (and (> cand 0) (= (flt-mag->bits cand) bits))
-                              (inexact cand)
-                              (loop (+ n 1))))))))
+                               (q (/ m s))
+                               (near (round q))
+                               (far (if (< near q) (+ near 1) (- near 1))))
+                          (cond ((and (> near 0) (= (flt-mag->bits (* near s)) bits))
+                                 (inexact (* near s)))
+                                ((and (not (integer? q)) (> far 0)
+                                      (= (flt-mag->bits (* far s)) bits))
+                                 (inexact (* far s)))
+                                (else (loop (+ n 1)))))))))
           (if (< x 0.0) (- d) d)))))
 ;; Float.parseFloat/valueOf: the parsed double rounded to single precision, past
 ;; the float range an infinity (a parse does not range-check like the cast).
