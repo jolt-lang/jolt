@@ -444,26 +444,27 @@
 ;; Keys
 
 (defn- decode-csi [next-char]
-  (loop [params ""]
-    (let [c (next-char true)]
-      (cond
-        (not (char? c)) :ignore
-        (<= 0x40 (int c) 0x7e)
-        (let [[p1 mods] (str/split params #";")]
-          (case c
-            \A :up
-            \B :down
-            \C (if mods :word-right :right)
-            \D (if mods :word-left :left)
-            \H :home
-            \F :end
-            \~ (case p1
-                 ("1" "7") :home
-                 ("4" "8") :end
-                 "3" :delete
-                 :ignore)
-            :ignore))
-        :else (recur (str params c))))))
+  (let [params (StringBuilder.)]
+    (loop []
+      (let [c (next-char true)]
+        (cond
+          (not (char? c)) :ignore
+          (<= 0x40 (int c) 0x7e)
+          (let [[p1 mods] (str/split (.toString params) #";")]
+            (case c
+              \A :up
+              \B :down
+              \C (if mods :word-right :right)
+              \D (if mods :word-left :left)
+              \H :home
+              \F :end
+              \~ (case p1
+                   ("1" "7") :home
+                   ("4" "8") :end
+                   "3" :delete
+                   :ignore)
+              :ignore))
+          :else (do (.append params c) (recur)))))))
 
 (defn- decode-escape [next-char]
   (let [c (next-char true)]
@@ -530,6 +531,18 @@
       (< i 128) [(str c) 1]
       :else [(str c) (max 0 (width c))])))
 
+(defn- fit-width
+  "The text line shows as, cut at the last char that fits in wmax columns."
+  [line width wmax]
+  (let [sb (StringBuilder.)]
+    (loop [w 0 [c & more] (seq line)]
+      (when c
+        (let [[s cw] (cell c width)]
+          (when (<= (+ w cw) wmax)
+            (.append sb ^String s)
+            (recur (+ w cw) more)))))
+    (.toString sb)))
+
 (defn layout
   "The screen rows for an entry: {:rows [[[text style] ...] ...] :cursor [row
   col]}. The first line follows prompt, the rest a blank prompt of the same
@@ -571,11 +584,7 @@
           (recur (inc li) (+ idx (count line) 1)))))
     (vswap! rows conj @row)
     (doseq [line (when below (str/split-lines below))]
-      (let [shown (loop [acc "" w 0 [c & more] (seq line)]
-                    (if (nil? c)
-                      acc
-                      (let [[s cw] (cell c width)]
-                        (if (> (+ w cw) wmax) acc (recur (str acc s) (+ w cw) more)))))]
+      (let [shown (fit-width line width wmax)]
         (vswap! rows conj (if (seq shown) [[shown :dim]] []))))
     {:rows @rows :cursor @cur}))
 
