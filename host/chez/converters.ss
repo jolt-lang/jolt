@@ -574,7 +574,12 @@
                  ((jsurr? x) (jsurr-unit x))
                  ((and (number? x) (exact? x)) (truncate x))
                  (else (jolt-cast-truncate-slow x)))))
-    (if (and (>= n lo) (<= n hi)) n (jolt-cast-range-throw name x))))
+    (cond ((and (>= n lo) (<= n hi)) n)
+          ;; RT.longCast takes a Ratio through its BigInteger, so the refusal
+          ;; names the truncation; byte and short name the ratio itself
+          ((and (equal? name "long") (number? x) (exact? x) (not (integer? x)))
+           (jolt-cast-range-throw name n))
+          (else (jolt-cast-range-throw name x)))))
 ;; A fixnum is what these casts are handed almost every time they are called —
 ;; (long (.length s)), (int i) in a loop — and it is already the answer, so each
 ;; cast checks for one before entering the generic path above. That path is not
