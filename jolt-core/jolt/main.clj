@@ -778,7 +778,7 @@
 ;; needs no dependency expansion, and a project whose deps don't resolve should
 ;; still be able to say what it can run.
 (defn- cmd-tasks []
-  ((requiring-resolve 'jolt.tasks/list-tasks!) (deps/project-tasks (project-dir))))
+  ((requiring-resolve 'jolt.tasks/list-tasks!) (deps/project-tasks (project-dir) *cli-repro?*)))
 
 ;; `jolt completions <shell>` prints the function to source; `completions tasks`
 ;; prints the name/doc lines that function asks for when a project's config
@@ -791,7 +791,7 @@
       nil (throw (ex-info "completions needs a shell: zsh, bash, fish, or tasks" {}))
       "tasks" (run! println
                     ((requiring-resolve 'jolt.completions/task-lines)
-                     (deps/project-tasks (project-dir))))
+                     (deps/project-tasks (project-dir) *cli-repro?*)))
       (print ((requiring-resolve 'jolt.completions/snippet) what "jolt")))))
 
 ;; `jolt org.babashka.cli/completions complete --shell zsh -- <task> <token>…`
@@ -814,7 +814,7 @@
       ;; back here, and for which tasks
       "snippet" (print ((requiring-resolve 'jolt.completions/snippet) shell "jolt"))
       "complete"
-      (let [tasks (try (deps/project-tasks (project-dir)) (catch :default _ nil))
+      (let [tasks (try (deps/project-tasks (project-dir) *cli-repro?*) (catch :default _ nil))
             t     (and (seq toks) (get tasks (symbol (first toks))))]
         ;; a handler lives on the project's paths, or on the task's own, so the
         ;; project is applied before the tree is described — tolerantly (a task
@@ -843,7 +843,7 @@
 ;; a small file read rather than loading the task runner on every command.
 ;; A task that does not claim the name is warned about on the way past.
 (defn- builtin-overridden? [cmd]
-  (let [t (get (deps/project-tasks (project-dir)) (symbol cmd))]
+  (let [t (get (deps/project-tasks (project-dir) *cli-repro?*) (symbol cmd))]
     (cond
       (nil? t)                             false
       (and (map? t) (:override-builtin t)) (not (some #{(override-key cmd)} (override-active)))

@@ -536,8 +536,8 @@
       foo (by-name "foo")
       qux (by-name "qux")
       rel (fn [p] (when p (str/replace p (str root "/app/../") "")))]
-  (is= "a library's roots precede the roots of the libraries it depends on"
-       ["dev" "src" "a/src" "b/src"]
+  (is= "source roots keep tools.deps' classpath order: top-level deps as declared"
+       ["dev" "src" "b/src" "a/src"]
        (mapv #(-> % rel (str/replace (str app "/") "")) (:roots r)))
   (is= "the project wins the keys it declares"
        [["app/libfoo.so"] true] [(:linux foo) (:optional foo)])
@@ -633,6 +633,87 @@
      {:dry-run true :all true :libs ["sqlite3" "z"]}
      (babashka.cli/parse-opts ["--dry-run" "sqlite3" "--all" "z"]
                               (:org.babashka/cli (meta (var jolt.configure/configure!)))))
+
+;;;; jolt.configure: a versioned declaration names one file
+(let [pc (jolt.configure/parse-pc "prefix=${pcfiledir}/../..\nlibdir=${prefix}/lib\n"
+                                  "/x/lib/pkgconfig")]
+  (is= ".pc ${pcfiledir} is the .pc file's directory"
+       "/x/lib/pkgconfig/../../lib" (get-in pc [:vars "libdir"])))
+(let [root (str (System/getProperty "java.io.tmpdir") "/configure-ver-" (System/currentTimeMillis))
+      plat (jolt.configure/platform)]
+  (when (#{:darwin :linux} plat)
+    (let [[want newer plain] (case plat
+                               :darwin ["libjoltver.3.dylib" "libjoltver.4.dylib" "libjoltver.dylib"]
+                               ["libjoltver.so.3" "libjoltver.so.4" "libjoltver.so"])
+          spec {:name "joltver" :search ["a" "b"] plat [want] :jolt.deps/root root}]
+      (jolt.host/mkdirs! (str root "/a"))
+      (jolt.host/mkdirs! (str root "/b"))
+      (spit (str root "/a/" newer) "")
+      (spit (str root "/a/" plain) "")
+      (is= "a versioned declaration does not take another version of the library"
+           nil (jolt.configure/find-library spec {:verify? false}))
+      (spit (str root "/b/" want) "")
+      (is= "it takes the file it names, wherever that is"
+           {:path (str root "/b/" want) :via :search}
+           (jolt.configure/find-library spec {:verify? false}))
+      (is= "an unversioned declaration still matches by name"
+           (str root "/a/" plain)
+           (:path (jolt.configure/find-library (assoc spec plat [plain]) {:verify? false})))))
+  ;; Homebrew's .pc files live in the Cellar, so their libdir is a versioned
+  ;; path an upgrade deletes; the opt/ link names the same files stably
+  (jolt.host/mkdirs! (str root "/Cellar/foo/1.2/lib"))
+  (jolt.host/mkdirs! (str root "/opt/foo/lib"))
+  (is= "a Cellar path is recorded through Homebrew's opt/ link"
+       (str root "/opt/foo/lib")
+       ((var jolt.configure/brew-stable-path) (str root "/Cellar/foo/1.2/lib")))
+  (is= "a path with no opt/ link is kept"
+       (str root "/Cellar/bar/1.0/lib")
+       ((var jolt.configure/brew-stable-path) (str root "/Cellar/bar/1.0/lib")))
+  (jolt.host/delete-tree! root))
+
+;;;; deps.local.edn: what it may and may not do
+(let [root (str (System/getProperty "java.io.tmpdir") "/local-edn-" (System/currentTimeMillis))
+      app (str root "/app")
+      other (str root "/other")
+      err (fn [f] (let [w (java.io.StringWriter.)] [(binding [*err* w] (f)) (str w)]))]
+  (jolt.host/mkdirs! (str app "/src"))
+  (jolt.host/mkdirs! (str app "/xdep/src"))
+  (jolt.host/mkdirs! other)
+  (spit (str app "/deps.edn")
+        (pr-str {:jolt/native [{:name "z" :linux ["libz.so.1"] :darwin ["libz.dylib"]}]
+                 :tasks {'base 1}}))
+  (spit (str app "/xdep/deps.edn") (pr-str {:paths ["src"]}))
+  (spit (str app "/deps.local.edn")
+        (pr-str {:jolt/native [{:name "nosuchlocal" :linux ["libnosuchlocal.so"]}]
+                 :tasks {'localtask 1}}))
+  (let [[r out] (err #(deps/resolve-project app))]
+    (is= "a deps.local.edn spec that overrides nothing is not a project native"
+         ["z"] (mapv :name (:natives r)))
+    (is= "and is reported, naming the file and the spec"
+         true (boolean (and (str/includes? out "deps.local.edn")
+                            (str/includes? out "nosuchlocal")))))
+  (is= "deps.local.edn :tasks are listed"
+       true (contains? (deps/project-tasks app) 'localtask))
+  (is= "-Srepro leaves deps.local.edn's :tasks out"
+       false (contains? (deps/project-tasks app true) 'localtask))
+  ;; $JOLT_DEPS_LOCAL naming a file elsewhere: its paths are the project's
+  (spit (str other "/x.edn")
+        (pr-str {:jolt/native [{:name "z" :linux ["native/libz.so"] :darwin ["native/libz.dylib"]}]
+                 :deps {'x/dep {:local/root "xdep"}}}))
+  (jolt.host/setenv! "JOLT_DEPS_LOCAL" (str other "/x.edn"))
+  (try
+    (let [r (deps/resolve-project app)
+          z (some #(when (= "z" (:name %)) %) (:natives r))]
+      (is= "a :jolt/native path in $JOLT_DEPS_LOCAL resolves against the project"
+           app (or (get-in z [:jolt.deps/roots (jolt.configure/platform)]) (:jolt.deps/root z)))
+      (is= "and so does a :local/root"
+           true (boolean (some #(= (str app "/xdep/src") %) (:roots r)))))
+    (jolt.host/setenv! "JOLT_DEPS_LOCAL" (str other "/missing.edn"))
+    (let [[_ out] (err #(do (deps/resolve-project app) (deps/project-tasks app)))]
+      (is= "a missing $JOLT_DEPS_LOCAL file is reported once"
+           1 (count (re-seq #"JOLT_DEPS_LOCAL names" out))))
+    (finally (jolt.host/setenv! "JOLT_DEPS_LOCAL" "")))
+  (jolt.host/delete-tree! root))
 
 (println (str "deps-expand: " (- @checks @failures) "/" @checks " passed"))
 (when (pos? @failures)

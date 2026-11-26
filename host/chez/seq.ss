@@ -1127,11 +1127,15 @@
                    "java.lang.ClassCastException"
                    (string-append "class " (jolt-class-name x)
                                   " cannot be cast to class " target)))))
-;; A Float (a jfloat) is taken as the double it widens to.
+;; A Float (a jfloat) is taken as the double it widens to, and a number outside
+;; Chez's tower (a BigDecimal) as its doubleValue, through the hook (double) uses
+;; (converters.ss, extended by java/bigdec.ss): a host method's double or long
+;; parameter receives the Number's doubleValue/longValue, so (Math/sqrt 4M) is
+;; 2.0. Anything else is still the ClassCastException.
 (define (jolt-need-num x)
   (cond ((number? x) x)
         ((jfloat? x) (jfloat-fl x))
-        (else (jolt-num-cast-throw x))))
+        (else (jolt-double-slow x))))
 ;; A number as a JVM long: the truncating coercion the host-method arms
 ;; (records-dispatch.ss compareTo) and compile-eval.ss read through. Here, in
 ;; the shared tier, because those files are shared — it used to sit in
