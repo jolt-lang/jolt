@@ -1169,16 +1169,21 @@ nativesan: mirlib
 # path to another built checkout, e.g. a worktree of main): the same harness
 # (this one's) runs in both with NATIVE_EMIT_DUMP, and tools/native-emit-diff.clj
 # fails on a region whose C differs unless ALLOW (a regex over the region's
-# source) names it. A change that must not touch the emitted C proves it here.
+# source) names it, and on a region only the base compiled. The base's run may
+# fail (the harness is this checkout's, with rows the base cannot pass); the
+# candidate's may not. A change that must not touch the emitted C proves it here.
 nativeemitgate: mirlib
 	@[ -n "$(BASE)" ] || { echo "nativeemitgate: BASE=<path to the other checkout>"; exit 1; }
 	@$(MAKE) --no-print-directory -C "$(BASE)" mirlib >/dev/null
 	@rm -rf target/native-emit && mkdir -p target/native-emit
 	@NATIVE_EMIT_DUMP=$(CURDIR)/target/native-emit/candidate bin/jolt run test/chez/native-test.clj \
-	  > target/native-emit/candidate.log 2>&1 || true
+	  > target/native-emit/candidate.log 2>&1; echo $$? > target/native-emit/candidate.exit
 	@cd "$(BASE)" && NATIVE_EMIT_DUMP=$(CURDIR)/target/native-emit/base bin/jolt run $(CURDIR)/test/chez/native-test.clj \
 	  > $(CURDIR)/target/native-emit/base.log 2>&1 || true
 	@bin/jolt run tools/native-emit-diff.clj target/native-emit/base target/native-emit/candidate '$(ALLOW)'
+	@st=$$(cat target/native-emit/candidate.exit); [ "$$st" = 0 ] || { \
+	  echo "nativeemitgate: the candidate's native gate exited $$st (target/native-emit/candidate.log):"; \
+	  tail -20 target/native-emit/candidate.log; exit 1; }
 
 # A program with native regions: C in a jolt build binary, JIT'd under jolt
 # run, same output, every region linked in the binary and JIT'd under run.
