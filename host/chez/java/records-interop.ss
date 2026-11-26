@@ -417,18 +417,70 @@
         ((jolt-nil? t)
          (throw-jvm 'NullPointerException
                     "Cannot invoke \"java.lang.Class.isInstance(Object)\" because \"c\" is null"))
-        (else
-         (let ((from (let ((n (guard (e (#t #f)) (jolt-class-name t)))) (if (string? n) n "java.lang.Object"))))
-           (throw-jvm 'ClassCastException
-                      (string-append
-                       "class " from " cannot be cast to class java.lang.Class ("
-                       (if (and (fx>? (string-length from) 5) (string=? (substring from 0 5) "java."))
-                           (string-append from " and java.lang.Class are in module java.base of loader 'bootstrap'")
-                           (string-append from " is in unnamed module of loader 'app'; java.lang.Class is in module java.base of loader 'bootstrap'"))
-                       ")"))))))
+        (else (jolt-checkcast-fail t "java.lang.Class"))))
 (def-var! "jolt.host" "class-arg" jolt-class-arg)
 ;; instance? taken as a value ((partial instance? C)): the same cast, then the test
 (def-var! "jolt.host" "instance-of" (lambda (t x) (instance-check (jolt-class-arg t) x)))
+
+;; ---- argument casts: the two ClassCastException wordings ---------------------
+;; A host method's parameter refuses an argument of another class in one of two
+;; wordings on the JVM, and the COMPILER picks which, not the method. A call it
+;; resolved (it knew the receiver's class) casts each argument with a checkcast,
+;; whose message names both classes and their modules; a call it could not
+;; resolve goes through the Reflector, whose Class.cast says "Cannot cast X to
+;; Y". jolt splits the same way: for a resolved call the back end emits
+;; jolt-checkcast on each argument whose parameter is registered below
+;; (backend_scheme/interop.clj cast-args), so a method's own argument check is
+;; reached only by an unresolved call and fails with jolt-reflect-cast-fail. A
+;; method that casts INSIDE its body (Keyword.compareTo(Object)) raises the
+;; checkcast wording whatever the call, with jolt-checkcast-fail.
+(define (jvm-base-class-name? n)
+  (and (fx>? (string-length n) 0)
+       (or (char=? (string-ref n 0) #\[)
+           (and (fx>? (string-length n) 5) (string=? (substring n 0 5) "java.")))))
+(define (jvm-checkcast-message from to)
+  (let ((fb (jvm-base-class-name? from)) (tb (jvm-base-class-name? to)))
+    (string-append
+     "class " from " cannot be cast to class " to " ("
+     (cond ((and fb tb) (string-append from " and " to " are in module java.base of loader 'bootstrap'"))
+           ((and (not fb) (not tb)) (string-append from " and " to " are in unnamed module of loader 'app'"))
+           (else (string-append from (if fb " is in module java.base of loader 'bootstrap'; "
+                                         " is in unnamed module of loader 'app'; ")
+                                to (if tb " is in module java.base of loader 'bootstrap'"
+                                       " is in unnamed module of loader 'app'"))))
+     ")")))
+(define (jolt-cast-class-name x)
+  (let ((n (guard (e (#t #f)) (jolt-class-name x)))) (if (string? n) n "java.lang.Object")))
+(define (jolt-checkcast-fail x to)
+  (throw-jvm 'ClassCastException (jvm-checkcast-message (jolt-cast-class-name x) to)))
+(define (jolt-reflect-cast-fail x to)
+  (throw-jvm 'ClassCastException
+             (string-append "Cannot cast " (jolt-cast-class-name x) " to " to)))
+(define (jolt-checkcast to x)
+  (if (or (jolt-nil? x) (instance-check to x)) x (jolt-checkcast-fail x to)))
+
+;; The parameter classes of a host method, for the casts above: by method name,
+;; a list of (declaring-class . parameter-classes). Only a method that is its
+;; class's one method of that name and arity belongs here — with an overload the
+;; JVM compiler cannot pick a method from the receiver alone and reflects. Filled
+;; at load, before any thread can read it.
+(define method-params-tbl (make-hashtable string-hash string=?))
+(define (register-method-params! cls method params)
+  (hashtable-set! method-params-tbl method
+                  (cons (cons cls params) (hashtable-ref method-params-tbl method '()))))
+;; The compiler's question: the parameter classes (cls).method takes at argc
+;; arguments, as a vector of class names, or nil when no registered method fits.
+(define (method-param-classes cls method argc)
+  (let loop ((es (hashtable-ref method-params-tbl method '())))
+    (cond ((null? es) jolt-nil)
+          ((and (fx=? (length (cdar es)) argc) (jch-isa? cls (caar es)))
+           (apply jolt-vector (cdar es)))
+          (else (loop (cdr es))))))
+(def-var! "jolt.host" "method-param-classes" method-param-classes)
+;; Character's compareTo lives in records-dispatch.ss and surrogates.ss, which
+;; load on either side of this table; the other registrations sit beside their
+;; methods.
+(register-method-params! "java.lang.Character" "compareTo" '("java.lang.Character"))
 
 ;; ---- java.lang.Throwable: the surface EVERY throwable inherits ---------------
 ;; On the JVM these are declared on Throwable itself, so every exception class has
@@ -471,15 +523,10 @@
   (reverse (jolt-with-mutex throwable-suppressed-mu
              (hashtable-ref throwable-suppressed-tbl (throwable-identity v) '()))))
 ;; Throwable.addSuppressed: the self check comes first, as in the JDK, and its
-;; IllegalArgumentException carries the throwable as its cause.
-(define (throwable-cast-fail from)
-  (throw-jvm 'ClassCastException
-             (string-append
-              "class " from " cannot be cast to class java.lang.Throwable ("
-              (if (and (fx>? (string-length from) 5) (string=? (substring from 0 5) "java."))
-                  (string-append from " and java.lang.Throwable are in module java.base of loader 'bootstrap'")
-                  (string-append from " is in unnamed module of loader 'app'; java.lang.Throwable is in module java.base of loader 'bootstrap'"))
-              ")")))
+;; IllegalArgumentException carries the throwable as its cause. A non-throwable
+;; argument gets here only from a call the compiler did not resolve (a resolved
+;; one casts it first, jolt-checkcast above), so it is Class.cast's refusal.
+(register-method-params! "java.lang.Throwable" "addSuppressed" '("java.lang.Throwable"))
 
 ;; A proxy over a throwable class is a reify whose delegate is the base
 ;; throwable; which of the two a call hands over depends on the route it took,
@@ -496,8 +543,7 @@
 (define (throwable-add-suppressed! v other)
   (cond
     ((not (or (jolt-nil? other) (instance-check throwable-type-sym other)))
-     (throwable-cast-fail (let ((n (guard (e (#t #f)) (jolt-class-name other))))
-                            (if (string? n) n "java.lang.Object"))))
+     (jolt-reflect-cast-fail other "java.lang.Throwable"))
     ((eq? (throwable-identity other) (throwable-identity v))
      (jolt-throw (jolt-host-throwable "java.lang.IllegalArgumentException"
                                       "Self-suppression not permitted" other)))

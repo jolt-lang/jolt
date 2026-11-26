@@ -1035,8 +1035,13 @@
 ;; two paths cannot drift.
 (define (jolt-str-equals-ci? s o)
   (and (not (jolt-nil? o)) (jvm-string-ci=? s (jolt-need-str o))))
+;; String.compareTo(String): another class is refused by the reflector's cast,
+;; since a resolved call casts the argument before it gets here (records-interop.ss
+;; jolt-checkcast); nil is the method's own NullPointerException.
+(register-method-params! "java.lang.String" "compareTo" '("java.lang.String"))
 (define (jolt-str-compare s o)
-  (jvm-string-compare s (jolt-need-str o)))
+  (jvm-string-compare s (if (or (string? o) (jolt-nil? o)) (jolt-need-str o)
+                            (jolt-reflect-cast-fail o "java.lang.String"))))
 (define (jolt-str-compare-ci s o)
   (jvm-string-ci-compare s (jolt-need-str o)))
 (define (jolt-str-blank? s)

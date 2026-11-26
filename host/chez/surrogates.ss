@@ -36,7 +36,11 @@
   (list (cons "charValue" (lambda (u) u))
         (cons "hashCode" jsurr-unit)
         (cons "equals" (lambda (u o) (eq? u o)))
-        (cons "compareTo" (lambda (u o) (- (jsurr-unit u) (char-or-unit->integer o))))
+        ;; the reflector's cast for another class, as records-dispatch.ss's char arm
+        (cons "compareTo" (lambda (u o)
+                            (if (or (char? o) (jsurr? o))
+                                (- (jsurr-unit u) (char-or-unit->integer o))
+                                (jolt-reflect-cast-fail o "java.lang.Character"))))
         (cons "toString" (lambda (u) jolt-replacement-string))))
 (register-method-arm! arm-priority-float
   (lambda (obj method-name rest-args)

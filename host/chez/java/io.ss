@@ -2312,6 +2312,7 @@
            #t))))))
 
 ;; --- File method surface (record-method-dispatch arm) -----------------------
+(register-method-params! "java.io.File" "compareTo" '("java.io.File"))
 (define (jfile-method f name args)        ; -> boxed result, or #f to fall through
   ;; Lexical methods use the held path. Resolving a relative name here would
   ;; ask for the process cwd even for getName or a conversion to a NIO Path.
@@ -2327,11 +2328,11 @@
                (if parent (make-jfile parent) jolt-nil))))
       ((string=? name "getParent")
        (list (let ((parent (jfile-parent-path p))) (if parent (path-native parent) jolt-nil))))
+      ;; File.compareTo(File): a resolved call casts first (records-interop.ss
+      ;; jolt-checkcast), so this is the reflector's cast
       ((string=? name "compareTo")
        (unless (jfile? (car args))
-         (throw-jvm 'ClassCastException
-                    (string-append "class " (jolt-class-name (car args))
-                                   " cannot be cast to class java.io.File")))
+         (jolt-reflect-cast-fail (car args) "java.io.File"))
        (list (->num (jfile-compare-for (win32?) p (jfile-path (car args))))))
       ((string=? name "equals")         (list (and (jfile? (car args)) (string=? p (jfile-path (car args))))))
       ((string=? name "hashCode")       (list (jfile-hashcode f)))
@@ -4124,6 +4125,7 @@
 ;; longs (natives-misc.ss); timestamp/clockSequence/node are v1-only, like the
 ;; JVM. Unknown names 'pass so the base still answers toString/equals/getClass.
 (define (uuid-version-of u) (uuid-hexv (string-ref (juuid-s u) 14)))
+(register-method-params! "java.util.UUID" "compareTo" '("java.util.UUID"))
 (define (uuid-method u m args)
   (define (need-v1!)
     (unless (= 1 (uuid-version-of u))
@@ -4154,8 +4156,7 @@
      (let ((o (if (pair? args) (car args) jolt-nil)))
        (if (juuid? o)
            (uuid-cmp u o)
-           (throw-jvm (quote ClassCastException)
-                      (string-append (jolt-final-str o) " cannot be cast to java.util.UUID")))))
+           (jolt-reflect-cast-fail o "java.util.UUID"))))
     ;; (int)(hilo >> 32) ^ (int)hilo where hilo = msb ^ lsb — the JVM fold.
     ((string=? m "hashCode") (uuid-hashcode u))
     (else 'pass)))
@@ -4723,6 +4724,7 @@
         (throw-jvm (quote IllegalArgumentException) (uri-error-message s r))
         r)))
 (register-class-statics! "java.net.URI" (list (cons "create" (lambda (s) (uri-create (jolt-str-render-one s))))))
+(register-method-params! "java.net.URI" "compareTo" '("java.net.URI"))
 (register-host-methods! "uri"
   ;; The getX / getRawX pairs answer DIFFERENT strings: raw is the substring the
   ;; parse produced, getX is that percent-decoded. They used to share one field,
@@ -4753,7 +4755,10 @@
         (cons "resolve" (lambda (u x) (uri-resolve u (uri-arg->uri x))))
         (cons "normalize" (lambda (u) (uri-normalize u)))
         (cons "relativize" (lambda (u x) (uri-relativize u (uri-arg->uri x))))
-        (cons "compareTo" (lambda (u o) (uri-compare u o)))
+        (cons "compareTo" (lambda (u o)
+                            (unless (and (jhost? o) (string=? (jhost-tag o) "uri"))
+                              (jolt-reflect-cast-fail o "java.net.URI"))
+                            (uri-compare u o)))
         (cons "hashCode" (lambda (u) (uri-hashcode u)))
         (cons "equals" (lambda (u o) (and (jhost? o) (string=? (jhost-tag o) "uri") (uri-equals? u o))))))
 

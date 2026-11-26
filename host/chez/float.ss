@@ -113,9 +113,7 @@
         (cons "compareTo" (lambda (x y)
                             (if (jfloat? y)
                                 (jolt-float-compare x y)
-                                (throw-jvm 'ClassCastException
-                                           (string-append "Cannot cast " (jolt-class-name y)
-                                                          " to java.lang.Float")))))
+                                (jolt-reflect-cast-fail y "java.lang.Float"))))
         ;; Float.equals: another Float with the same bits, so never a Double
         (cons "equals" (lambda (x y) (and (jfloat? y) (= (flt->bits (jfloat-fl x)) (flt->bits (jfloat-fl y))))))
         (cons "hashCode" (lambda (x) (unsigned->signed (flt->bits (jfloat-fl x)) 32)))

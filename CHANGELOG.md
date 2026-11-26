@@ -187,6 +187,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A host method call whose argument is of the wrong class words its
+  `ClassCastException` as the JVM does for that call: the checkcast's message
+  when the compiler knows the receiver's class (a hint, a constructor, a
+  literal, a catch binding), Class.cast's `Cannot cast X to Y` when it does
+  not. This covers `addSuppressed` and `compareTo` on Long, Double, Float,
+  String, Character, File, UUID, URI and BigDecimal. `Keyword` and `Symbol`
+  have `compareTo`, `Character.compareTo` answers the code unit difference, and
+  `cast` and `Class.cast` name both classes.
 - A float prints with the JDK's shortest digits at a power of two, where the
   shortest decimal that reads back can lie on the far side of the float:
   `(str (float (Math/pow 2 -96)))` is `1.2621775E-29`, not `1.26217745E-29`
