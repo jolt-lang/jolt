@@ -118,6 +118,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- `assoc` with two to four key/value pairs, `dissoc` with two to four keys and
+  `conj` with two or three elements make one copy instead of one per pair, key
+  or element. The `assoc` and `dissoc` paths apply to a small map with keyword,
+  fixnum or char keys, where a four-pair `assoc` of new keys goes from 160ns to
+  36ns and a two-key `dissoc` from 68ns to 25ns; the `conj` path applies to a
+  vector with room in its tail (two elements, 52ns to 16ns). Other receivers
+  and key types take the same path as before. Appending to a vector's tail or
+  an array map's slots is a block copy, which also speeds up chained
+  single-pair `assoc` (four chained new keys, 162ns to 104ns).
 - A native region's fast copy drops the bounds check on an index bounded by a
   long parameter (`(< i m)`, guarded once at entry by `m` against the array's
   length), by another array parameter's length, or by a length minus a
