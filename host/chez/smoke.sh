@@ -1226,6 +1226,17 @@ else
   fails=$((fails + 1))
 fi
 
+# jsonista.core (compatibility/): a file rather than corpus rows, so the
+# functions it calls have a caller code readers can see.
+jsn_test_out="$($jolt run test/chez/jsonista-test.clj 2>/dev/null)"
+if printf '%s' "$jsn_test_out" | grep -q 'JSONISTA OK'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: jsonista.core"
+  printf '%s' "$jsn_test_out" | grep -A2 'jsonista FAIL' | sed 's/^/    /'
+  fails=$((fails + 1))
+fi
+
 # Protocol identity across namespaces. Two namespaces each define a protocol named
 # Greet and extend it to Object; they are distinct interfaces, so each namespace
 # keeps its own impl, and a record in one namespace does not answer instance? for
