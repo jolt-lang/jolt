@@ -25,8 +25,7 @@
 (defn deftime [& body] nil)
 (defn usetime [& body] (eval (first body)))
 (defmacro ? [& args]
-  (if (contains? &env (quote &env))
+  (when (contains? &env (quote &env))
     (let [form (first args)]
-      (if (= :clj (first form))
-        (second form)
-        (if (= :cljs (first form)) nil)))))
+      (when (= :clj (first form))
+        (second form)))))

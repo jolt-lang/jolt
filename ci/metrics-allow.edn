@@ -5,9 +5,15 @@
 ;; lines) or a file jolt-metrics cannot read fails the build. Add a tree here
 ;; once its criticals are cleared; there is no per-finding allowlist for these.
 ;;
-;; The rest is unused code that stays on purpose. Each entry says why: the tool
-;; can't see var-deref from Scheme, #' lookups, or a require kept for what
-;; loading it does.
+;; :unused-requires, :unused-private and :unused-public are unused code that
+;; stays on purpose. Each entry says why: the tool can't see var-deref from
+;; Scheme, #' lookups, or a require kept for what loading it does.
+;;
+;; :lints are :warning and performance-rule lint findings that stay, each as a
+;; path, a rule and how many findings of that rule the file keeps. Prefer fixing
+;; the code; a deliberate shape inside a form can also take a
+;; #_{:jolt-metrics/ignore [:rule]} marker, but not in a fixture whose lines a
+;; golden file pins.
 {:critical-free ["jolt-core/"]
  :unused-requires
  [{:path "stdlib/clojure/core/async/flow/impl.clj" :lib "clojure.core.async.flow.impl.graph"
@@ -22,7 +28,23 @@
   {:path "jolt-core/clojure/core/50-io.clj" :name "lift-ns"
    :why "clojure.pprint calls #'clojure.core/lift-ns"}]
  :unused-public
- [{:path "jolt-core/jolt/analyzer.clj" :name "set-name-counter!"
+ [;; Named by a caller jolt-metrics doesn't read (EDN config or task maps, or
+  ;; excluded vendor/ code); to come off once jolt-metrics resolves them.
+  {:path "clj-kondo.exports/jolt-lang/jolt/hooks/jolt/ffi.clj" :name "defcfn"
+   :why "clj-kondo hook, named by :hooks :analyze-call in clj-kondo.exports/jolt-lang/jolt/config.edn"}
+  {:path "clj-kondo.exports/jolt-lang/jolt/hooks/jolt/ffi.clj" :name "with-arena"
+   :why "clj-kondo hook, named by :hooks :analyze-call in clj-kondo.exports/jolt-lang/jolt/config.edn"}
+  {:path "stdlib/babashka/tasks.clj" :name "current-task"
+   :why "called from :tasks bodies in bb.edn/deps.edn, e.g. test/chez/tasks/bbproj/bb.edn :enter/:leave"}
+  {:path "stdlib/babashka/tasks.clj" :name "clojure"
+   :why "called from :tasks bodies in bb.edn/deps.edn, e.g. test/chez/tasks/bbproj/bb.edn viajolt"}
+  {:path "stdlib/clojure/sci/io_stubs.clj" :name "print-simple"
+   :why "named as sci.impl.io/print-simple by vendor/sci/src/sci/impl/namespaces.cljc"}
+  {:path "stdlib/clojure/sci/io_stubs.clj" :name "with-out-str"
+   :why "named as sci.impl.io/with-out-str by vendor/sci/src/sci/impl/namespaces.cljc"}
+  {:path "stdlib/clojure/sci/io_stubs.clj" :name "with-in-str"
+   :why "named as sci.impl.io/with-in-str by vendor/sci/src/sci/impl/namespaces.cljc"}
+  {:path "jolt-core/jolt/analyzer.clj" :name "set-name-counter!"
    :why "var-deref from host/chez/build.ss"}
   {:path "jolt-core/jolt/analyzer.clj" :name "defmacro-expansion"
    :why "var-deref from host/chez/ns.ss"}
@@ -50,9 +72,28 @@
    :why "nrepl/bencode's public API, for scripts that call it; nothing in jolt does"}
   {:path "compatibility/bencode/core.clj" :name "write-netstring"
    :why "nrepl/bencode's public API, for scripts that call it; nothing in jolt does"}
+  {:path "compatibility/jsonista/core.clj" :name "write-value"
+   :why "jsonista's public API, for libraries that call it (muuntaja); tested only from test/chez/unit.edn rows"}
   {:path "compatibility/jsonista/core.clj" :name "read-value"
    :why "jsonista's public API, for libraries that call it (muuntaja); nothing in jolt does"}
   {:path "compatibility/jsonista/core.clj" :name "write-value-as-bytes"
    :why "jsonista's public API, for libraries that call it (muuntaja); nothing in jolt does"}
   {:path "compatibility/jsonista/core.clj" :name "java-collection-module"
-   :why "jsonista's public API, for libraries that call it; nothing in jolt does"}]}
+   :why "jsonista's public API, for libraries that call it; nothing in jolt does"}]
+ :lints
+ [{:path "jolt-core/clojure/core/20-coll.clj" :rule :str-accumulation :count 1
+   :why "pr-str's variadic loop: a StringBuilder measured 5-9% slower for 2-3 args, the usual call (and collecting the pieces for one apply str 60% slower); it only wins past about 6"}
+  {:path "stdlib/jolt/parinfer.clj" :rule :str-accumulation :count 1
+   :why "vendored upstream code: a port of parinfer.js 3.13.1, kept as it writes it"}
+  {:path "stdlib/jolt/infix/grammar.clj" :rule :refer-all :count 1
+   :why "vendored upstream code: rm-hull/infix's grammar, which names dozens of combinators bare"}
+  {:path "test/chez/loader-test.clj" :rule :use :count 1
+   :why "tests use itself"}
+  {:path "test/chez/loop-shadow-app/src/app/core.clj" :rule :loop-without-recur :count 1
+   :why "fixture: a loop binding that shadows a record local; a recur would feed the loop var's inferred type, which is what the test pins"}
+  {:path "test/chez/scalar-capture-app/src/app/core.clj" :rule :redundant-let :count 1
+   :why "fixture: a let that rebinds a local the scalar-replaced ctor args read"}
+  {:path "test/errors/macro/synthetic-expansion/input.clj" :rule :redundant-let :count 2
+   :why "error-report fixture; its golden output pins these lines"}
+  {:path "test/print_method_overhead_test.clj" :rule :inline-def :count 2
+   :why "install! adds a print-method arm at run time through defmethod (defmethod-setup, not a bare addMethod); that path is what it measures"}]}
