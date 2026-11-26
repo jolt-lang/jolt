@@ -2056,15 +2056,58 @@
                       (((caar as) coll) ((cdar as) coll x))
                       (else (loop (cdr as))))))))
 ;; (conj) -> []; (conj nil a b ...) builds a list (conj prepending -> (b a)).
-(define (jolt-conj . args)
-  (if (null? args)
-      (jolt-vector)
-      (let ((coll (car args)) (xs (cdr args)))
-        (cond
-          ;; 1-arity returns the coll untouched — (conj nil) is nil
-          ((null? xs) coll)
-          ((jolt-nil? coll) (fold-left jolt-conj1 jolt-empty-list xs))
-          (else (meta-carry-conj coll (fold-left jolt-conj1 coll xs)))))))
+;; Multi-arg conj (2 and 3 elements, the common multi-arg call shapes)
+;; takes a single-copy fast path on persistent vectors when the tail has room,
+;; using sa-vector-append (block copy, no zero-fill or barriered loop) and
+;; preserving pv-derived-ent (MapEntry decays to plain vector, SubVector stays
+;; subvec) and pvec-meta directly. Also ships a 1-element clause for
+;; value-position callers (swap!/update). Non-vector receivers and tail-full
+;; vectors fall back through chained jolt-conj1 / pvec-conj with a single
+;; meta-carry-conj (identical to the variadic fold-left).
+;; (conj-fold f acc x ...) is the left fold (f (f acc x1) x2) ...
+(define-syntax conj-fold
+  (syntax-rules ()
+    ((_ f acc) acc)
+    ((_ f acc x rest ...) (conj-fold f (f acc x) rest ...))))
+;; store x ... into out from slot i on
+(define-syntax conj-put!
+  (syntax-rules ()
+    ((_ out i) (if #f #f))
+    ((_ out i x rest ...)
+     (begin (sa-uvector-set! out i x) (conj-put! out (sa-ufx+ i 1) rest ...)))))
+;; One body for the 2- and 3-element clauses: n is the element count and pad
+;; the n-slot pad vector.
+(define-syntax conj-many
+  (syntax-rules ()
+    ((_ coll n pad x ...)
+     (if (pvec? coll)
+         (let* ((tail (pvec-tail coll)) (tl (vector-length tail)))
+           (if (fx<=? tl (fx- 32 n))
+               (%mk-pvec (fx+ (pvec-cnt coll) n) (pvec-shift coll) (pvec-root coll)
+                         (if (fx=? tl 0)
+                             (vector x ...)
+                             (let ((out (sa-vector-append tail pad)))
+                               (conj-put! out tl x ...)
+                               out))
+                         (pv-derived-ent coll) 0 (pvec-meta coll))
+               (meta-carry-conj coll (conj-fold pvec-conj coll x ...))))
+         (if (jolt-nil? coll)
+             (conj-fold jolt-conj1 jolt-empty-list x ...)
+             (meta-carry-conj coll (conj-fold jolt-conj1 coll x ...)))))))
+(define jolt-conj
+  (case-lambda
+    ((coll a b) (conj-many coll 2 vec-pad-2 a b))
+    ((coll x)
+     (if (jolt-nil? coll)
+         (jolt-conj1 jolt-empty-list x)
+         (meta-carry-conj coll (jolt-conj1 coll x))))
+    ((coll a b c) (conj-many coll 3 vec-pad-3 a b c))
+    ((coll) coll)
+    (() (jolt-vector))
+    ((coll . xs)
+     (if (jolt-nil? coll)
+         (fold-left jolt-conj1 jolt-empty-list xs)
+         (meta-carry-conj coll (fold-left jolt-conj1 coll xs))))))
 (define jolt-conj2 (lambda (coll x)
   (if (jolt-nil? coll)
       (jolt-conj1 jolt-empty-list x)
