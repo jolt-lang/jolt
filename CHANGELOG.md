@@ -195,6 +195,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   String, Character, File, UUID, URI and BigDecimal. `Keyword` and `Symbol`
   have `compareTo`, `Character.compareTo` answers the code unit difference, and
   `cast` and `Class.cast` name both classes.
+- `Base64$Decoder.wrap(InputStream)` returns a decoding stream (#1872). It
+  decodes as it reads, as the JDK's does, so a source that stays open (a pipe,
+  a socket) gives the bytes decoded so far without waiting for its end.
+  Padding, an unpadded tail, data after `=`, `read(byte[],off,len)` counts,
+  `available`, and reads after an error or after close match JDK 21, and an
+  illegal character's IOException names it (`Illegal base64 character 0x23`).
+  The MIME encoder's bad line separator message prints the character in
+  lowercase hex, as the JDK's does.
 - `Math/log10` and `clojure.math/log10` give the JDK's digits: they are
   fdlibm's, as the JDK's are, so `(Math/log10 1000.0)` is `3.0` rather than
   `2.9999999999999996`.
