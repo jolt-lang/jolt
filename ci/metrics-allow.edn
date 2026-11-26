@@ -55,4 +55,20 @@
   {:path "compatibility/jsonista/core.clj" :name "write-value-as-bytes"
    :why "jsonista's public API, for libraries that call it (muuntaja); nothing in jolt does"}
   {:path "compatibility/jsonista/core.clj" :name "java-collection-module"
-   :why "jsonista's public API, for libraries that call it; nothing in jolt does"}]}
+   :why "jsonista's public API, for libraries that call it; nothing in jolt does"}
+  {:path "compatibility/jsonista/core.clj" :name "write-value"
+   :why "jsonista's public API, for libraries that call it (muuntaja); nothing in jolt does"}
+  {:path "clj-kondo.exports/jolt-lang/jolt/hooks/jolt/ffi.clj" :name "defcfn"
+   :why "clj-kondo hook, named by symbol in the exported config.edn's :hooks"}
+  {:path "clj-kondo.exports/jolt-lang/jolt/hooks/jolt/ffi.clj" :name "with-arena"
+   :why "clj-kondo hook, named by symbol in the exported config.edn's :hooks"}
+  {:path "stdlib/babashka/tasks.clj" :name "clojure"
+   :why "babashka.tasks' public API, for bb.edn tasks"}
+  {:path "stdlib/babashka/tasks.clj" :name "current-task"
+   :why "babashka.tasks' public API, for bb.edn tasks"}
+  {:path "stdlib/clojure/sci/io_stubs.clj" :name "print-simple"
+   :why "sci.impl.io stub: sci.impl.namespaces resolves it when building its clojure.core map"}
+  {:path "stdlib/clojure/sci/io_stubs.clj" :name "with-in-str"
+   :why "sci.impl.io stub: sci.impl.namespaces resolves it when building its clojure.core map"}
+  {:path "stdlib/clojure/sci/io_stubs.clj" :name "with-out-str"
+   :why "sci.impl.io stub: sci.impl.namespaces resolves it when building its clojure.core map"}]}
