@@ -28,9 +28,14 @@
     2. Homebrew's opt/<formula>/lib for the spec's :brew (macOS; the :name)
     3. the spec's :search directories (relative to the deps.edn declaring it)
     4. $JOLT_LIBRARY_PATH, $LD_LIBRARY_PATH / $DYLD_LIBRARY_PATH /
-       $DYLD_FALLBACK_LIBRARY_PATH, $LIBRARY_PATH (and $PATH on Windows), the
-       dynamic linker's configured directories (/etc/ld.so.conf and its
-       includes), then the usual system directories.
+       $DYLD_FALLBACK_LIBRARY_PATH, $LIBRARY_PATH (and $PATH on Windows),
+       ~/.local/lib, ~/.nix-profile/lib, the Homebrew / MacPorts / NixOS lib
+       directories, then the dynamic linker's configured directories
+       (/etc/ld.so.conf and its includes) and the usual system directories
+    5. every Homebrew formula's lib (macOS).
+  A spec that declares its file with a version (libssl.3.dylib, libssl.so.3)
+  takes only that file; another version of the library is not looked at. An
+  unversioned declaration, or none, matches any file named like the library.
   A file is taken only if it opens (dlopen), so a library for another
   architecture, or one whose own dependencies are missing, is passed over."
   (:require [clojure.edn :as edn]
@@ -95,8 +100,20 @@
 
 (defn- basename [p] (last (str/split p #"[/\\]")))
 
-(defn- files-in [dir pat preferred]
-  (map #(str dir "/" %) (rank (filter #(re-matches pat %) (list-dir dir)) preferred)))
+(defn- versioned?
+  "Does library file name F carry a version (libssl.3.dylib, libssl.so.3)? Such a
+  declaration names one ABI, so only that file will do."
+  [f]
+  (pos? (version-depth f)))
+
+(defn- files-in
+  "The library files in DIR, best first. EXACT, when given, is the list of file
+  names the spec declares with a version: only those are taken, in that order.
+  Otherwise any file named like the library (PAT) is, ranked."
+  [dir pat preferred exact]
+  (if (seq exact)
+    (keep #(let [f (str dir "/" %)] (when (file? f) f)) exact)
+    (map #(str dir "/" %) (rank (filter #(re-matches pat %) (list-dir dir)) preferred))))
 
 ;; --- sources -------------------------------------------------------------------
 ;; Everything here is read from the filesystem by the runtime itself: pkg-config's
@@ -134,17 +151,34 @@
 
 (defn parse-pc
   "A pkg-config .pc file's text as {:vars {name value} :fields {\"Libs\" …}},
-  with ${var} references expanded."
-  [text]
-  (reduce (fn [{:keys [vars] :as acc} line]
+  with ${var} references expanded. PC-DIR, the directory the file was found in,
+  is ${pcfiledir}, which relocatable .pc files build their prefix from."
+  ([text] (parse-pc text nil))
+  ([text pc-dir]
+   (update
+    (reduce (fn [{:keys [vars] :as acc} line]
             (let [line (str/trim (str/replace line #"#.*" ""))]
               (if-let [[_ k v] (re-matches #"([A-Za-z0-9_.]+)\s*=\s*(.*)" line)]
                 (assoc-in acc [:vars k] (expand-vars v vars))
                 (if-let [[_ k v] (re-matches #"([A-Za-z0-9_.]+)\s*:\s*(.*)" line)]
                   (assoc-in acc [:fields k] (expand-vars v vars))
                   acc))))
-          {:vars {} :fields {}}
-          (str/split-lines text)))
+          {:vars (if pc-dir {"pcfiledir" pc-dir} {}) :fields {}}
+          (str/split-lines text))
+    :vars dissoc "pcfiledir")))
+
+(defn- parent-dir [f]
+  (let [i (str/last-index-of f "/")] (if (and i (pos? i)) (subs f 0 i) "/")))
+
+(defn- brew-stable-path
+  "P with a Homebrew Cellar/<formula>/<version>/ prefix replaced by the formula's
+  opt/<formula>/ link when that exists: the Cellar path names one version, which
+  the next `brew upgrade` deletes, and Homebrew's own .pc files point into it."
+  [p]
+  (if-let [[_ pre formula rest] (re-matches #"(.*)/Cellar/([^/]+)/[^/]+(/.*)?" p)]
+    (let [o (str pre "/opt/" formula rest)]
+      (if (or (dir? o) (file? o)) o p))
+    p))
 
 (defn- words [s] (vec (remove str/blank? (str/split (or s "") #"\s+"))))
 
@@ -154,7 +188,7 @@
   [pkg]
   (when-let [file (some #(let [f (str % "/" pkg ".pc")] (when (file? f) f))
                         (pkg-config-dirs))]
-    (let [{:keys [vars fields]} (parse-pc (slurp file))]
+    (let [{:keys [vars fields]} (parse-pc (slurp file) (parent-dir file))]
       {:file file
        :version (get fields "Version")
        :libdir (get vars "libdir")
@@ -172,7 +206,7 @@
         :let [{:keys [libdir libs]} (pkg-config pkg)]
         d (concat [libdir] (keep #(second (re-matches #"-L(.+)" %)) libs))
         :when (dir? d)]
-    d))
+    (brew-stable-path d)))
 
 (defn- brew-dirs [{:keys [name] :as spec}]
   (when (= :darwin (platform))
@@ -265,15 +299,19 @@
          nm (:name spec)
          pat (file-pattern plat nm)
          preferred (map basename (declared spec plat))
+         ;; a declared soname (libssl.3.dylib) is the ABI the bindings were
+         ;; written against: another version of the library is not a substitute,
+         ;; so only an unversioned declaration falls back to the name pattern
+         exact (when (and (seq preferred) (every? versioned? preferred)) (distinct preferred))
          ok? (if verify? loads? file?)
          root (spec-root spec plat)
          sources (concat
-                  (for [d (pc-lib-dirs spec)] [:pkg-config (files-in d pat preferred)])
-                  (for [d (brew-dirs spec)] [:brew (files-in d pat preferred)])
+                  (for [d (pc-lib-dirs spec)] [:pkg-config (files-in d pat preferred exact)])
+                  (for [d (brew-dirs spec)] [:brew (files-in d pat preferred exact)])
                   (for [d (map #(under root %) (when (:search spec) (names (:search spec) nil)))]
-                    [:search (files-in d pat preferred)])
-                  (for [d (system-dirs)] [:system (files-in d pat preferred)])
-                  (for [d (brew-all-dirs)] [:brew (files-in d pat preferred)]))]
+                    [:search (files-in d pat preferred exact)])
+                  (for [d (system-dirs)] [:system (files-in d pat preferred exact)])
+                  (for [d (brew-all-dirs)] [:brew (files-in d pat preferred exact)]))]
      (some (fn [[via files]]
              (some (fn [f] (when (ok? f) {:path f :via via})) files))
            sources))))
@@ -333,7 +371,11 @@
           (assoc base :status :present)
           (if-let [{:keys [path via]} (find-library spec opts)]
             (assoc base :status :found :path path :via via)
-            (assoc base :status :missing)))))))
+            ;; under :all? a library found on no disk may still open as
+            ;; declared: macOS keeps its system libraries in the dyld cache
+            (if (and all? (declared-loads? spec plat))
+              (assoc base :status :present)
+              (assoc base :status :missing))))))))
 
 (defn project-dir
   "The directory jolt was run from (bin/jolt exports it as JOLT_PWD)."
