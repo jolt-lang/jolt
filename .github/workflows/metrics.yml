@@ -20,11 +20,10 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
-  # jolt runs the gate script. jolt-metrics is pinned: the gate counts lint
-  # findings per rule, so a release with new rules needs the allowlist updated
-  # in the same change, and a baseline only compares like with like.
+  # jolt runs the gate script. jolt-metrics is the latest release's standalone
+  # binary on purpose: each release finds more, and what it finds gets fixed,
+  # so its new findings arrive without a change here.
   JOLT_VERSION: v0.8.30
-  JOLT_METRICS_VERSION: v0.8.1
 
 jobs:
   report:
@@ -45,10 +44,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download "$JOLT_METRICS_VERSION" --repo jlt-commons/jolt-metrics --pattern '*-x86_64-linux.tar.gz' --dir "$RUNNER_TEMP"
+          gh release download --repo jlt-commons/jolt-metrics --pattern '*-x86_64-linux.tar.gz' --dir "$RUNNER_TEMP"
           tar xzf "$RUNNER_TEMP"/jolt-metrics-*-x86_64-linux.tar.gz -C "$RUNNER_TEMP"
           mkdir -p "$HOME/.local/bin"
           install "$RUNNER_TEMP"/jolt-metrics-*-x86_64-linux/jolt-metrics "$HOME/.local/bin/"
+          gh release view --repo jlt-commons/jolt-metrics --json tagName -q '"jolt-metrics " + .tagName'
       - name: Fetch the baseline report
         if: github.event_name == 'pull_request'
         env:
