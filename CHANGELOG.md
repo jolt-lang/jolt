@@ -173,6 +173,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   31 ns), `satisfies?` on a record is keyed by the protocol value (45 to
   27 ns), char keys take the hash map's fast path, and a map or keyword
   called as a fn goes straight to the lookup.
+- Printing numbers is 3 to 4 times faster: `(str n)` of a long and the
+  digits of a double divide by 10 and 100 with a multiply and a shift, not a
+  chain of hardware divides, and a double's plain decimal form is written into
+  one string. `clojure.lang.PersistentList/create` builds a vector's list
+  directly (2 to 3 times faster; tools.reader reads every list through it).
 
 ### Fixed
 

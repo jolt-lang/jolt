@@ -41,16 +41,16 @@
 ;; with its trailing zeros dropped (k = 0 leaves them: 1200.0), written by hand
 ;; because number->string of a fixnum costs ~0.2 us, most of a short double's print
 (define (flonum-fixnum-digits n k)
+  ;; values.ss's divide-free digit helpers (#1713): each fxquotient here was a
+  ;; dependent hardware divide, ~110 ns for the "15" of 1.5
   (let strip ((m n) (z 0))
-    (if (fx=? 0 (fxremainder m 10))
-        (strip (fxquotient m 10) (fx+ z 1))
-        (let* ((len (let count ((q m) (c 0)) (if (fx=? q 0) c (count (fxquotient q 10) (fx+ c 1)))))
-               (s (make-string len)))
-          (let fill ((q m) (i (fx- len 1)))
-            (if (fx<? i 0)
-                (cons s (fx- (fx+ len z) k))
-                (begin (string-set! s i (integer->char (fx+ 48 (fxremainder q 10))))
-                       (fill (fxquotient q 10) (fx- i 1)))))))))
+    (let ((q (fx-quot10 m)))
+      (if (fx=? m (fx* q 10))
+          (strip q (fx+ z 1))
+          (let* ((len (fx-decimal-length m))
+                 (s (make-string len #\0)))
+            (fx-fill-digits! s m len)
+            (cons s (fx- (fx+ len z) k)))))))
 (define (flonum-fast-digits x)
   (and (fl>= x 1e-22) (fl< x 1e15)
        (let loop ((k 0))
@@ -60,7 +60,7 @@
                 (and (fl< y 1e15)
                      (let ((n (flround y)))
                        (if (and (fl>= n 1.0) (fl= (fl/ n p) x))
-                           (flonum-fixnum-digits (exact n) k)
+                           (flonum-fixnum-digits (flonum->fixnum n) k)
                            (loop (fx+ k 1))))))))))
 
 ;; --- Schubfach --------------------------------------------------------------
@@ -91,30 +91,16 @@
   (let ((v (bitwise-arithmetic-shift-right p 127)))
     (if (eqv? 0 (bitwise-bit-field p 64 127)) v (fxior v 1))))
 ;; (digits . point) of F x 10^E, F a positive fixnum: F's digits with its
-;; trailing zeros dropped, two per division
-(define sf-pow10
-  (let ((v (make-vector 19 1)))
-    (do ((k 1 (fx+ k 1))) ((fx=? k 19) v) (vector-set! v k (* 10 (vector-ref v (fx- k 1)))))))
-(define sf-digit-pairs
-  (let ((s (make-string 200)))
-    (do ((i 0 (fx+ i 1))) ((fx=? i 100) s)
-      (string-set! s (fx* 2 i) (integer->char (fx+ 48 (fxquotient i 10))))
-      (string-set! s (fx+ 1 (fx* 2 i)) (integer->char (fx+ 48 (fxremainder i 10)))))))
+;; trailing zeros dropped, two per step (values.ss fx-fill-digits!)
 (define (sf-to-chars f e)
   (let strip ((m f) (z 0))
-    (if (fx=? 0 (fxremainder m 10))
-        (strip (fxquotient m 10) (fx+ z 1))
-        (let* ((len (let count ((c 1)) (if (fx<? m (vector-ref sf-pow10 c)) c (count (fx+ c 1)))))
-               (s (make-string len)))
-          (let fill ((q m) (i (fx- len 1)))
-            (cond ((fx>? i 0)
-                   (let* ((q2 (fxquotient q 100)) (r (fx* 2 (fx- q (fx* q2 100)))))
-                     (string-set! s i (string-ref sf-digit-pairs (fx+ r 1)))
-                     (string-set! s (fx- i 1) (string-ref sf-digit-pairs r))
-                     (fill q2 (fx- i 2))))
-                  (else
-                   (when (fx=? i 0) (string-set! s 0 (integer->char (fx+ 48 q))))
-                   (cons s (+ len z e)))))))))
+    (let ((q (fx-quot10 m)))
+      (if (fx=? m (fx* q 10))
+          (strip q (fx+ z 1))
+          (let* ((len (fx-decimal-length m))
+                 (s (make-string len #\0)))
+            (fx-fill-digits! s m len)
+            (cons s (+ len z e)))))))
 (define (sf-to-decimal q c dk)
   (let* ((out (fxand c 1))
          (cb (fxsll c 2))
@@ -160,23 +146,40 @@
         (if (fx<? t 3) (sf-to-decimal -1074 (fx* 10 t) -1) (sf-to-decimal -1074 t 0)))))
 
 ;; Double.toString's layout of the decimal 0.DIGITS x 10^POINT
+;; Double.toString's layout of (digits . point). The plain decimal forms
+;; (1e-3 <= |x| < 1e7) are written straight into one string of their final
+;; length (#1713): building "1.5" out of two substrings and two appends was
+;; ~70 ns of a (str 1.5).
+(define (flonum-copy-digits! s at digits from to)
+  (do ((i from (fx+ i 1)) (j at (fx+ j 1))) ((fx=? i to)) (string-set! s j (string-ref digits i))))
 (define (flonum-layout neg? digits point)
-  (let* ((dlen (string-length digits))
-         (res (cond
-                ((string=? digits "0") "0.0")
-                ((and (>= point -2) (<= point 7))   ; 1e-3 <= |x| < 1e7
-                 (cond
-                   ((<= point 0)
-                    (string-append "0." (make-string (- point) #\0) digits))
-                   ((>= point dlen)
-                    (string-append digits (make-string (- point dlen) #\0) ".0"))
-                   (else (string-append (substring digits 0 point) "."
-                                        (substring digits point dlen)))))
-                (else
-                 (string-append (substring digits 0 1) "."
-                                (if (fx>? dlen 1) (substring digits 1 dlen) "0")
-                                "E" (number->string (- point 1)))))))
-    (if neg? (string-append "-" res) res)))
+  (let ((dlen (string-length digits)) (sign (if neg? 1 0)))
+    (cond
+      ((string=? digits "0") (if neg? "-0.0" "0.0"))
+      ((and (fixnum? point) (fx>=? point -2) (fx<=? point 7))
+       (let ((s (cond
+                  ((fx<=? point 0)              ; 0.00ddd
+                   (let ((s (make-string (fx+ sign 2 (fx- 0 point) dlen) #\0)))
+                     (string-set! s (fx+ sign 1) #\.)
+                     (flonum-copy-digits! s (fx+ sign 2 (fx- 0 point)) digits 0 dlen)
+                     s))
+                  ((fx>=? point dlen)           ; ddd00.0
+                   (let ((s (make-string (fx+ sign point 2) #\0)))
+                     (flonum-copy-digits! s sign digits 0 dlen)
+                     (string-set! s (fx+ sign point) #\.)
+                     s))
+                  (else                         ; dd.ddd
+                   (let ((s (make-string (fx+ sign dlen 1) #\.)))
+                     (flonum-copy-digits! s sign digits 0 point)
+                     (flonum-copy-digits! s (fx+ sign point 1) digits point dlen)
+                     s)))))
+         (when neg? (string-set! s 0 #\-))
+         s))
+      (else
+       (let ((res (string-append (substring digits 0 1) "."
+                                 (if (fx>? dlen 1) (substring digits 1 dlen) "0")
+                                 "E" (number->string (- point 1)))))
+         (if neg? (string-append "-" res) res))))))
 
 ;; Double.toString's digits of a finite double X's magnitude, as (digits .
 ;; point): value = 0.DIGITS x 10^POINT, no trailing zero, ("0" . 1) for zero.
