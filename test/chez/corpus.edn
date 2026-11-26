@@ -9493,6 +9493,11 @@
   ;; counted check, not the clojure.core/counted? var a user can rebind (the JVM's
   ;; core is direct-linked); bounded-count likewise.
   {:suite "sorted / into ignores a rebound counted?" :label "with-redefs of counted? does not reach into a sorted set or map from a queue or list, nor bounded-count" :expected "[#{1} {1 2} #{1 2} #{1 3} 2]" :actual "(with-redefs [counted? (fn [_] (throw (Exception. \"counted? called\")))] [(into (sorted-set) (conj clojure.lang.PersistentQueue/EMPTY 1)) (into (sorted-map) (conj clojure.lang.PersistentQueue/EMPTY [1 2])) (into (sorted-set 2) (list 1)) (apply sorted-set (list 3 1)) (bounded-count 3 (list 1 2))])" :portability :jvm}
+  ;; Float.toString at a power of two, where the float below is half as far away
+  ;; as the one above: the shortest decimal that reads back can be the one
+  ;; rounded away from the float, not the nearest one of that length
+  {:suite "float / toString" :label "a float power of two whose shortest decimal is rounded away from it" :expected "[\"1.2621775E-29\" \"1.5474251E26\" \"1.2379401E27\" \"1.2621775E-29\"]" :actual "[(str (float (Math/pow 2 -96))) (str (float (Math/pow 2 87))) (str (float (Math/pow 2 90))) (pr-str (float (Math/pow 2 -96)))]" :portability :jvm}
+  {:suite "float / toString" :label "float powers of two across the range" :expected "[\"1.4E-45\" \"2.8E-45\" \"5.877472E-39\" \"1.1754944E-38\" \"7.888609E-31\" \"9.765625E-4\" \"0.5\" \"1.0\" \"8388608.0\" \"1.6777216E7\" \"9.223372E18\" \"1.8446744E19\" \"1.2676506E30\" \"8.507059E37\" \"1.7014118E38\"]" :actual "(mapv #(str (float (Math/pow 2 %))) [-149 -148 -127 -126 -100 -10 -1 0 23 24 63 64 100 126 127])" :portability :jvm}
   ;; #1713: open-coded instance? and record keyword sites, the char hash-map path,
   ;; Matcher.group's direct substring, a plain record's miss, satisfies? keyed by
   ;; the protocol value, and maps and keywords called as fns.
