@@ -832,9 +832,10 @@
     ;; retries by itself
     (assoc acc :retry
            (if pool?
-             (str "(let ((_e " entry-e ")) (when _e (set! " entry " _e) "
-                  (apply str (map (fn [[nm e]] (str "(set! " nm " " e ") ")) @retries))
-                  ") _e)")
+             (let [e (fresh-label "jn_re")]
+               (str "(let ((" e " " entry-e ")) (when " e " (set! " entry " " e ") "
+                    (apply str (map (fn [[nm x]] (str "(set! " nm " " x ") ")) @retries))
+                    ") " e ")"))
              "#f"))))
 
 (defn- native-result-value
