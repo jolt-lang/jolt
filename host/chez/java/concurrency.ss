@@ -4391,8 +4391,25 @@
 ;; for the class it reports: java.util.concurrent.ThreadPerTaskExecutor, which is
 ;; an ExecutorService but NOT a ThreadPoolExecutor.
 (alias-host-methods! "vthread-executor" "executor-service")
+;; ScheduledThreadPoolExecutor's removeOnCancel policy, false by default. Set,
+;; a scheduled task that is cancelled leaves the delayed list at once instead of
+;; staying in getQueue until its delay runs out. Held beside the pool rather
+;; than in its state vector, keyed by that vector, which every task carries.
+(define stpe-remove-on-cancel (make-weak-eq-hashtable))
+(define (stpe-remove-on-cancel? pool-st)
+  (and (hashtable-ref stpe-remove-on-cancel pool-st #f) #t))
+(define (stpe-drop-cancelled! sf)
+  (let ((pool-st (vector-ref (jhost-state sf) 9)))
+    (when (and (vector? pool-st) (stpe-remove-on-cancel? pool-st))
+      (jolt-with-mutex (vector-ref pool-st 2)
+        (vector-set! pool-st 13 (remq sf (vector-ref pool-st 13)))))))
 (derive-host-methods! "scheduled-executor" "executor-service"
-  (list (cons "schedule" (lambda (self task delay unit)
+  (list (cons "setRemoveOnCancelPolicy" (lambda (self v)
+          (hashtable-set! stpe-remove-on-cancel (jhost-state self) (jolt-truthy? v))
+          jolt-nil))
+        (cons "getRemoveOnCancelPolicy" (lambda (self)
+          (stpe-remove-on-cancel? (jhost-state self))))
+        (cons "schedule" (lambda (self task delay unit)
           (executor-schedule! self task delay unit 0)))
         (cons "scheduleAtFixedRate" (lambda (self task initial period unit)
           (executor-schedule! self task initial unit (scheduled-period-ms period unit 1))))
@@ -4421,6 +4438,11 @@
                        "cannot compare a ScheduledFutureTask with a non-ScheduledFutureTask"))
           (cond ((eq? self other) 0) ((sf-before? self other) -1) ((sf-before? other self) 1) (else 0))))
         (cons "isPeriodic" (lambda (self) (sf-periodic? self)))
+        ;; j-future's cancel, then the pool's removeOnCancel policy
+        (cons "cancel" (lambda (self may)
+          (let ((r (j-future-cancel! self (jolt-truthy? may))))
+            (when (jolt-truthy? r) (stpe-drop-cancelled! self))
+            r)))
         (cons "run" (lambda (self) (scheduled-future-run! self (vector-ref (jhost-state self) 9)) jolt-nil))))
 
 ;; --- java.util.concurrent.CompletableFuture ----------------------------------

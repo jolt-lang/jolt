@@ -141,7 +141,10 @@
     (jolt-thread-sleep-ms (+ ms (/ ns 1000000)))))
 
 (define thread-statics
-  (list (cons "sleep" (case-lambda
+  (list (cons "MIN_PRIORITY" 1)
+        (cons "NORM_PRIORITY" 5)
+        (cons "MAX_PRIORITY" 10)
+        (cons "sleep" (case-lambda
                         ((ms) (jolt-thread-sleep-ms (thread-sleep-millis-arg ms)))
                         ((ms ns) (jolt-thread-sleep-ms+ns ms ns))))
         ;; a fiber yields to the other fibers on its carrier, as a virtual

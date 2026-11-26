@@ -89,6 +89,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `bit-shift-right` and `unsigned-bit-shift-right`, with the JVM's masked
   shift counts. A mask by a non-negative constant bounds an index for the
   range analysis, so `(aget xs (bit-and i 3))` drops its bounds check.
+- `Thread/MIN_PRIORITY`, `NORM_PRIORITY` and `MAX_PRIORITY` (1, 5 and 10), and
+  `ScheduledThreadPoolExecutor`'s `setRemoveOnCancelPolicy` and
+  `getRemoveOnCancelPolicy`. With the policy on, a cancelled scheduled task
+  leaves `getQueue` at once instead of staying there until its delay runs out.
+  promesa's scheduler needed both, so `p/timeout` and `p/delay` failed with
+  "No matching field or method: Thread/NORM_PRIORITY".
 - `Throwable.addSuppressed` and `getSuppressed` on every throwable, as in JDK 21.
   `getSuppressed` returns a fresh `Throwable[]` in the order they were added, adding
   `nil` throws `NullPointerException` ("Cannot suppress a null exception.") and adding
