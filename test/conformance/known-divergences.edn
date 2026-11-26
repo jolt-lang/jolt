@@ -275,10 +275,13 @@
   ;; LETTER CAPITAL S, given the compatibility decomposition <super> 0053 in
   ;; 17.0, so NFKC/NFKD fold it to "S" here and leave it alone on the JVM
   ;; (NFC/NFD leave it alone on both). Masking that one code point would pin jolt
-  ;; to one JDK's UCD version, which the next JDK moves anyway, and the rest of
-  ;; jolt's Unicode surface — Character/getType, \p{L}, case conversion — already
-  ;; reads those same Chez tables. So the divergence on record is the version,
-  ;; and the code point is what it currently amounts to (gh-1066).
+  ;; to one JDK's UCD version, which the next JDK moves anyway, and case
+  ;; conversion reads those same Chez tables. So the divergence on record is the
+  ;; version, and the code point is what it currently amounts to (gh-1066).
+  ;; Character's classification and java.util.regex's Unicode classes are the
+  ;; exception: they read Chez's categories through a table of where the pinned
+  ;; JDK disagrees (tools/gen-char-categories.clj), since a digit or letter the
+  ;; JDK has never heard of changes what parsers accept.
   {:category :host-model
    :behavior "(java.text.Normalizer/normalize \"\\uA7F1\" java.text.Normalizer$Form/NFKC)"
    :jvm "\"\\ua7f1\" — UCD 16.0 gives it no decomposition"
