@@ -225,6 +225,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   number out of range throw `IndexOutOfBoundsException: No group N`.
   `start` and `end` take a group name, as `group` does; an unknown name throws
   `IllegalArgumentException: No group with name <n>`.
+- `java.io.PrintWriter` over an `OutputStream` writes to it: it wraps the
+  stream in an `OutputStreamWriter` (with the charset, when one is passed) and
+  a `BufferedWriter`, as the JDK does, where it used to fail on its first write
+  with `OutputStream/write: unsupported argument`. `autoFlush` is honoured, so
+  `println`, `printf` and `format` flush. A `PrintStream` target such as
+  `System/out` is written as before.
 - `Character/digit` reads non-ASCII decimal digits and fullwidth letters, and
   answers `-1` for a radix outside 2..36. `Character/getNumericValue` and
   `Character/forDigit` exist.

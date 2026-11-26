@@ -903,9 +903,27 @@
                       (pw-trouble! self))
                   jolt-nil)))
     (thunk)))
+;; PrintWriter(out[, autoFlush[, charset]]). An OutputStream target is wrapped
+;; the way the JDK wraps it, new BufferedWriter(new OutputStreamWriter(out[, cs])),
+;; so the stream receives bytes. A PrintStream keeps the text path it always had,
+;; which is what (PrintWriter. System/out) relies on. autoFlush, slot 3, flushes
+;; after println, printf and format, as the JDK's does.
+(define pw-output-stream (jolt-symbol #f "java.io.OutputStream"))
+(define (pw-wrap-output-stream t cs-args)
+  (if (and (jhost? t)
+           (not (string=? (jhost-tag t) "print-stream"))
+           (jolt-truthy? (instance-check pw-output-stream t)))
+      (host-new "java.io.BufferedWriter" (apply host-new "java.io.OutputStreamWriter" t cs-args))
+      t))
 (define (make-print-writer args)
-  (let ((t (if (pair? args) (car args) jolt-nil)))
-    (make-jhost "print-writer" (vector t #f (pw-writer-target? t)))))
+  (let* ((t0 (if (pair? args) (car args) jolt-nil))
+         (auto? (and (pair? args) (pair? (cdr args)) (jolt-truthy? (cadr args))))
+         (t (pw-wrap-output-stream t0 (if (and (pair? args) (pair? (cdr args))) (cddr args) '()))))
+    (make-jhost "print-writer" (vector t #f (pw-writer-target? t) auto?))))
+(define (pw-auto-flush! self)
+  (let ((st (jhost-state self)))
+    (when (and (fx> (vector-length st) 3) (vector-ref st 3))
+      (pw-guarded self (lambda () (pw-pass! self "flush"))))))
 (register-class-ctor! "PrintWriter" (lambda args (make-print-writer args)))
 (register-class-ctor! "java.io.PrintWriter" (lambda args (make-print-writer args)))
 (register-host-methods! "print-writer"
@@ -926,6 +944,7 @@
                             (lambda ()
                               (unless (null? xs) (pw-print! self (car xs)))
                               (pw-newline! self)))
+                          (pw-auto-flush! self)
                           jolt-nil))
         (cons "append" (lambda (self x . rest)
                          (pw-guarded self
@@ -938,10 +957,12 @@
         (cons "printf" (lambda (self a . rest)
                          (jvm-format-pieces a rest
                            (lambda (piece) (pw-guarded self (lambda () (pw-text! self piece)))))
+                         (pw-auto-flush! self)
                          self))
         (cons "format" (lambda (self a . rest)
                          (jvm-format-pieces a rest
                            (lambda (piece) (pw-guarded self (lambda () (pw-text! self piece)))))
+                         (pw-auto-flush! self)
                          self))
         (cons "flush" (lambda (self) (pw-guarded self (lambda () (pw-pass! self "flush")))))
         (cons "close" (lambda (self) (pw-guarded self (lambda () (pw-pass! self "close")))))
