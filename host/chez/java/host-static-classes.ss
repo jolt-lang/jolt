@@ -2485,6 +2485,11 @@
 ;; empty-value is #f until setEmptyValue; until then an empty joiner renders
 ;; prefix+suffix, as the JDK does.
 (define (sj-arg x) (if (string? x) x (if (eq? x jolt-nil) "null" (jolt-str-render-one x))))
+;; a constructor or setEmptyValue argument: Objects.requireNonNull's NPE for nil
+(define (sj-required x what)
+  (if (eq? x jolt-nil)
+      (throw-jvm 'NullPointerException (string-append "The " what " must not be null"))
+      (sj-arg x)))
 (define-syntax sj-st (syntax-rules () ((_ self i) (vector-ref (jhost-state self) i))))
 (define (sj-count self) (sj-st self 5))
 ;; delimiters + parts, without prefix/suffix
@@ -2523,14 +2528,15 @@
         (string-copy! suf 0 out (fx- total sl) sl)
         out)))
 (define (sj-add! self x)
-  (let ((st (jhost-state self)) (s (sj-arg x)))
+  (let ((st (jhost-state self)) (s (sj-arg (jolt-checkcast "java.lang.CharSequence" x))))
     (vector-set! st 4 (cons s (vector-ref st 4)))
     (vector-set! st 5 (fx+ (vector-ref st 5) 1))
     (vector-set! st 6 (fx+ (vector-ref st 6) (string-length s)))
     self))
 (define (sj-make delim prefix suffix)
   (make-jhost "string-joiner"
-    (vector (sj-arg delim) (sj-arg prefix) (sj-arg suffix) #f '() 0 0)))
+    (vector (sj-required delim "delimiter") (sj-required prefix "prefix")
+            (sj-required suffix "suffix") #f '() 0 0)))
 (register-class-ctor! "StringJoiner"
   (case-lambda
     ((delim) (sj-make delim "" ""))
@@ -2540,11 +2546,12 @@
         (cons "toString" sj-render)
         (cons "length" (lambda (self) (->num (sj-length self))))
         (cons "setEmptyValue"
-              (lambda (self v) (vector-set! (jhost-state self) 3 (sj-arg v)) self))
+              (lambda (self v) (vector-set! (jhost-state self) 3 (sj-required v "empty value")) self))
         ;; merge adds OTHER's joined parts, without its prefix/suffix, as one
         ;; element -- and nothing at all when other has no parts
         (cons "merge"
               (lambda (self other)
+                (when (eq? other jolt-nil) (throw-jvm 'NullPointerException jolt-nil))
                 (if (fx>? (sj-count other) 0) (sj-add! self (sj-body other)) self)))))
 
 ;; ---- String / BigInteger / MapEntry constructors ----------------------------
