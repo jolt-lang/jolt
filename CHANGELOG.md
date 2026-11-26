@@ -298,6 +298,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   macOS to a BoringSSL copy already in the process, which aborted the first
   `MessageDigest` update. A library already on the roots registers nothing
   twice.
+- The exported clj-kondo hook reads a `jolt.ffi/defcfn` with a
+  `[:by-value [:struct ...]]` result as taking the destination pointer first,
+  as the binding does, so a correct `(c-div dst 7 2)` no longer lints as
+  `:invalid-arity` and `(c-div 7 2)` does. A wrapper's raw binding gets the
+  same extra parameter.
 
 ### Internal
 
