@@ -211,7 +211,7 @@
                          (contains? one :x) (contains? many :x))
             (println "FAIL hotpath proto-shape: record ops answered wrong")
             (System/exit 1))
-        probe (fn [r] #(dotimes [_ reps] (do (count r) (contains? r :x) (seq r))))]
+        probe (fn [r] #(dotimes [_ reps] (count r) (contains? r :x) (seq r)))]
     (judge-thunks "proto-shape" (probe one) (probe many) 3.0
            "record collection ops are re-walking the type's protocol table (find-method-any-protocol, protocols.ss) — 8 protocols cost more than 1"))
 

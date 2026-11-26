@@ -185,6 +185,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   interposed (an `LD_PRELOAD`ed ASan or jemalloc) regions compiled at
   different times could pair one allocator's `calloc` with the other's `free`
   and crash.
+- `clojure.test/*initial-report-counters*` is dynamic, as in Clojure, so
+  `binding` it no longer throws `Can't dynamically bind non-dynamic var`.
+- `jolt.parser.combinators/any-of` carries its docstring; it sat after the
+  argument vector, where it was a body expression.
 
 ## [0.8.30] - 2026-11-24
 

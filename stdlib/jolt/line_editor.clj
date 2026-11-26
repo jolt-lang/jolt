@@ -763,9 +763,12 @@
                        (second k)
                        ({:enter \newline :newline \newline :tab \tab} k))]
       (if-let [more (when paste-char
-                      (loop [acc nil]
-                        (let [c (jolt.host/term-read-char false)]
-                          (if (char? c) (recur (str acc c)) acc))))]
+                      ;; a paste can be long: one buffer, not a string copy per char
+                      (let [sb (StringBuilder.)]
+                        (loop []
+                          (let [c (jolt.host/term-read-char false)]
+                            (when (char? c) (.append sb c) (recur))))
+                        (when (pos? (.length sb)) (.toString sb))))]
         (let [text (str paste-char more)
               text (str/replace (str/replace text "\r\n" "\n") "\r" "\n")]
           (if (str/ends-with? text "\n")

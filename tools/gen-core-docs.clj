@@ -73,20 +73,20 @@
                             (cond (class? t) (str "(jolt.host/jolt-class-for " (pr-str (.getName ^Class t)) ")")
                                   (symbol? t) (str "'" (pr-str t))
                                   :else "nil"))
-                   ")"))]
-  (let [shards (vec (partition-all forms-per-shard forms))]
-    (when (> (count shards) 10)
-      (throw (ex-info "more than 10 doc shards; raise forms-per-shard" {:shards (count shards)})))
-    (doseq [[i shard] (map-indexed vector shards)]
-      (spit (shard-path out-dir i)
-            (str (if (zero? i) header (shard-header i))
-                 "\n" (clojure.string/join "\n" shard) "\n")))
-    ;; a shard left over from a longer inventory would load stale forms
-    (doseq [i (range (count shards) 10)
-            :let [f (clojure.java.io/file (shard-path out-dir i))]
-            :when (.exists f)]
-      (.delete f)
-      (println "removed stale" (str f)))
-    (println "wrote" (count shards) "shards to" out-dir "-" (count forms) "vars"
-             "; ei-prelude-ns-files (host/chez/emit-image.ss) must list 90-docs .."
-             (str (+ 89 (count shards)) "-docs"))))
+                   ")"))
+      shards (vec (partition-all forms-per-shard forms))]
+  (when (> (count shards) 10)
+    (throw (ex-info "more than 10 doc shards; raise forms-per-shard" {:shards (count shards)})))
+  (doseq [[i shard] (map-indexed vector shards)]
+    (spit (shard-path out-dir i)
+          (str (if (zero? i) header (shard-header i))
+               "\n" (clojure.string/join "\n" shard) "\n")))
+  ;; a shard left over from a longer inventory would load stale forms
+  (doseq [i (range (count shards) 10)
+          :let [f (clojure.java.io/file (shard-path out-dir i))]
+          :when (.exists f)]
+    (.delete f)
+    (println "removed stale" (str f)))
+  (println "wrote" (count shards) "shards to" out-dir "-" (count forms) "vars"
+           "; ei-prelude-ns-files (host/chez/emit-image.ss) must list 90-docs .."
+           (str (+ 89 (count shards)) "-docs")))
