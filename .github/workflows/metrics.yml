@@ -24,7 +24,7 @@ env:
   # findings per rule, so a release with new rules needs the allowlist updated
   # in the same change, and a baseline only compares like with like.
   JOLT_VERSION: v0.8.30
-  JOLT_METRICS_VERSION: v0.8.0
+  JOLT_METRICS_VERSION: v0.8.1
 
 jobs:
   report:

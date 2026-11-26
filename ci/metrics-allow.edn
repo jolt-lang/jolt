@@ -28,7 +28,11 @@
   {:path "jolt-core/clojure/core/50-io.clj" :name "lift-ns"
    :why "clojure.pprint calls #'clojure.core/lift-ns"}]
  :unused-public
- [{:path "jolt-core/jolt/analyzer.clj" :name "set-name-counter!"
+ [{:path "clj-kondo.exports/jolt-lang/jolt/hooks/jolt/ffi.clj" :name "defcfn"
+   :why "clj-kondo hook, named in the exported config.edn"}
+  {:path "clj-kondo.exports/jolt-lang/jolt/hooks/jolt/ffi.clj" :name "with-arena"
+   :why "clj-kondo hook, named in the exported config.edn"}
+  {:path "jolt-core/jolt/analyzer.clj" :name "set-name-counter!"
    :why "var-deref from host/chez/build.ss"}
   {:path "jolt-core/jolt/analyzer.clj" :name "defmacro-expansion"
    :why "var-deref from host/chez/ns.ss"}
@@ -56,6 +60,8 @@
    :why "nrepl/bencode's public API, for scripts that call it; nothing in jolt does"}
   {:path "compatibility/bencode/core.clj" :name "write-netstring"
    :why "nrepl/bencode's public API, for scripts that call it; nothing in jolt does"}
+  {:path "compatibility/jsonista/core.clj" :name "write-value"
+   :why "jsonista's public API, for libraries that call it (muuntaja); nothing in jolt does"}
   {:path "compatibility/jsonista/core.clj" :name "read-value"
    :why "jsonista's public API, for libraries that call it (muuntaja); nothing in jolt does"}
   {:path "compatibility/jsonista/core.clj" :name "write-value-as-bytes"

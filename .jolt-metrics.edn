@@ -16,11 +16,13 @@
  :test-paths ["test" "bench" "ci"]
  ;; public API, called from outside the repo, so never reported as unused
  :api-namespaces ["clojure.*" "jolt.fibers" "jolt.image" "jolt.io-poller" "jolt.loader"
-                  "jolt.nrepl" "jolt.parser.*" "jolt.profile" "jolt.reader" "jolt.time.*"]
+                  "jolt.nrepl" "jolt.parser.*" "jolt.profile" "jolt.reader" "jolt.time.*"
+                  ;; what task scripts call
+                  "babashka.tasks"]
  ;; clojure.core's shards, which have no ns form for a namespace glob to match, and
  ;; the stubs of SCI's host modules, whose vars sci.impl.namespaces names
  :api-paths ["jolt-core/clojure/core" "stdlib/clojure/sci/host_stubs.clj"
-             "stdlib/clojure/sci/lang_stubs.clj"]
+             "stdlib/clojure/sci/lang_stubs.clj" "stdlib/clojure/sci/io_stubs.clj"]
  ;; Lint rules run at jolt-metrics' default levels; ci/metrics-gate.clj fails on
  ;; a :warning or performance finding that ci/metrics-allow.edn doesn't list.
  ;; missing-else-branch and cond-else stay on, since the style guide asks for

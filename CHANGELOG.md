@@ -192,7 +192,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
-- The metrics workflow runs jolt-metrics v0.8.0 and gates on its lint
+- The metrics workflow runs jolt-metrics v0.8.1 (pinned) and gates on its lint
   findings as well (`ci/metrics-allow.edn` lists the ones that stay), and a
   pull request's report opens with what changed since main's.
 
