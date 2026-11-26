@@ -100,7 +100,22 @@
     ((char) #\nul)
     (else jolt-nil)))
 
-(define (na-idx i) (if (and (number? i) (not (exact? i))) (exact (truncate i)) (jolt-need-num i)))
+;; An index that is not a fixnum, as RT.intCast's longCast reads it: a double
+;; truncates, NaN is 0 ((long) NaN), and one past the long range is the
+;; IllegalArgumentException "Value out of range for long: 1.0E19"; a ratio
+;; truncates. What is left past the int range is the caller's to refuse
+;; (index-int-check!, on its out-of-bounds branch). (aget a ##NaN) raised Chez's
+;; exact error and (aget a 1/2) the backing's own range condition.
+(define (na-idx i)
+  (cond ((fixnum? i) i)
+        ((flonum? i)
+         (cond ((not (fl= i i)) 0)
+               ((or (fl> i 9.223372036854775807e18) (fl< i -9.223372036854775808e18))
+                (index-int-check! i))
+               (else (exact (fltruncate i)))))
+        ((and (number? i) (exact? i) (not (integer? i))) (truncate i))
+        ((and (number? i) (not (exact? i))) (exact (truncate i)))
+        (else (jolt-need-num i))))
 ;; A constructor's size, (double-array n) and its siblings: Numbers.T_array
 ;; reads it with Number.intValue, which keeps the low 32 bits of an integer and
 ;; saturates a double, so (double-array 4294967296) is empty and
@@ -1873,12 +1888,15 @@
 ;; memory, so that case is refused here rather than read.
 (define (jolt-native-arg-long x) (if (fixnum? x) x (jolt-long-cast x)))
 (define (jolt-native-arg-double x) (if (flonum? x) x (jolt-double x)))
+;; What a refused argument is, for the message: its class, or nil.
+(define (jolt-native-arg-what x)
+  (if (jolt-nil? x) "nil" (jolt-class-name x)))
 (define (jolt-native-arg-bool x)
   (if (boolean? x)
       x
       (throw-jvm 'ClassCastException
                  (string-append "native region: a ^boolean parameter got "
-                                (jolt-class-name x)))))
+                                (jolt-native-arg-what x)))))
 ;; Each array check answers the backing it tested, which the call site hands C:
 ;; read once, since another thread's store can widen the array's backing to a
 ;; plain vector, and a second read after the check would pass that to C.
@@ -1886,7 +1904,7 @@
   (if (not (and (jolt-array? a) (eq? (jolt-array-kind a) 'double)))
       (throw-jvm 'ClassCastException
                  (string-append "native region: a ^doubles parameter got "
-                                (jolt-class-name a)))
+                                (jolt-native-arg-what a)))
       (let ((v (jolt-array-vec a)))
         (if (flvector? v)
             v
@@ -1899,7 +1917,7 @@
   (if (not (and (jolt-array? a) (eq? (jolt-array-kind a) 'long)))
       (throw-jvm 'ClassCastException
                  (string-append "native region: a ^longs parameter got "
-                                (jolt-class-name a)))
+                                (jolt-native-arg-what a)))
       (let ((v (jolt-array-vec a)))
         (if (fxvector? v)
             v
@@ -1913,7 +1931,7 @@
         v
         (throw-jvm 'ClassCastException
                    (string-append "native region: a ^bytes parameter got "
-                                  (jolt-class-name a))))))
+                                  (jolt-native-arg-what a))))))
 ;; An owned array result arrives as the region's malloc'd buffer PTR, which the
 ;; stub copies into a fresh Scheme array and frees. Until the copy has freed
 ;; it, a failure (the Scheme heap out of room for the array) frees it first.
@@ -2006,15 +2024,33 @@
               (sa-foreign-procedure (sa-foreign-entry-address "jolt_mir_feature_name") (integer-64) string))
       'none))
 
-;; base sym -> MIR module address, or a string: why the region has no code here
+;; base sym -> MIR module address, or a string: why the region has no code
+;; here. A failure is kept with the library set it failed against
+;; (jolt-mir-libraries): a region whose C calls a defextern no library defined
+;; yet compiles again once ffi/load-library (or a :jolt/native) has opened
+;; another, rather than failing for the rest of the process.
 (define jolt-mir-modules (make-hashtable string-hash string=?))
+(define jolt-mir-failed-at (make-hashtable string-hash string=?))
+
+;; How many native libraries this process has opened (java/ffi.ss, which loads
+;; after this file): the set only grows, so its size says when it changed.
+(define (jolt-mir-libraries)
+  (length (or (vector-ref ffi-native-handles 0) '())))
 
 (define (jolt-mir-module base)
   (jolt-with-mutex jolt-mir-mutex
-    (or (hashtable-ref jolt-mir-modules base #f)
-        (let ((m (jolt-mir-compile base)))
-          (hashtable-set! jolt-mir-modules base m)
-          m))))
+    (let ((had (hashtable-ref jolt-mir-modules base #f)))
+      (if (and had (not (and (string? had)
+                             (not (eqv? (hashtable-ref jolt-mir-failed-at base #f)
+                                        (jolt-mir-libraries))))))
+          had
+          (let ((libs (jolt-mir-libraries))
+                (m (jolt-mir-compile base)))
+            (hashtable-set! jolt-mir-modules base m)
+            (if (string? m)
+                (hashtable-set! jolt-mir-failed-at base libs)
+                (hashtable-delete! jolt-mir-failed-at base))
+            m)))))
 
 (define (jolt-mir-compile base)
   (let ((src (jolt-native-source base)))
