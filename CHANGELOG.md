@@ -53,9 +53,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   macro of each feature the machine has (`__AVX2__`, `__FMA__`, `__ARM_NEON`
   ...), so a `defnative` with `(on "defined(__AVX2__)" ...)` and
   `(on :default ...)` bodies runs the SIMD one where the CPU has it, and the
-  portable one elsewhere. `jolt build` still compiles for its C compiler's
-  default target, usually the baseline. `jolt.native/cpu-features` lists what
-  the JIT targets; `JOLT_MIR_CPU=baseline` makes it target the baseline.
+  portable one elsewhere, as `cc -march=native` would (SSE3, SSSE3, BMI and
+  BMI2, F16C and LZCNT among them). `jolt build` still compiles for its C
+  compiler's default target, usually the baseline. `jolt.native/cpu-features`
+  lists what the JIT targets; `JOLT_MIR_CPU=baseline` makes it target the
+  baseline, which keeps what every core of the architecture has (`__ARM_NEON`
+  on AArch64, SSE2 on x86-64).
 
 - Native regions specialize on runtime values: `(native ^{:specialize [n]}
   [^long n ^doubles m] ...)` compiles a variant of the region, with the JIT,
@@ -63,16 +66,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default), with the value as a constant, so the range analysis drops checks it
   could not for an unknown `n`: a 512x512 matrix sum runs about 1.7 times
   faster. Other values, and a `jolt build` binary, run the region as written;
-  the answers are the same. `jolt.native/specializations` lists the variants.
+  the answers are the same. A call that hits a variant costs about twice a
+  direct call, and one past the budget or in a binary takes no lock. Sites
+  that specialize parameters at different positions keep their own variants;
+  a variant the JIT cannot compile is dropped and the site runs the region as
+  written. `jolt.native/specializations` lists the variants.
 
 - `jolt.native/native-fn`: compile a native region at runtime from data (a
   params vector and body forms), with the JIT, and get back a fn that runs it
   as native code. A program can generate a region from what it only learns at
-  runtime; `jolt.native/jit?` says whether this process can.
+  runtime; `jolt.native/jit?` says whether this process can. A region the JIT
+  cannot compile or link raises from `native-fn` itself.
 - `jolt.native.layout`: a binary record layout (`[[:magic :u32] [:pad 1]
   [:count :u16] ...]`, little- or big-endian) lowered into a region:
   `parser` reads one record, `column` scans a field across every record in a
   byte-array, with the offsets, widths and sign extension as constants in C.
+  A read past the end of the array, at any offset, raises
+  `ArrayIndexOutOfBoundsException`.
 - Native regions take `^bytes` parameters (read in place, each element a
   signed byte as a long; a region never writes one) and the bit operations
   `bit-and`, `bit-or`, `bit-xor`, `bit-not`, `bit-shift-left`,
@@ -118,7 +128,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `JOLT_NO_MIR=1` builds a jolt without it. The JIT finds a `defextern`
   `:header` in the system include directories and any `JOLT_MIR_INCLUDE`
   lists; a header MIR's C compiler cannot parse (Android's bionic ones) makes
-  that region raise outside a build.
+  that region raise outside a build. It resolves the C functions a region
+  calls in the process's global scope first, where a linked region's calls
+  bind (so an interposed allocator is used consistently), then in each library
+  `ffi/load-library` or `:jolt/native` opened, as a `defcfn` does. A region
+  that names a function nothing defines raises when called, and compiles again
+  once another library has loaded.
 - **A number in a `jolt.ffi` `:bool` position throws `IllegalArgumentException`.**
   `:bool` follows jolt truthiness, and 0 is truthy, so a C-style `0` for false
   or `(if on? 1 0)` used to send true without any error. Pass `true` or `false`,
@@ -191,34 +206,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compile.
 - `Math` double functions and `clojure.math` take a `BigDecimal` as its double
   value, so `(Math/sqrt 4M)` is `2.0`; they threw `ClassCastException`.
-- Under the JIT on macOS arm64, a small array a native region kept on the stack
-  started out with garbage instead of zeros: the JIT's prelude did not declare
-  `memset`, and an undeclared call there passes its arguments where `memset`
-  does not read them. The native gate now refuses any call the JIT's prelude
-  leaves undeclared.
-- A native region's `:specialize` no longer runs another site's variant: two
-  sites with the same params and body shared their variants even when they
-  specialized different params.
 - A native region's `^doubles`/`^longs` argument is read once, after its
   check, so a store on another thread that widens the array's backing cannot
   reach C. An owned array result is copied out before interrupts come back on.
 - A `defextern` called outside a region frees the buffers it made for earlier
-  array arguments when a later one fails to copy.
+  array arguments when a later one fails to copy, and refuses an array of the
+  wrong kind with `ClassCastException`.
+- `nil` passed to a native region's `^doubles`, `^longs`, `^bytes` or
+  `^boolean` parameter raises `ClassCastException` naming `nil`, instead of a
+  `NullPointerException` from building that message.
+- `aget`, `aset` and `nth` on an array read a `##NaN` index as 0 and truncate a
+  ratio index, as `RT.intCast` does, instead of raising Chez's own error; an
+  index past the long range is the `IllegalArgumentException` naming the
+  double.
 - Inside a native region, a call whose head is a local (`(let [aget 1] (aget
   xs 0))`) is refused rather than compiled as the builtin of that name, and a
   region name registered again with different C raises.
-- The JIT checks a region's imports before linking it, so an undefined symbol
-  no longer abandons the JIT's context and leaks every region compiled in it.
-- The JIT resolves the C functions a region calls (`calloc`, `free`, ...) in
-  the process's global scope first, where a linked region's calls bind. It
-  answered by whichever shared object was loaded last, so with an allocator
-  interposed (an `LD_PRELOAD`ed ASan or jemalloc) regions compiled at
-  different times could pair one allocator's `calloc` with the other's `free`
-  and crash.
 - `clojure.test/*initial-report-counters*` is dynamic, as in Clojure, so
   `binding` it no longer throws `Can't dynamically bind non-dynamic var`.
 - `jolt.parser.combinators/any-of` carries its docstring; it sat after the
   argument vector, where it was a body expression.
+- `jolt.deps/add-deps` loads the added libraries' `:jolt/native` libraries,
+  each on the first require of one of its namespaces, as a dependency in
+  `deps.edn` does. It left them out, so a script that added jolt-lang/crypto
+  at run time bound `EVP_*` to nothing ("no entry for EVP_sha256"), or on
+  macOS to a BoringSSL copy already in the process, which aborted the first
+  `MessageDigest` update. A library already on the roots registers nothing
+  twice.
 
 ### Internal
 

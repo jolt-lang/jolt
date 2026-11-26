@@ -20,8 +20,10 @@
      jolt_mir_frame        an address in the caller's frame, for the helper's
                            check against that limit.
    Everything else a region calls (malloc, sqrt, a defextern's function) is
-   resolved in the process's global scope, then by the resolver Chez passes
-   in, which is Chez's own foreign-entry (jolt_mir_resolve). */
+   resolved in the process's global scope, then by the resolver jolt passes
+   in (host/chez/java/ffi.ss jolt-mir-resolver-entry), which looks in each
+   library ffi/load-library or :jolt/native opened and then in Chez's own
+   foreign-entry (jolt_mir_find_symbol). */
 #if !defined(_WIN32) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE /* RTLD_DEFAULT, on glibc */
 #endif
@@ -34,6 +36,9 @@
 #include "mir.h"
 #include "mir-gen.h"
 #include "c2mir/c2mir.h"
+#if (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__))
+#include <cpuid.h>
+#endif
 
 #if defined(_WIN32)
 /* GetCurrentThreadStackLimits is Windows 8's; mingw declares it only from there */
@@ -127,8 +132,10 @@ static void MIR_NO_RETURN jolt_mir_on_error(MIR_error_type_t type, const char *f
    does not link the interposer); with a sanitized object newest, ASan's calloc.
    MIR keeps the first answer for a name in the context, so regions compiled
    at different points paired one allocator's calloc with the other's free.
-   Chez's list stays the fallback, for a name only a library ffi/load-library
-   opened (RTLD_LOCAL, so not in the global scope) defines. */
+   jolt's resolver is the fallback, for a name the global scope lacks: it
+   dlsyms each library ffi/load-library or :jolt/native opened (RTLD_LOCAL, so
+   not in the global scope), as a defcfn binding of the name would, then asks
+   Chez's foreign-entry. */
 static void *jolt_mir_find_symbol(const char *name) {
   void *p = NULL;
 #if !defined(_WIN32)
@@ -195,10 +202,12 @@ static void jolt_mir_init_incs(void) {
    A region's (on guard ...) bodies are chosen by the C preprocessor. jolt build
    compiles for the build machine's baseline (no -march), so __AVX2__ and its
    kin are off there; the JIT compiles on the machine that runs the code, so it
-   defines the GCC macro of each feature this CPU has, and a guard picks the
-   body for it. Bit k of jolt_mir_cpu_features is feature k of
-   jolt_mir_feature_macro; JOLT_MIR_CPU=baseline turns them all off. */
-#define JOLT_MIR_NFEATURES 9
+   defines the GCC macro of each feature this CPU has, as cc -march=native
+   does, and a guard picks the body for it. Bit k of jolt_mir_cpu_features is
+   feature k of jolt_mir_feature_macro; JOLT_MIR_CPU=baseline keeps only what
+   every core of the architecture has (Advanced SIMD on AArch64, which cc
+   defines __ARM_NEON for by default; x86-64's SSE and SSE2 are always on). */
+#define JOLT_MIR_NFEATURES 14
 static const char *jolt_mir_feature_macro(int k) {
   switch (k) {
   case 0: return "__SSE4_1__";
@@ -210,6 +219,11 @@ static const char *jolt_mir_feature_macro(int k) {
   case 6: return "__BMI2__";
   case 7: return "__AVX512F__";
   case 8: return "__ARM_NEON";
+  case 9: return "__SSE3__";
+  case 10: return "__SSSE3__";
+  case 11: return "__BMI__";
+  case 12: return "__F16C__";
+  case 13: return "__LZCNT__";
   default: return NULL;
   }
 }
@@ -220,10 +234,16 @@ JOLT_MIR_EXPORT const char *jolt_mir_feature_name(int64_t k) {
 
 JOLT_MIR_EXPORT int64_t jolt_mir_cpu_features(void) {
   int64_t f = 0;
+#if defined(__aarch64__) || defined(_M_ARM64)
+  f |= 1 << 8; /* Advanced SIMD is part of every AArch64 core */
+#endif
   const char *env = getenv("JOLT_MIR_CPU");
-  if (env && strcmp(env, "baseline") == 0) return 0;
+  if (env && strcmp(env, "baseline") == 0) return f;
 #if (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__))
   __builtin_cpu_init();
+  if (__builtin_cpu_supports("sse3")) f |= 1 << 9;
+  if (__builtin_cpu_supports("ssse3")) f |= 1 << 10;
+  if (__builtin_cpu_supports("bmi")) f |= 1 << 11;
   if (__builtin_cpu_supports("sse4.1")) f |= 1 << 0;
   if (__builtin_cpu_supports("sse4.2")) f |= 1 << 1;
   if (__builtin_cpu_supports("popcnt")) f |= 1 << 2;
@@ -232,8 +252,14 @@ JOLT_MIR_EXPORT int64_t jolt_mir_cpu_features(void) {
   if (__builtin_cpu_supports("fma")) f |= 1 << 5;
   if (__builtin_cpu_supports("bmi2")) f |= 1 << 6;
   if (__builtin_cpu_supports("avx512f")) f |= 1 << 7;
-#elif defined(__aarch64__) || defined(_M_ARM64)
-  f |= 1 << 8; /* Advanced SIMD is part of every AArch64 core */
+  {
+    /* F16C and LZCNT by CPUID: not every compiler's __builtin_cpu_supports
+       knows their names. F16C is VEX-encoded, so it needs the OS's AVX state
+       too, which the avx answer above already checked. */
+    unsigned a, b, c, d;
+    if ((f & (1 << 3)) && __get_cpuid(1, &a, &b, &c, &d) && (c & (1u << 29))) f |= 1 << 12;
+    if (__get_cpuid(0x80000001u, &a, &b, &c, &d) && (c & (1u << 5))) f |= 1 << 13;
+  }
 #endif
   return f;
 }

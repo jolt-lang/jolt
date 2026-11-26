@@ -3011,9 +3011,33 @@
               (lambda (self) (make-jhost "b64-encoder"
                                (vector (b64-self-alphabet self) #f
                                        (b64-self-width self) (b64-self-sep self)))))))
+;; .wrap(InputStream): the JDK decodes as it reads. This drains the source on the
+;; first read and decodes it whole, so a bad character still throws from a read,
+;; not from wrap, and as IOException, as the JDK's stream does. Closing the
+;; wrapper closes the source.
+(define (b64-wrap-in-stream self src)
+  (let ((alphabet (b64-self-alphabet self)) (mime? (b64-self-mime? self))
+        (bv #f) (pos 0))
+    (stream-classed!
+     (make-in-stream
+      (make-custom-binary-input-port
+       "base64-decoder-wrap"
+       (lambda (dst start n)
+         (unless bv
+           (let ((raw (record-method-dispatch src "readAllBytes" jolt-nil)))
+             (set! bv (guard (e (#t (throw-jvm 'IOException "Illegal base64 character")))
+                        (b64-decode raw alphabet mime?)))))
+         (let ((k (min n (- (bytevector-length bv) pos))))
+           (bytevector-copy! bv pos dst start k)
+           (set! pos (+ pos k))
+           k))
+       #f #f
+       (lambda () (record-method-dispatch src "close" jolt-nil))))
+     "java.io.InputStream")))
 (register-host-methods! "b64-decoder"
   (list (cons "decode" (lambda (self s)
-                         (na-bv->bytearray (b64-decode s (b64-self-alphabet self) (b64-self-mime? self)))))))
+                         (na-bv->bytearray (b64-decode s (b64-self-alphabet self) (b64-self-mime? self)))))
+        (cons "wrap" b64-wrap-in-stream)))
 ;; getMimeEncoder(lineLength, lineSeparator): the JDK rounds the length DOWN to a
 ;; multiple of 4 (so a line never splits a 4-character group), treats a
 ;; non-positive length as "no line separator at all", and refuses a separator
