@@ -71,15 +71,18 @@
            (if (or (string=? ca cb) (string=? ca "clojure.lang.Ratio"))
                (jolt-compare a b)
                (jvm-cast-fail-named cb ca))))
-        ;; a String, Keyword, Symbol, Character or Boolean casts its argument to
-        ;; its own class inside compareTo (a Long's or Double's is the number arm
-        ;; above, where a Ratio takes any Number)
+        ;; a Ratio takes any Number, a Float or BigDecimal among them
+        ;; (Ratio.compareTo casts to Number)
+        ((and (number? a) (exact? a) (not (integer? a)))
+         (if (or (number? b) (jfloat? b) (jbigdec? b))
+             (jolt-compare a b)
+             (jvm-cast-fail-named (tm-key-class b) "java.lang.Number")))
+        ;; a String, Keyword, Symbol, Character, Boolean, Long, Double, Float or
+        ;; BigDecimal casts its argument to its own class inside compareTo
         ((and (or (string? a) (keyword? a) (jolt-symbol? a) (char? a) (boolean? a)
-                  (number? a))
+                  (number? a) (jfloat? a) (jbigdec? a))
               (not (string=? (tm-key-class a) (tm-key-class b))))
-         (jvm-cast-fail-named (tm-key-class b)
-                              (let ((ca (tm-key-class a)))
-                                (if (string=? ca "clojure.lang.Ratio") "java.lang.Number" ca))))
+         (jvm-cast-fail-named (tm-key-class b) (tm-key-class a)))
         (else (jolt-compare a b))))
 (define (tm-key-class x) (if (number? x) (tm-number-class x) (tm-class-name x)))
 
