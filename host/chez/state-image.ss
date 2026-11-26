@@ -1395,7 +1395,7 @@
                               (walk-ex-info-fields
                                 x (jolt-ex-info-record-class-name x)
                                 (jolt-ex-info-record-message x)
-                                (jolt-ex-info-record-cause x)
+                                (throwable-image-cause x)
                                 (jolt-ex-info-record-data x)
                                 (jolt-ex-info-record-error-offset x) path))
                              ((pair? x) (walk-pair x path))

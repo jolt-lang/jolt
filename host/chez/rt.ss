@@ -1491,6 +1491,15 @@
   (nongenerative jolt-ex-info-record-v2))
 (define (make-jolt-ex-info-record class-name message cause data error-offset)
   (make-jolt-ex-info-record* class-name message cause data error-offset #f))
+;; The cause field's value for a cause a constructor was GIVEN as nil
+;; ((Exception. "m" nil)): the JVM tells it from no cause at all (initCause then
+;; refuses), so the field holds this keyword rather than nil, and every reader
+;; that means "the cause" goes through jolt-ex-info-cause. A keyword travels in
+;; an image as itself. records-interop.ss's throwable-cause adds what initCause
+;; set.
+(define jolt-cause-given-nil (keyword "jolt" "cause-given-nil"))
+(define (jolt-ex-info-cause v)
+  (let ((c (jolt-ex-info-record-cause v))) (if (eq? c jolt-cause-given-nil) jolt-nil c)))
 
 ;; --- exceptions --------------------------------------------------------------
 ;; throw raises a Chez condition WRAPPING the jolt value; catch (emitted as

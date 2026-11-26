@@ -2173,7 +2173,7 @@
   (let* ((v (guard (_ (#t c)) (jolt-unwrap-throw c)))
          (root (let loop ((x v) (depth 0))
                  (let ((next (and (jolt-ex-info-record? x)
-                                  (let ((k (jolt-ex-info-record-cause x)))
+                                  (let ((k (jolt-ex-info-cause x)))
                                     (and (not (jolt-nil? k)) k)))))
                    (if (and next (< depth 64))
                        (loop (guard (_ (#t next)) (jolt-unwrap-throw next)) (+ depth 1))

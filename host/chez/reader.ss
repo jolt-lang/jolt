@@ -2499,7 +2499,7 @@
                      (member (jolt-ex-info-record-class-name v)
                              '("clojure.lang.LispReader$ReaderException"
                                "clojure.lang.EdnReader$ReaderException")))
-                (jolt-ex-info-record-cause v)
+                (jolt-ex-info-cause v)
                 v))
          (d (rdr-read-error-of v))
          (n (string-length s)))
@@ -2530,7 +2530,7 @@
                      (member (jolt-ex-info-record-class-name v)
                              '("clojure.lang.LispReader$ReaderException"
                                "clojure.lang.EdnReader$ReaderException")))
-                (jolt-ex-info-record-cause v)
+                (jolt-ex-info-cause v)
                 v))
          (d (rdr-read-error-of v)))
     (and d (eq? (jolt-get d rdr-kw-err-kind jolt-nil) rdr-kw-eof-kind))))
