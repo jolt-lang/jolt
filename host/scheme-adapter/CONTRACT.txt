@@ -384,7 +384,10 @@ sa-thread-cpu-nanos
 # is undefined, so a call site carries its own proof: a loop bound read from
 # the vector's own length or a used-count kept <= it, an index stepped from 0
 # by a constant; for sa-ufxand / sa-ufxxor, operands that are fixnums (a HAMT
-# bitmap on a 64-bit target, chosen at expand time by define-width-op). Degradation: a target may expand every one of these to the
+# bitmap on a 64-bit target, chosen at expand time by define-width-op); for
+# sa-ufx* / sa-ufxsll, operands whose product or shifted value is a fixnum
+# (number-print.ss's 28-bit limbs, whose products stay below 2^56); for
+# sa-ustring-set!, an index in range and a char. Degradation: a target may expand every one of these to the
 # checked primitive (gambit does) — the speed goes, nothing else. On Chez they
 # lower to the #3% (optimize-level 3) primitives, which is what makes a scan
 # loop 3x faster in the optimize-level 2 runtime.
@@ -395,9 +398,14 @@ sa-ufx>=?
 sa-ufx=?
 sa-ufxand
 sa-ufxxor
+sa-ufx*
+sa-ufxior
+sa-ufxsra
+sa-ufxsll
 sa-uvector-ref
 sa-uvector-set!
 sa-ustring-ref
+sa-ustring-set!
 #   The flonum family, for the typed foreign-array copies (java/ffi.ss): an
 #   flvector element and an IEEE single or double in a bytevector at a byte
 #   offset. Same contract: on an index within the flvector and an offset whose

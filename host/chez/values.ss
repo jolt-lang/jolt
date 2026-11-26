@@ -74,24 +74,20 @@
 ;; general formatter, ~230 ns for a fixnum, and its control-string cache sits
 ;; under one process-wide mutex, so eight threads rendering integers ran 17x
 ;; slower per thread than one. str, the printer and Long/toString render a
-;; fixnum through this; a bignum still goes to number->string. A negative value
-;; is walked as itself (quotient and remainder toward zero, the remainder
-;; negated per digit) rather than negated up front, so the most negative fixnum
-;; needs no special case.
+;; fixnum through this; a bignum still goes to number->string. The most
+;; negative fixnum has no fixnum magnitude, so it is the one value rendered
+;; through number->string.
 (define (jolt-fixnum->string n)
   (if (fx=? n 0)
       "0"
       (let* ((neg? (fx<? n 0))
-             (len (let count ((m n) (k (if neg? 1 0)))
-                    (if (fx=? m 0) k (count (fxquotient m 10) (fx+ k 1)))))
-             (s (make-string len)))
-        (when neg? (string-set! s 0 #\-))
-        (let fill ((m n) (i (fx- len 1)))
-          (if (fx=? m 0)
-              s
-              (let ((d (fxremainder m 10)))
-                (string-set! s i (integer->char (fx+ 48 (if neg? (fx- 0 d) d))))
-                (fill (fxquotient m 10) (fx- i 1))))))))
+             (m (if neg? (- n) n)))           ; generic: the most negative fixnum's
+        (if (not (fixnum? m))                 ; magnitude is not a fixnum
+            (number->string n)
+            (let* ((len (if neg? (fx+ 1 (fx-decimal-length m)) (fx-decimal-length m)))
+                   (s (make-string len #\-)))
+              (fx-fill-digits! s m len)
+              s)))))
 
 (define jolt-nil (make-jolt-nil-t))
 ;; SPLICED, not called. Chez compiles each top-level form on its own -- verified:

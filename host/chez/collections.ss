@@ -1591,6 +1591,10 @@
                       ;; SYMBOL form up in a map does it per lookup. honeysql's clause
                       ;; walk asks (get m (kw->sym k)) for all 92 clauses on every format.
                       ((symbol-t? k) (symbol-hasheq k))
+                      ;; Character.hashCode is the char's value, as key-hash
+                      ;; answers; a char key (a scanner's dispatch table) went
+                      ;; through key-hash's chain and node-get (#1713)
+                      ((char? k) (char->integer k))
                       (else #f))))
          (if (and h (fixnum? h))
              (let ((h (hamt-and h hmask)))
@@ -1604,6 +1608,8 @@
                          (if (cond ((keyword-t? ck) (and (keyword-t? k) (eq? ck k)))
                                    ((fixnum? ck) (and (fixnum? k) (fx=? ck k)))
                                    ((string? ck) (and (string? k) (string=? ck k)))
+                                   ;; chars are immediates: equal is eq?
+                                   ((char? ck) (eq? ck k))
                                    (else (jolt=2 ck k)))
                              (vector-ref arr (fx+ i 1))
                              d))
@@ -2100,12 +2106,21 @@
 (define (jolt-kw-rec-get m k site d)
   (let ((c (if (fx>? (vector-length site) 1) (vector-ref site 1) 0))
         (desc (jrec-desc m)))
-    (if (and (pair? c) (eq? (car c) desc))
-        (jrec-field-ref m (cdr c))
+    (cond
+      ((and (pair? c) (eq? (car c) desc)) (jrec-field-ref m (cdr c)))
+      ;; a key this type has no field for, remembered as #(desc) (#1713): the
+      ;; extension map and the type's own lookup answer it, without scanning
+      ;; the fields again. A pair would be taken for a field's slot by Chez's
+      ;; open-coded hit (rt.ss jolt-kw-get-site/i), which tests pair?.
+      ((and (vector? c) (eq? (vector-ref c 0) desc)) (jrec-ref-slow m k d))
+      (else
         (let ((i (jrec-get-index m k)))
-          (when (and i (fx>? (vector-length site) 1) (jrec-record? m))
-            (vector-set! site 1 (cons desc i)))
-          (if i (jrec-field-ref m i) (jolt-get-dispatch m k d))))))
+          (when (and (fx>? (vector-length site) 1) (jrec-record? m)
+                     (not (eq? k jolt-deftype-kw)))
+            (vector-set! site 1 (if i (cons desc i) (vector desc))))
+          ;; a key no field holds: the record's own lookup, not the whole get
+          ;; dispatch again
+          (if i (jrec-field-ref m i) (jrec-ref m k d)))))))
 (define (jolt-kw-get-site* m k site d)
   (if (pmap? m)
       (let ((root (pmap-root m)))

@@ -35,6 +35,7 @@
             [jolt.deps.ext :as ext]
             [jolt.deps.min-version :as minv]
             [jolt.deps.git :as git]
+            [jolt.main.natives :as natives]
             [jolt.deps.io :refer [getenv file-exists? mkdirs! rm-f mv! tmp-dir warn warn-once
                                   sanitize]]
             [jolt.mvn-http :as http]))
@@ -1701,10 +1702,13 @@
   project's are at launch, so a class one of them provides autoloads its
   install namespace on first reference.
 
-  :jolt/native declarations carried by added deps are NOT auto-loaded (that is
-  a project-launch concern — see jolt.main); a warning names them so the
-  caller can load via jolt.ffi. The second arity accepts an options map for
-  babashka call-shape compatibility; no options are currently honored."
+  The added libraries' :jolt/native declarations load as a dependency's do at
+  launch: each opens on the first require of one of that library's
+  namespaces (or the first call of a foreign symbol nothing loaded defines),
+  and an :eager or :process spec opens now. Natives of a library whose roots
+  were already present are left alone, since launch registered them. The
+  second arity accepts an options map for babashka call-shape compatibility;
+  no options are currently honored."
   ([deps-map] (add-deps deps-map nil))
   ([{:keys [deps] :as m} _opts]
    (let [base (or (getenv "JOLT_PWD") ".")
@@ -1724,11 +1728,12 @@
      ;; after the roots, so the install namespace a class reference loads is
      ;; already findable
      (register-class-providers! fresh)
-     (when (seq natives)
-       (info "added deps declare :jolt/native libraries (not auto-loaded): "
-             (pr-str (mapv #(dissoc % :jolt.deps/root :jolt.deps/roots
-                                    :jolt.deps/lib :jolt.deps/paths)
-                           (decl/reconcile-natives natives)))))
+     ;; after the roots too: a deferred native is keyed by the roots its
+     ;; library's namespaces load from
+     (let [new? (set added)
+           fresh-natives (filterv #(some new? (:jolt.deps/paths %)) natives)]
+       (when (seq fresh-natives)
+         (natives/load-project-natives! (decl/reconcile-natives fresh-natives) true base)))
      added)))
 
 (defn- required-host
