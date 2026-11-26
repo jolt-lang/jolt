@@ -642,14 +642,27 @@
 ;; the overloads the arguments fit, the most specific; 'tie when two fit and
 ;; neither is; #f when none does.
 (define (method-sig-pick cls method static? arg-classes)
-  (let ((fit (method-sig-fit cls method static? arg-classes)))
-    (if (null? fit)
-        #f
+  (let* ((fit (method-sig-fit cls method static? arg-classes))
+         (args (seq->list (jolt-seq arg-classes)))
+         ;; an overload whose every parameter IS its argument's class wins
+         ;; outright, ahead of the subsumption contest
+         (exact (let find ((es fit))
+                  (cond ((null? es) #f)
+                        ((sig-exact? (vector-ref (car es) 2) args) (car es))
+                        (else (find (cdr es)))))))
+    (cond
+      (exact exact)
+      ((null? fit) #f)
+      (else
         (let loop ((es (cdr fit)) (m (car fit)) (tied #f))
           (cond ((null? es) (if tied 'tie m))
                 ((sig-subsumes? (vector-ref (car es) 2) (vector-ref m 2)) (loop (cdr es) (car es) #f))
                 ((sig-subsumes? (vector-ref m 2) (vector-ref (car es) 2)) (loop (cdr es) m tied))
-                (else (loop (cdr es) m #t)))))))
+                (else (loop (cdr es) m #t))))))))
+(define (sig-exact? ps as)
+  (let loop ((ps ps) (as as))
+    (or (null? ps)
+        (and (string? (car as)) (string=? (car ps) (car as)) (loop (cdr ps) (cdr as))))))
 (define (method-return-class cls method static? arg-classes)
   (let ((m (method-sig-pick cls method (jolt-truthy? static?) arg-classes)))
     (if (and (vector? m) (vector-ref m 3)) (vector-ref m 3) jolt-nil)))
