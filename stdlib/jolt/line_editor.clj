@@ -752,6 +752,17 @@
   (jolt.host/term-lf!)
   (jolt.host/term-flush!))
 
+(defn- read-pending-chars
+  "The chars already waiting after a key, as a string, or nil when there are
+  none. A paste can be long, so they go into one buffer rather than a string
+  copied per char."
+  []
+  (let [sb (StringBuilder.)]
+    (loop []
+      (let [c (jolt.host/term-read-char false)]
+        (when (char? c) (.append sb c) (recur))))
+    (when (pos? (.length sb)) (.toString sb))))
+
 (defn- read-key
   "The next key. Chars that arrive together with it are a paste: they come back
   as one [:paste text], a final newline in it as the Enter that follows."
@@ -762,13 +773,7 @@
           paste-char (if (vector? k)
                        (second k)
                        ({:enter \newline :newline \newline :tab \tab} k))]
-      (if-let [more (when paste-char
-                      ;; a paste can be long: one buffer, not a string copy per char
-                      (let [sb (StringBuilder.)]
-                        (loop []
-                          (let [c (jolt.host/term-read-char false)]
-                            (when (char? c) (.append sb c) (recur))))
-                        (when (pos? (.length sb)) (.toString sb))))]
+      (if-let [more (when paste-char (read-pending-chars))]
         (let [text (str paste-char more)
               text (str/replace (str/replace text "\r\n" "\n") "\r" "\n")]
           (if (str/ends-with? text "\n")
