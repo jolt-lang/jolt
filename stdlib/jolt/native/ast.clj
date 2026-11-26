@@ -169,24 +169,24 @@
   (when-not (and (vector? bv) (= 2 (count bv)) (local-sym? (first bv)))
     (fail form "dotimes takes [name count]"))
   (let [[i n] bv
-        lim (gensym "lim")]
-    ;; plain lists, not syntax-quote, so i and lim keep their names; the heads
-    ;; are clojure.core's, as the dispatch reads them, so a local named let or
-    ;; inc does not shadow them (it would not in clojure.core/dotimes either)
-    (let [r (analyze env
-                     (with-meta
-                       (list 'clojure.core/let [lim n]
-                             (list 'clojure.core/loop [i 0]
-                                   (list 'if (list 'clojure.core/< i lim)
-                                         (concat ['do] body [(list 'recur (list 'clojure.core/inc i))])
-                                         nil)))
-                       (meta form))
-                     tail)]
-      ;; clojure.core/dotimes counts to (long n): 2.5 runs twice, where (< i 2.5)
-      ;; would run three times. Ask for the cast rather than guess it.
-      (when-not (= :long (-> r :bindings first :init :type))
-        (fail form "dotimes takes a long count; use (long n) for a double"))
-      r)))
+        lim (gensym "lim")
+        ;; plain lists, not syntax-quote, so i and lim keep their names; the heads
+        ;; are clojure.core's, as the dispatch reads them, so a local named let or
+        ;; inc does not shadow them (it would not in clojure.core/dotimes either)
+        r (analyze env
+                   (with-meta
+                     (list 'clojure.core/let [lim n]
+                           (list 'clojure.core/loop [i 0]
+                                 (list 'if (list 'clojure.core/< i lim)
+                                       (concat ['do] body [(list 'recur (list 'clojure.core/inc i))])
+                                       nil)))
+                     (meta form))
+                   tail)]
+    ;; clojure.core/dotimes counts to (long n): 2.5 runs twice, where (< i 2.5)
+    ;; would run three times. Ask for the cast rather than guess it.
+    (when-not (= :long (-> r :bindings first :init :type))
+      (fail form "dotimes takes a long count; use (long n) for a double"))
+    r))
 
 (def ^:private math-fns
   {'Math/sqrt 1 'Math/sin 1 'Math/cos 1 'Math/tan 1 'Math/exp 1 'Math/log 1

@@ -226,14 +226,14 @@
   (let [taken (.getLocalPort held)]
     (check-eq "binding a held port is refused"
               (let [s (java.net.ServerSocket.)]
-                (try (do (.bind s (java.net.InetSocketAddress. "127.0.0.1" taken)) :bound)
+                (try (.bind s (java.net.InetSocketAddress. "127.0.0.1" taken)) :bound
                      (catch java.io.IOException _ :refused)
                      (finally (.close s))))
               :refused))
   (.close held))
 (check-eq "binding a free port succeeds"
           (let [s (java.net.ServerSocket.)]
-            (try (do (.bind s (java.net.InetSocketAddress. "127.0.0.1" 0)) :bound)
+            (try (.bind s (java.net.InetSocketAddress. "127.0.0.1" 0)) :bound
                  (catch java.io.IOException _ :refused)
                  (finally (.close s))))
           :bound)
