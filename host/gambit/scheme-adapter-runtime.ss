@@ -734,9 +734,14 @@
 (define-syntax sa-ufx=? (syntax-rules () ((_ a b) (fx=? a b))))
 (define-syntax sa-ufxand (syntax-rules () ((_ a b) (fxand a b))))
 (define-syntax sa-ufxxor (syntax-rules () ((_ a b) (fxxor a b))))
+(define-syntax sa-ufx* (syntax-rules () ((_ a b) (fx* a b))))
+(define-syntax sa-ufxior (syntax-rules () ((_ a b) (fxior a b))))
+(define-syntax sa-ufxsra (syntax-rules () ((_ a b) (fxsra a b))))
+(define-syntax sa-ufxsll (syntax-rules () ((_ a b) (fxsll a b))))
 (define-syntax sa-uvector-ref (syntax-rules () ((_ v i) (vector-ref v i))))
 (define-syntax sa-uvector-set! (syntax-rules () ((_ v i x) (vector-set! v i x))))
 (define-syntax sa-ustring-ref (syntax-rules () ((_ s i) (string-ref s i))))
+(define-syntax sa-ustring-set! (syntax-rules () ((_ s i c) (string-set! s i c))))
 ;; The flonum family. Gambit binds no flvector and no R6RS bytevector-ieee
 ;; accessors: its flonum vector is the f64vector, a bytevector is a u8vector,
 ;; and an IEEE pattern converts through ##flonum->ieee754-32/64 and back. So
