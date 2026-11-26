@@ -474,12 +474,24 @@
          (jolt-s32 (+ (java-symbol-hash (keyword-t-name obj) (keyword-t-ns obj))
                       #x9e3779b9)))
         ((string=? method-name "equals") (and (pair? rest) (eq? obj (car rest))))
+        ;; Keyword.compareTo(Object) casts its argument to Keyword inside the
+        ;; method, so the refusal is the checkcast's however the call was made
+        ((and (string=? method-name "compareTo") (pair? rest) (null? (cdr rest)))
+         (rd-own-kind-compare obj (car rest) keyword-t? "clojure.lang.Keyword"))
         ;; Keyword is an IFn: (.invoke :a m) is (:a m), as the dot-form arm
         ;; answers it for fns and collections; applyTo likewise.
         ((string=? method-name "invoke") (apply jolt-invoke obj rest))
         ((and (string=? method-name "applyTo") (pair? rest) (null? (cdr rest)))
          (apply jolt-invoke obj (seq->list (jolt-seq (car rest)))))
         (else (dispatch-miss obj method-name rest))))
+
+;; compareTo on a class whose method casts its Object argument to its own class
+;; (records-interop.ss jolt-checkcast-fail): nil passes the cast and is the
+;; method's NullPointerException; the order is compare's.
+(define (rd-own-kind-compare obj o own? cls)
+  (cond ((own? o) (jolt-compare obj o))
+        ((jolt-nil? o) (throw-jvm 'NullPointerException jolt-nil))
+        (else (jolt-checkcast-fail o cls))))
 
 ;; clojure.lang.Symbol interop.
 (define (rd-symbol-method obj method-name rest)
@@ -491,6 +503,9 @@
         ((string=? method-name "equals") (and (pair? rest) (jolt=2 obj (car rest))))
         ((string=? method-name "hashCode")
          (java-symbol-hash (symbol-t-name obj) (symbol-t-ns obj)))
+        ;; Symbol.compareTo(Object): the same cast inside the method as Keyword's
+        ((and (string=? method-name "compareTo") (pair? rest) (null? (cdr rest)))
+         (rd-own-kind-compare obj (car rest) symbol-t? "clojure.lang.Symbol"))
         ((string=? method-name "invoke") (apply jolt-invoke obj rest))
         ((and (string=? method-name "applyTo") (pair? rest) (null? (cdr rest)))
          (apply jolt-invoke obj (seq->list (jolt-seq (car rest)))))
@@ -611,8 +626,14 @@
         ((string=? method-name "charValue") obj)
         ((string=? method-name "hashCode") (char->integer obj))
         ((string=? method-name "equals") (and (pair? rest) (char? (car rest)) (char=? obj (car rest))))
-        ((string=? method-name "compareTo")
-         (let ((o (car rest))) (cond ((char<? obj o) -1) ((char>? obj o) 1) (else 0))))
+        ;; Character.compareTo(Character) is the difference of the two code
+        ;; units. A resolved call casts the argument first (records-interop.ss
+        ;; jolt-checkcast), so another class here is the reflector's cast.
+        ((and (string=? method-name "compareTo") (pair? rest) (null? (cdr rest)))
+         (let ((o (car rest)))
+           (cond ((or (char? o) (jsurr? o)) (- (char->integer obj) (char-or-unit->integer o)))
+                 ((jolt-nil? o) (throw-jvm 'NullPointerException jolt-nil))
+                 (else (jolt-reflect-cast-fail o "java.lang.Character")))))
         (else (dispatch-miss obj method-name rest))))
 
 ;; A java.util collection mutator on an immutable collection (see the arm in

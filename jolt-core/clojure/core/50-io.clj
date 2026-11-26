@@ -485,12 +485,12 @@
   nil)
 
 ;; cast — (cast c x): nil passes through (Class.cast of null), otherwise x must
-;; be an instance of c or ClassCastException is thrown.
+;; be an instance of c or ClassCastException is thrown, in Class.cast's words.
 (defn cast [c x]
   (cond
     (nil? x) nil
     (instance? c x) x
-    :else (throw (ClassCastException. (str "Cannot cast " x " to " c)))))
+    :else (throw (ClassCastException. (str "Cannot cast " (.getName (class x)) " to " (.getName c))))))
 
 ;; iteration — a seqable/reducible pager over a step fn of a continuation token k.
 ;; jolt has no Seqable reify dispatch, so this returns a lazy-seq (seqable, and

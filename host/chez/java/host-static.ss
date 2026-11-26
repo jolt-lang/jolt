@@ -1540,6 +1540,9 @@
         (else (num-wrap (jnum->exact n) bits))))
 (define (num-exact-integer? n) (and (number? n) (exact? n) (integer? n)))
 (define (num-ratio? n) (and (number? n) (exact? n) (not (integer? n))))
+(register-method-params! "java.lang.Long" "compareTo" '("java.lang.Long"))
+(register-method-params! "java.lang.Double" "compareTo" '("java.lang.Double"))
+(register-method-params! "java.lang.Float" "compareTo" '("java.lang.Float"))
 (define-number-methods (n args)
     ("byteValue" (num-wrap (num-integral n 32) 8))
     ("shortValue" (num-wrap (num-integral n 32) 16))
@@ -1549,20 +1552,23 @@
     ("floatValue" (make-jfloat (flsingle (or (num-flo n) (inexact (jolt-need-num n))))))
     ;; Comparable.compareTo: -1/0/1, a double by Double.compare (NaN above
     ;; everything, -0.0 below 0.0). Long, Double and Float compare only to their
-    ;; own class, and the reflector's cast of the argument is what raises; a Ratio
-    ;; takes any number (Numbers.compare). jolt's one integer answers for a Long.
+    ;; own class: a resolved call casts the argument before it gets here
+    ;; (register-method-params! below), so this check is the reflector's cast. A
+    ;; Ratio takes any number (Numbers.compare) and casts to Number inside the
+    ;; method, so its refusal is the checkcast's whatever the call. jolt's one
+    ;; integer answers for a Long.
     ("compareTo"
      (begin
      (let ((o (car args)))
+       (when (and (num-ratio? n) (not (or (number? o) (jfloat? o) (jolt-nil? o))))
+         (jolt-checkcast-fail o "java.lang.Number"))
        (unless (or (num-ratio? n)
                    (cond ((jfloat? n) (jfloat? o))
                          ((flonum? n) (flonum? o))
                          (else (num-exact-integer? o))))
-         (throw-jvm 'ClassCastException
-                    (string-append "Cannot cast " (jolt-class-name o) " to "
-                                   (cond ((jfloat? n) "java.lang.Float")
+         (jolt-reflect-cast-fail o (cond ((jfloat? n) "java.lang.Float")
                                          ((flonum? n) "java.lang.Double")
-                                         (else "java.lang.Long"))))))
+                                         (else "java.lang.Long")))))
      (let ((a (or (num-flo n) n)) (b (let ((o (car args))) (or (num-flo o) (jolt-need-num o)))))
        (if (or (flonum? a) (flonum? b))
            (let ((x (inexact a)) (y (inexact b)))

@@ -132,6 +132,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A host method call whose argument is of the wrong class words its
+  `ClassCastException` as the JVM does for that call: the checkcast's message
+  when the compiler knows the receiver's class (a hint, a constructor, a
+  literal, a catch binding), Class.cast's `Cannot cast X to Y` when it does
+  not. This covers `addSuppressed` and `compareTo` on Long, Double, Float,
+  String, Character, File, UUID, URI and BigDecimal. `Keyword` and `Symbol`
+  have `compareTo`, `Character.compareTo` answers the code unit difference, and
+  `cast` and `Class.cast` name both classes.
 - `Math/log10` and `clojure.math/log10` give the JDK's digits: they are
   fdlibm's, as the JDK's are, so `(Math/log10 1000.0)` is `3.0` rather than
   `2.9999999999999996`.

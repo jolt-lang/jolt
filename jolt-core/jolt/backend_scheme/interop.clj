@@ -6,7 +6,8 @@
   (:require [clojure.string :as str]
             [jolt.backend-scheme.names :refer [chez-str-lit]]
             [jolt.backend-scheme.session :refer [fresh-label target var-cache?]]
-            [jolt.backend-scheme.hoist :refer [*const-pool* hoist-const-per-site]]))
+            [jolt.backend-scheme.hoist :refer [*const-pool* hoist-const-per-site]]
+            [jolt.host :refer [method-param-classes]]))
 
 ;; Host interop methods with a Chez RT shim (rt.ss jolt-host-call). A `.method`
 ;; call on any other method routes to record-method-dispatch (a reify/record
@@ -208,6 +209,31 @@
            " (else " generic ")))")
       (or (host-site-emit t m args) (method-dispatch-emit t m args)))))
 
+;; A resolved call's argument casts. The JVM compiles a call whose receiver class
+;; it knows against that method's parameters, with a checkcast on each argument,
+;; so a wrong argument fails there with the checkcast's message; an unresolved
+;; call reaches the method through the Reflector, whose Class.cast words it
+;; differently. The receiver class is the analyzer's (:target-class) and the
+;; parameters are the runtime's (jolt.host/method-param-classes, registered
+;; beside each method's shim), so the method's own check is only ever reached by
+;; a call nobody resolved and words its failure as Class.cast does. A parameter
+;; of a class with a one-test predicate tests inline and calls the helper only
+;; to fail; nil passes, as it does a checkcast.
+(def ^:private checkcast-preds
+  {"java.lang.String" "string?" "java.lang.Long" "fixnum?" "java.lang.Double" "flonum?"})
+(defn- checkcast-emit [cls e]
+  (let [lit (chez-str-lit cls)]
+    (if-let [p (get checkcast-preds cls)]
+      (let [v (fresh-label "_cc$")]
+        (str "(let ((" v " " e ")) (if (" p " " v ") " v " (jolt-checkcast " lit " " v ")))"))
+      (str "(jolt-checkcast " lit " " e ")"))))
+(defn- cast-args [node args]
+  (let [c (:target-class node)
+        ps (when c (method-param-classes c (:method node) (count args)))]
+    (if (seq ps)
+      (mapv (fn [p a] (if (or (nil? p) (= p "java.lang.Object")) a (checkcast-emit p a))) ps args)
+      args)))
+
 ;; EMIT lowers the receiver and arguments when the node does not carry them
 ;; already bound (the back end's own emit: this namespace sits below it).
 (defn host-call-emit [emit node]
@@ -215,6 +241,7 @@
         chez? (not= :gambit (target))
         t (or (:sited-target node) (emit (:target node)))
         args (or (:sited-args node) (map emit (:args node)))
+        args (if chez? (cast-args node args) args)
         direct (when chez? (proven-receiver-emit node m t args))]
     (cond
       direct direct

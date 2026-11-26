@@ -49,6 +49,7 @@
                                                current-form-position]]
             [jolt.analyzer.hints :refer [jvm-boolean-prim? jvm-non-boolean-class hint-of
                                          init-proves-hint add-hint tag->nkind ahint-of
+                                         tag-class sym-tag-class node-jclass add-jclass
                                          with-ret-nhint fi-tag-class fi-adapt-form
                                          parse-params strip-arglist-meta arglist-ret-nkind arglist-type-method? arglist-meta
                                          str-target-type kw-target-type sb-target-type]]
@@ -214,6 +215,7 @@
   (-> env
       (update :locals #(reduce conj % names))
       (update :hints #(reduce dissoc % names))
+      (update :jclasses #(reduce dissoc % names))
       (update :jprims #(reduce dissoc % names))))
 ;; &env value handed to a macro: a map of each in-scope local SYMBOL to nil
 ;; (Clojure's &env maps locals to compiler binding objects; consumers like
@@ -283,8 +285,9 @@
               init (if ak (coerce-node ak init0) init0)]
           ;; an explicit hint wins; init-proves-hint only fills in where the
           ;; programmer wrote nothing.
-          (recur (+ i 2) (let [e (add-hint (add-locals env [nm]) nm
-                                           (or (hint-of ctx bsym) (init-proves-hint init)))]
+          (recur (+ i 2) (let [e (-> (add-locals env [nm])
+                                     (add-hint nm (or (hint-of ctx bsym) (init-proves-hint init)))
+                                     (add-jclass nm (or (sym-tag-class ctx bsym) (node-jclass ctx init env))))]
                            (if (jvm-boolean-prim? init env)
                              (assoc-in e [:jprims nm] :boolean)
                              e))
@@ -406,6 +409,7 @@
         ;; seq as one positional slot). fn-name is the self-ref, not a param.
         env0 (-> (add-locals env names) (with-recur rname (+ (count fixed) (if rst 1 0))))
         env* (reduce (fn [e pr] (add-hint e (nth pr 0) (nth pr 1))) env0 (:hints pp))
+        env* (reduce (fn [e pr] (add-jclass e (nth pr 0) (nth pr 1))) env* (:jclasses pp))
         ;; One of the two recur-target roots (the other is loop*): the body is
         ;; where a recur against THIS arity may legally sit, so it is where the
         ;; tail-position check starts.
@@ -571,7 +575,12 @@
   (reduce
     (fn [else cl]
       (let [cform (nth cl 1)
-            bindsym (nth cl 2)
+            ;; the binding has the caught class, as the JVM's catch local does,
+            ;; so a host call on it resolves (hints.clj node-jclass)
+            bindsym (let [b (nth cl 2) m (form-sym-meta b)]
+                      (if (and (form-sym? cform) (not (and (map? m) (get m :tag))))
+                        (with-meta b (assoc (if (map? m) m {}) :tag cform))
+                        b))
             bodyf (drop 3 cl)
             ;; clojure.core-qualified: a ns that excludes (or
             ;; :only-omits) let/or/instance? and defines its
@@ -1097,19 +1106,31 @@
   (let [p (form-position form)]
     (if p (assoc node :pos p) node)))
 
+;; The class the JVM compiler would resolve (.m target …) against (hints.clj
+;; node-jclass): a tag written on the target form wins, ^Object included, which
+;; names a class with no such method and so leaves the call reflective.
+(defn- host-call-target-class [ctx raw target env]
+  (let [m (cond (form-sym? raw) (form-sym-meta raw)
+                (form-list? raw) (form-coll-meta raw)
+                :else nil)
+        tag (when (map? m) (get m :tag))]
+    (if tag (tag-class ctx tag) (node-jclass ctx target env))))
+
 (defn- analyze-host-call [ctx hname items env]
   (when (< (count items) 2)
     (analysis-error :analyze/invalid-member-access
       (str "Malformed member expression, expecting (.method target ...): " hname)))
   (let [raw (nth items 1)
-        target (analyze ctx raw env)]
+        target (analyze ctx raw env)
+        cls (host-call-target-class ctx raw target env)]
     (cond-> {:op :host-call
              :method (subs hname 1)
              :target target
              :args (mapv #(analyze ctx % env) (drop 2 items))}
       (str-target-type raw target) (assoc :target-type :str)
       (kw-target-type raw target) (assoc :target-type :kw)
-      (sb-target-type raw target) (assoc :target-type (sb-target-type raw target)))))
+      (sb-target-type raw target) (assoc :target-type (sb-target-type raw target))
+      cls (assoc :target-class cls))))
 
 ;; `(Class. args*)` and `(new Class args*)` -> a :host-new node carrying the class
 ;; token and the analyzed args. The Chez back end lowers it to a runtime

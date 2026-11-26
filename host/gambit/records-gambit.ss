@@ -3479,6 +3479,14 @@
           2654435769)))
     ((string=? method-name "equals")
      (and (pair? rest) (eq? obj (car rest))))
+    ((and (string=? method-name "compareTo")
+          (pair? rest)
+          (null? (cdr rest)))
+     (rd-own-kind-compare
+       obj
+       (car rest)
+       keyword-t?
+       "clojure.lang.Keyword"))
     ((string=? method-name "invoke")
      (apply jolt-invoke obj rest))
     ((and (string=? method-name "applyTo")
@@ -3486,6 +3494,12 @@
           (null? (cdr rest)))
      (apply jolt-invoke obj (seq->list (jolt-seq (car rest)))))
     (else (dispatch-miss obj method-name rest))))
+
+(define (rd-own-kind-compare obj o own? cls)
+  (cond
+    ((own? o) (jolt-compare obj o))
+    ((jolt-nil? o) (throw-jvm 'NullPointerException jolt-nil))
+    (else (jolt-checkcast-fail o cls))))
 
 (define (rd-symbol-method obj method-name rest)
   (cond
@@ -3502,6 +3516,14 @@
      (and (pair? rest) (jolt=2 obj (car rest))))
     ((string=? method-name "hashCode")
      (java-symbol-hash (symbol-t-name obj) (symbol-t-ns obj)))
+    ((and (string=? method-name "compareTo")
+          (pair? rest)
+          (null? (cdr rest)))
+     (rd-own-kind-compare
+       obj
+       (car rest)
+       symbol-t?
+       "clojure.lang.Symbol"))
     ((string=? method-name "invoke")
      (apply jolt-invoke obj rest))
     ((and (string=? method-name "applyTo")
@@ -3617,9 +3639,15 @@
      (and (pair? rest)
           (char? (car rest))
           (char=? obj (car rest))))
-    ((string=? method-name "compareTo")
+    ((and (string=? method-name "compareTo")
+          (pair? rest)
+          (null? (cdr rest)))
      (let ((o (car rest)))
-       (cond ((char<? obj o) -1) ((char>? obj o) 1) (else 0))))
+       (cond
+         ((or (char? o) (jsurr? o))
+          (- (char->integer obj) (char-or-unit->integer o)))
+         ((jolt-nil? o) (throw-jvm 'NullPointerException jolt-nil))
+         (else (jolt-reflect-cast-fail o "java.lang.Character")))))
     (else (dispatch-miss obj method-name rest))))
 
 (define (rd-coll-mutator-call obj method-name rest)
