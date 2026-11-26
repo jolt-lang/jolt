@@ -1048,10 +1048,12 @@
 (register-static-method! "java.lang.String" "copyValueOf" '("[C") "java.lang.String")
 (register-static-method! "java.lang.String" "copyValueOf" '("[C" "int" "int") "java.lang.String")
 (register-static-method! "java.lang.String" "valueOf" '("[C" "int" "int") "java.lang.String")
-(register-static-method! "java.lang.String" "format" '("java.lang.String" "[Ljava.lang.Object;") "java.lang.String")
 (register-static-method! "java.lang.String" "join" '("java.lang.CharSequence" "[Ljava.lang.CharSequence;") "java.lang.String")
 (register-static-method! "java.lang.String" "join" '("java.lang.CharSequence" "java.lang.Iterable") "java.lang.String")
-(register-static-method! "java.lang.String" "format" '("java.util.Locale" "java.lang.String" "[Ljava.lang.Object;") "java.lang.String")
+;; String/format is not here: jolt takes a varargs member's trailing arguments
+;; loose as well as in an array (host-static.ss varargs rows, a documented
+;; permissive divergence), and resolving it to one of the JDK's two overloads
+;; would cast a loose argument as that overload's Locale or Object[].
 ;; the boxed numbers and Character
 (for-each (lambda (c p)
             (register-static-method! c "valueOf" (list p) c)
