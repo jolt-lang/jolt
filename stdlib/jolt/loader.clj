@@ -1249,7 +1249,7 @@
                     (when-let [[lib opts] (first (expand-libspec item))]
                       (if (str/includes? (str lib) ".")
                         [lib opts]
-                        [(symbol (str prefix "." (str lib))) opts]))))
+                        [(symbol (str prefix "." lib)) opts]))))
             (rest spec)))
 
     :else nil))

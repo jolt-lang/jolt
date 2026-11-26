@@ -192,6 +192,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Inside a native region, a call whose head is a local (`(let [aget 1] (aget
   xs 0))`) is refused rather than compiled as the builtin of that name, and a
   region name registered again with different C raises.
+- `clojure.test/*initial-report-counters*` is dynamic, as in Clojure, so
+  `binding` it no longer throws `Can't dynamically bind non-dynamic var`.
+- `jolt.parser.combinators/any-of` carries its docstring; it sat after the
+  argument vector, where it was a body expression.
+
+### Internal
+
+- The metrics workflow runs the latest jolt-metrics and gates on its lint
+  findings as well (`ci/metrics-allow.edn` lists the ones that stay), and a
+  pull request's report opens with what changed since main's.
 
 ## [0.8.30] - 2026-11-24
 
