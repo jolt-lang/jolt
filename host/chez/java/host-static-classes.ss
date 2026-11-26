@@ -2669,7 +2669,9 @@
 (register-class-statics! "MapEntry" (list (cons "create" (lambda (k v) (make-map-entry k v)))))
 ;; JVM exception ctors -> a typed host throwable carrying the canonical :jolt/class
 ;; (so class / instance? / getMessage / ex-message reflect the real type) and the
-;; message. Supports (E. msg), (E. msg cause), (E. cause), and (E.).
+;; message. Supports (E. msg), (E. msg cause), (E. cause), and (E.), and the
+;; protected (E. msg cause enableSuppression writableStackTrace) a proxy calls:
+;; enableSuppression false makes addSuppressed record nothing.
 ;; Derived from the ONE exception hierarchy in class-hierarchy.ss: every
 ;; jch-isa? -> Throwable gets a ctor with no second list to maintain.
 (define (make-exc-ctor canonical)
@@ -2678,6 +2680,12 @@
            (rest (if (pair? args) (cdr args) '()))
            (cause (if (pair? rest) (car rest) jolt-nil)))
       (cond
+        ;; (E. msg cause enableSuppression writableStackTrace)
+        ((and (pair? rest) (pair? (cdr rest)))
+         (let ((t (jolt-host-throwable canonical (if (or (string? a0) (jolt-nil? a0)) a0 (jolt-str-render-one a0)) cause)))
+           (when (and (pair? (cddr rest)) (null? (cdddr rest)) (not (jolt-truthy? (cadr rest))))
+             (throwable-disable-suppression! t))
+           t))
         ((string? a0) (jolt-host-throwable canonical a0 cause))
         ((jolt-nil? a0) (jolt-host-throwable canonical jolt-nil))
         ;; (E. cause): a lone throwable arg is the cause, and the message is the

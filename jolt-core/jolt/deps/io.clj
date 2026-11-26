@@ -70,6 +70,15 @@
 
 (defn warn [& xs] (binding [*out* *err*] (println (str "[jolt.deps] " (apply str xs)))))
 
+(defonce ^:private warned (atom #{}))
+(defn warn-once
+  "warn, once per process for a given message: one command can read the same
+  file more than once (its tasks, then the resolution)."
+  [& xs]
+  (let [msg (apply str xs)]
+    (when-not (contains? (first (swap-vals! warned conj msg)) msg)
+      (warn msg))))
+
 ;; --- retrying the network steps ---------------------------------------------
 ;; A git command that talks to a remote fails transiently more often than not — a
 ;; reset, a rate limit, a DNS blip — and the cost of finding out is one more

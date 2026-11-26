@@ -469,7 +469,7 @@
 (define throwable-suppressed-mu (make-mutex))
 (define (throwable-suppressed-list v)
   (reverse (jolt-with-mutex throwable-suppressed-mu
-             (hashtable-ref throwable-suppressed-tbl v '()))))
+             (hashtable-ref throwable-suppressed-tbl (throwable-identity v) '()))))
 ;; Throwable.addSuppressed: the self check comes first, as in the JDK, and its
 ;; IllegalArgumentException carries the throwable as its cause.
 (define (throwable-cast-fail from)
@@ -480,20 +480,37 @@
                   (string-append from " and java.lang.Throwable are in module java.base of loader 'bootstrap'")
                   (string-append from " is in unnamed module of loader 'app'; java.lang.Throwable is in module java.base of loader 'bootstrap'"))
               ")")))
+
+;; A proxy over a throwable class is a reify whose delegate is the base
+;; throwable; which of the two a call hands over depends on the route it took,
+;; so identity checks compare the throwable underneath.
+(define (throwable-identity x)
+  (if (and (jreify? x) (jreify-delegate x)) (jreify-delegate x) x))
+;; Throwables built with enableSuppression false (the protected 4-argument
+;; constructor, which a proxy reaches): addSuppressed still checks its argument
+;; and then records nothing. A side table, like the suppressed lists.
+(define throwable-no-suppression-tbl (make-ephemeron-eq-hashtable))
+(define (throwable-disable-suppression! v)
+  (jolt-with-mutex throwable-suppressed-mu
+    (hashtable-set! throwable-no-suppression-tbl (throwable-identity v) #t)))
 (define (throwable-add-suppressed! v other)
   (cond
     ((not (or (jolt-nil? other) (instance-check throwable-type-sym other)))
      (throwable-cast-fail (let ((n (guard (e (#t #f)) (jolt-class-name other))))
                             (if (string? n) n "java.lang.Object"))))
-    ((eq? other v)
+    ((eq? (throwable-identity other) (throwable-identity v))
      (jolt-throw (jolt-host-throwable "java.lang.IllegalArgumentException"
                                       "Self-suppression not permitted" other)))
     ((jolt-nil? other)
      (throw-jvm 'NullPointerException "Cannot suppress a null exception."))
+    ((jolt-with-mutex throwable-suppressed-mu
+       (hashtable-ref throwable-no-suppression-tbl (throwable-identity v) #f))
+     (void))
     (else
      (jolt-with-mutex throwable-suppressed-mu
-       (hashtable-set! throwable-suppressed-tbl v
-                       (cons other (hashtable-ref throwable-suppressed-tbl v '()))))))
+       (let ((k (throwable-identity v)))
+         (hashtable-set! throwable-suppressed-tbl k
+                         (cons other (hashtable-ref throwable-suppressed-tbl k '())))))))
   jolt-nil)
 
 ;; Throwable.printStackTrace: the header line, then the same Clojure backtrace the
@@ -510,7 +527,7 @@
 (define (jolt-throwable-print-stack-trace v port)
   ;; SEEN is one set for the whole walk, as the JDK's dejaVu is: a throwable
   ;; printed on one branch is a circular reference on every later one.
-  (jolt-throwable-print-enclosed v port "" "" (box (list v)))
+  (jolt-throwable-print-enclosed v port "" "" (box (list (throwable-identity v))))
   jolt-nil)
 (define (jolt-throwable-print-enclosed v port prefix caption seen)
   (display prefix port) (display caption port)
@@ -528,10 +545,10 @@
   (let ((p (string-append prefix "\t")))
     (for-each
       (lambda (x)
-        (if (memq x (unbox seen))
+        (if (memq (throwable-identity x) (unbox seen))
             (begin (display p port) (display "Suppressed: [CIRCULAR REFERENCE: " port)
                    (display (jolt-throwable-tostring x) port) (display "]" port) (newline port))
-            (begin (set-box! seen (cons x (unbox seen)))
+            (begin (set-box! seen (cons (throwable-identity x) (unbox seen)))
                    (jolt-throwable-print-enclosed x port p "Suppressed: " seen))))
       (throwable-suppressed-list v))))
 

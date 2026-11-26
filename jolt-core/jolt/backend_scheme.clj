@@ -13,7 +13,7 @@
   jolt.backend-scheme.* namespaces it requires, and those of them that need to
   lower a child take `emit` as an argument."
   (:require [clojure.string :as str]
-            [jolt.host :refer [protocol-call-key form-char? form-literal?]]
+            [jolt.host :refer [protocol-call-key form-char? form-literal? record-shapes]]
             [jolt.passes.types :as types]
             [jolt.passes.numeric :as numeric]
             [jolt.op-registry :as op-registry]
@@ -423,6 +423,27 @@
       (ordered-call arg-nodes (mapv emit arg-nodes)
                     (fn [as] (str "(" *recur-target* " " (str/join " " as) ")"))))))
 
+;; The keyword-site head for key KW (#1713). Chez open-codes the record-cache hit
+;; (rt.ss jolt-kw-get-site/i), which saves a defrecord field read ~12 ns but costs
+;; every other receiver -- a map, nil, a vector -- ~2 ns for the test, so it is
+;; emitted only for a key some defrecord declares as a field. The host's shapes
+;; map is cached until a type is defined, so the field set is rebuilt only when
+;; the map is a new one. A record defined after this site was compiled leaves the
+;; site on the procedure, whose own record cache still serves it.
+(def ^:private record-field-kws (atom nil))
+(defn- record-field-kw? [kw]
+  (let [m (record-shapes nil) memo @record-field-kws]
+    (contains? (if (and memo (identical? m (nth memo 0)))
+                 (nth memo 1)
+                 (let [s (into #{} (comp (filter :record) (mapcat :fields)) (vals m))]
+                   (reset! record-field-kws [m s])
+                   s))
+               kw)))
+(defn- kw-site-head [kw]
+  (if (and (not= :gambit (session/target)) (record-field-kw? kw))
+    "(jolt-kw-get-site/i "
+    "(jolt-kw-get-site "))
+
 ;; (get m k [default]) specialized by what the receiver and key are.
 (defn- emit-get-call [tail? arg-nodes order-args]
   (let [recv (first arg-nodes) key-node (second arg-nodes)
@@ -441,7 +462,7 @@
       (and *const-pool* (= :const (:op key-node)) (keyword? (:val key-node)))
       (let [site (hoist-const-per-site "(jolt-kw-site)")]
         (note-tail-call! tail?)
-        (order-args (fn [as] (lookup-restore tail? (str (if (= :gambit (session/target)) "(jolt-kw-get-site " "(jolt-kw-get-site/i ")
+        (order-args (fn [as] (lookup-restore tail? (str (kw-site-head (:val key-node))
                                                         (first as) " " (second as) " " site
                                                         (if (= 3 (count as)) (str " " (nth as 2)) "") ")")))))
       :else (do (note-tail-call! tail?)
@@ -466,8 +487,8 @@
       ;; jolt-get rather than allocate a cell per evaluation.
       *const-pool*
       (let [site (hoist-const-per-site "(jolt-kw-site)")]
-        ;; on Chez the record-cache hit is open-coded (rt.ss jolt-kw-get-site/i)
-        (order-args (fn [as] (lookup-restore tail? (str (if (= :gambit (session/target)) "(jolt-kw-get-site " "(jolt-kw-get-site/i ")
+        ;; on Chez a record field's cache hit is open-coded (kw-site-head)
+        (order-args (fn [as] (lookup-restore tail? (str (kw-site-head (:val fnode))
                                                         (first as) " " (emit fnode) " " site (defstr as) ")")))))
       :else (order-args (fn [as] (lookup-restore tail? (str "(jolt-get " (first as) " " (emit fnode) (defstr as) ")")))))))
 
