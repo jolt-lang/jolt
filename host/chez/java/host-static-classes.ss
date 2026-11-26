@@ -3011,28 +3011,107 @@
               (lambda (self) (make-jhost "b64-encoder"
                                (vector (b64-self-alphabet self) #f
                                        (b64-self-width self) (b64-self-sep self)))))))
-;; .wrap(InputStream): the JDK decodes as it reads. This drains the source on the
-;; first read and decodes it whole, so a bad character still throws from a read,
-;; not from wrap, and as IOException, as the JDK's stream does. Closing the
-;; wrapper closes the source.
+;; .wrap(InputStream) is the JDK 21 DecInputStream, step for step: it reads the
+;; source a byte at a time and decodes as it goes, so a source that stays open (a
+;; pipe, a socket) gives the bytes decoded so far without waiting for its end. A
+;; read decodes whole 4-character groups into the caller's range; a group that
+;; does not fit keeps its last bytes (rpos) for the next read. Characters outside
+;; the alphabet are skipped by a MIME decoder and an IOException naming the
+;; character for the others. `=` ends the stream (nothing after it is read), and
+;; so does the source's end, where a 2- or 3-character tail decodes and a lone
+;; character is an error. Each read starts a fresh group, so after an error the
+;; next read carries on from the source's next character.
+(define (b64-decode-table alphabet)
+  (let ((t (make-vector 256 -1)))
+    (vector-set! t (char->integer #\=) -2)
+    (do ((i 0 (fx+ i 1))) ((fx=? i 64) t)
+      (vector-set! t (char->integer (string-ref alphabet i)) i))))
+(define b64-decode-tbl (b64-decode-table b64-alphabet))
+(define b64url-decode-tbl (b64-decode-table b64url-alphabet))
 (define (b64-wrap-in-stream self src)
-  (let ((alphabet (b64-self-alphabet self)) (mime? (b64-self-mime? self))
-        (bv #f) (pos 0))
-    (stream-classed!
-     (make-in-stream
-      (make-custom-binary-input-port
-       "base64-decoder-wrap"
-       (lambda (dst start n)
-         (unless bv
-           (let ((raw (record-method-dispatch src "readAllBytes" jolt-nil)))
-             (set! bv (guard (e (#t (throw-jvm 'IOException "Illegal base64 character")))
-                        (b64-decode raw alphabet mime?)))))
-         (let ((k (min n (- (bytevector-length bv) pos))))
-           (bytevector-copy! bv pos dst start k)
-           (set! pos (+ pos k))
-           k))
-       #f #f
-       (lambda () (record-method-dispatch src "close" jolt-nil))))
+  (let ((table (if (eq? (b64-self-alphabet self) b64url-alphabet) b64url-decode-tbl b64-decode-tbl))
+        (mime? (b64-self-mime? self))
+        (bits 0)      ; the group being decoded, 24 bits
+        (wpos 0)      ; where the next character's 6 bits go: 24, 18, 12, 6, 0
+        (rpos 0)      ; where the next byte to hand out sits: 24, 16, 8, 0
+        (eof? #f) (closed? #f))
+    (define (src-read) (jnum->exact (record-method-dispatch src "read" jolt-nil)))
+    (define (fail msg) (throw-jvm 'IOException msg))
+    (define (put! bv i x) (bytevector-u8-set! bv i (fxand x 255)))
+    (define (check) (when closed? (fail "Stream is closed")))
+    ;; the group's bytes still owed, once the stream has ended
+    (define (leftovers bv off pos limit)
+      (set! eof? #t)
+      (let loop ((pos pos))
+        (if (and (fx>=? (fx- rpos 8) wpos) (fx<? pos limit))
+            (begin (set! rpos (fx- rpos 8))
+                   (put! bv pos (fxsra bits rpos))
+                   (loop (fx+ pos 1)))
+            (if (or (fx>? pos off) (fx>=? (fx- rpos 8) wpos)) (fx- pos off) -1))))
+    (define (at-eof bv off pos limit)
+      (when (fx=? wpos 18) (fail "Base64 stream has one un-decoded dangling byte."))
+      (set! rpos 24)
+      (leftovers bv off pos limit))
+    ;; `=` after 2 characters needs a second one; anywhere but after 2 or 3 it is wrong
+    (define (padding bv off pos limit)
+      (when (or (fx>=? wpos 18) (and (fx=? wpos 12) (not (eqv? (src-read) 61))))
+        (fail (string-append "Illegal base64 ending sequence:" (number->string wpos))))
+      (set! rpos 24)
+      (leftovers bv off pos limit))
+    (define (decode bv off pos limit)
+      (set! bits 0)
+      (set! wpos 24)
+      (let loop ((pos pos))
+        (let ((i (src-read)))
+          (if (< i 0)
+              (at-eof bv off pos limit)
+              (let ((v (if (< i 256) (vector-ref table i) -1)))
+                (cond
+                  ((fx=? v -1)
+                   (if mime?
+                       (loop pos)
+                       (fail (string-append "Illegal base64 character 0x"
+                                            (string-downcase (number->string i 16))))))
+                  ((fx=? v -2) (padding bv off pos limit))
+                  (else
+                   (set! wpos (fx- wpos 6))
+                   (set! bits (fxior bits (fxsll v wpos)))
+                   (cond
+                     ((fx>? wpos 0) (loop pos))
+                     ((fx>=? (fx- limit pos) 3)
+                      (put! bv pos (fxsra bits 16))
+                      (put! bv (fx+ pos 1) (fxsra bits 8))
+                      (put! bv (fx+ pos 2) bits)
+                      (set! bits 0)
+                      (set! wpos 24)
+                      (if (fx=? (fx+ pos 3) limit) (fx- limit off) (loop (fx+ pos 3))))
+                     (else
+                      (put! bv pos (fxsra bits 16))
+                      (if (fx=? (fx+ pos 1) limit)
+                          (set! rpos 16)
+                          (begin (put! bv (fx+ pos 1) (fxsra bits 8))
+                                 (set! rpos 8)))
+                      (fx- limit off))))))))))
+    ;; read(byte[], off, len) on a bytevector range
+    (define (fill bv off len)
+      (check)
+      (let ((limit (fx+ off len)))
+        (cond
+          ((fx=? len 0) 0)
+          (eof? (leftovers bv off off limit))
+          (else
+           (let* ((pos (if (fx=? rpos 16)
+                           (begin (put! bv off (fxsra bits 8)) (set! rpos 8) (fx+ off 1))
+                           off))
+                  (pos (if (and (fx=? rpos 8) (fx<? pos limit))
+                           (begin (put! bv pos bits) (set! rpos 0) (fx+ pos 1))
+                           pos)))
+             (if (fx=? pos limit) len (decode bv off pos limit)))))))
+    (make-ops-in-stream
+     fill 3
+     (lambda () (check) (jnum->exact (record-method-dispatch src "available" jolt-nil)))
+     (lambda () (unless closed? (set! closed? #t) (record-method-dispatch src "close" jolt-nil)))
+     check
      "java.io.InputStream")))
 (register-host-methods! "b64-decoder"
   (list (cons "decode" (lambda (self s)
@@ -3054,7 +3133,7 @@
             ((or (char=? (string-ref sep i) #\=) (b64-in-alphabet? (string-ref sep i) b64-alphabet))
              (throw-jvm 'IllegalArgumentException
                         (string-append "Illegal base64 line separator character 0x"
-                                       (number->string (char->integer (string-ref sep i)) 16))))
+                                       (string-downcase (number->string (char->integer (string-ref sep i)) 16)))))
             (else (loop (+ i 1)))))))
 (register-class-statics! "Base64"
   (list (cons "getEncoder" (lambda () (make-jhost "b64-encoder" (vector b64-alphabet #t 0 ""))))

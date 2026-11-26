@@ -1460,7 +1460,7 @@
 ;; (host-static-classes.ss), by the same procedures it calls.
 (register-record-method-resolver! (record-type-descriptor matcher-t)
   (lambda (name n)
-    (cond ((string=? name "group") (and (fx<=? n 1) jolt-matcher-group))
+    (cond ((string=? name "group") (case n ((1) jolt-matcher-group-n) ((0) jolt-matcher-group) (else #f)))
           ((string=? name "matches") (and (fx=? n 0) jolt-matcher-matches))
           ((string=? name "lookingAt") (and (fx=? n 0) jolt-matcher-looking-at))
           ((string=? name "groupCount") (and (fx=? n 0) jolt-matcher-group-count))
