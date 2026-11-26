@@ -555,6 +555,24 @@
 (check-run "a loop to one array's length reading another" ub-other-params ub-other-body
            [[(da 1 2 3) (da 4 5 6)] [(da 1 2 3) (da 4 5)] [(da 1) (da 4 5)] [(da) (da)]] :raw true)
 
+;; The fast copy has to be reachable: an entry guard asking for a length no
+;; array has (ys.len > 2147483646 for an index known only below 2^31 - 1) drops
+;; the checks from code that never runs. A symbolic bound is the guard to keep,
+;; and only the loop's final fixpoint round records what the guard needs.
+(defn- entry-guard [params body]
+  (re-find #"if \(x\d+\.len <= INT32_MAX[^{]*"
+           (emit/emit-region (mem/check-region (ast/analyze-region params body)) "jn_x")))
+(doseq [[label params body want]
+        [["a loop to xs's length reading ys guards xs.len <= ys.len" ub-other-params ub-other-body
+          #"x1\.len < x2\.len \+ 1LL"]
+         ["a loop below a long m guards m <= xs.len" ub-param-params ub-param-body #"x2 < x1\.len \+ 1LL"]
+         ["a loop below m < 1000 guards m <= xs.len" '[^doubles xs ^long m]
+          '((if (< m 1000) (loop [i 0 s 0.0] (if (< i m) (recur (inc i) (+ s (aget xs i))) s)) 0.0))
+          #"x2 < x1\.len \+ 1LL"]]]
+  (let [g (entry-guard params body)]
+    (check-eq (str label ": the guard keeps the relation") (boolean (and g (re-find want g))) true)
+    (check-eq (str label ": the guard asks for no fixed length") (when g (re-find #"\.len > \d+LL" g)) nil)))
+
 (def ub-stencil-params '[^doubles xs])
 (def ub-stencil-body '((let [n (alength xs)]
                          (loop [i 0 s 0.0]
@@ -962,6 +980,15 @@
   (let [rest-of (str/replace src (mirc-block src) "")]
     (set (filter #(re-find (re-pattern (str "\\b" % "\\(")) rest-of) c-library))))
 
+;; The C the region itself emits, past the prelude (whose last block is the
+;; allocation hooks), with each hook read as the function it calls: the
+;; prelude's own #define JN_CALLOC(...) calloc(...) is not a region calling it.
+(defn- region-calls [src]
+  (let [body (subs src (str/index-of src "#endif" (str/index-of src "#define JN_FREE(p) free(p)")))]
+    (into (set (filter #(re-find (re-pattern (str "\\b" % "\\(")) body) c-library))
+          (keep (fn [[m f]] (when (str/includes? body m) f))
+                {"JN_CALLOC(" 'calloc "JN_MALLOC(" 'malloc "JN_FREE(" 'free}))))
+
 (let [srcs [(c-of '[^long i] '((let [a (double-array 4)] (aget a i))))
             (c-of '[^long i] '((let [a (long-array 7)] (aset a i 5) (aget a 0))))
             (c-of '[^long n] '((let [a (double-array n)] (aset a 0 1.0) a)))
@@ -969,7 +996,10 @@
             (c-of '[^double x] '((+ (Math/sqrt x) (Math/pow x 2.0) (Math/atan2 x 1.0))))]
       calls (apply set/union (map called srcs))
       decls (prototyped (mirc-block (first srcs)))]
-  (check-eq "the regions call memset, calloc and memcpy" (every? calls '[memset calloc memcpy]) true)
+  (check-eq "the regions call memset, calloc and memcpy"
+            (every? (apply set/union (map region-calls srcs)) '[memset calloc memcpy]) true)
+  (check-eq "a region that allocates nothing calls no calloc"
+            (contains? (region-calls (c-of '[^long n] '((+ n 1)))) 'calloc) false)
   (check-eq "the JIT prelude prototypes every C library function the C calls"
             (sort (remove decls calls)) ()))
 
@@ -1322,6 +1352,10 @@
           (outcome (fn [_] ((layout/parser lay) lay-buf (- (alength lay-buf) 3))) nil)
           {:throw "java.lang.ArrayIndexOutOfBoundsException"
            :msg (str "Index " (alength lay-buf) " out of bounds for length " (alength lay-buf))})
+(check-eq "a layout read at an offset far past the end raises as one past it does"
+          (mapv (fn [off] (:throw (outcome (fn [_] ((layout/parser lay) lay-buf off)) nil)))
+                [Long/MAX_VALUE 5000000000 Long/MIN_VALUE -5000000000])
+          (vec (repeat 4 "java.lang.ArrayIndexOutOfBoundsException")))
 (check-eq "a layout field names a width"
           (try (layout/parser [[:x :u24]]) :compiled
                (catch Throwable e (boolean (re-find #"one of :u8" (.getMessage e)))))
@@ -1408,6 +1442,27 @@
           [(spec-on-x 5 1) (spec-on-y 1 5) (spec-on-y 2 5) (spec-on-x 2 5)]
           [49 5 15 15])
 
+
+;; The generic C is positional: two sites with the same C that specialize a
+;; param of the same NAME at different positions must not share variants (f2's
+;; a is the second argument, f1's the first).
+(defn spec-pos-1 [a b] (jolt.native/native ^{:specialize [a]} [^long a ^long b] (- a b)))
+(defn spec-pos-2 [x a] (jolt.native/native ^{:specialize [a]} [^long x ^long a] (- x a)))
+(check-eq "sites specializing a same-named param at different positions keep their own variants"
+          [(spec-pos-1 10 1) (spec-pos-2 1 10) (spec-pos-2 1 10) (spec-pos-1 10 1) (spec-pos-1 1 10)]
+          [9 -9 -9 9 -9])
+
+;; a site whose budget is spent looks its values up and runs the region as
+;; written for the rest, with no lock and no compile
+(defn spec-budget [n x] (jolt.native/native ^{:specialize [n] :max-variants 2} [^long n ^long x] (+ (* n 100) x)))
+(check-eq "past :max-variants the known values keep their variants and the rest run as written"
+          (mapv #(spec-budget % 1) [0 1 2 3 0 1 2.0 -1])
+          [1 101 201 301 1 101 201 -99])
+(check-eq "a spent site compiled only its budget"
+          (some (fn [[k v]] (when (re-find #"\$2\$" (str k)) (when (some #{[1]} v) (count v))))
+                (jolt.native/specializations))
+          2)
+
 (doseq [[label params msg] [["an array" '^{:specialize [xs]} [^doubles xs] #"is an array"]
                             ["a non-parameter" '^{:specialize [q]} [^long n] #"not a parameter"]
                             ["not a vector" '^{:specialize n} [^long n] #"vector of parameter names"]]]
@@ -1415,6 +1470,47 @@
             (try (macroexpand (list 'jolt.native/native params 1)) :expanded
                  (catch Throwable e (boolean (re-find msg (.getMessage e)))))
             true))
+
+;; A refused array or boolean argument names what it got, nil included.
+(doseq [nm ["doubles" "longs" "bytes" "boolean"]]
+  (check-eq (str "a ^" nm " parameter given nil raises naming nil")
+            (outcome (fn [_] ((jolt.native/native-fn [(with-meta 'v {:tag (symbol nm)})] '(1)) nil)) nil)
+            {:throw "java.lang.ClassCastException" :msg (str "native region: a ^" nm " parameter got nil")}))
+(check-eq "a defextern called outside a region refuses the wrong array kind"
+          (:throw (outcome (fn [_] (ext-scale (long-array [1 2]) 2.0)) nil))
+          "java.lang.ClassCastException")
+
+;; A defextern's function in a library ffi/load-library opened (RTLD_LOCAL, out
+;; of the global scope a plain dlsym searches) resolves for the JIT as it does
+;; for a defcfn. Before the library loads, native-fn raises the link failure
+;; itself rather than answering a fn that raises it; once it has loaded, the
+;; same region compiles again instead of keeping the failure.
+(def loc-so (str work-dir "/jn_loc.dylib"))
+(spit (str work-dir "/jn_loc.c") "double jn_loc_twice(double x) { return 2.0 * x; }\n")
+(let [p (.start (ProcessBuilder. ^java.util.List ["cc" "-O2" "-shared" "-fPIC" "-o" loc-so (str work-dir "/jn_loc.c")]))]
+  (when-not (zero? (.waitFor p)) (throw (ex-info "cc failed for jn_loc" {}))))
+(defextern ^double loc-twice [^double x] {:c "jn_loc_twice"})
+(defn loc-site [x] (jolt.native/native [^double x] (loc-twice x)))
+(defn spec-loc [k x] (jolt.native/native ^{:specialize [k]} [^double k ^double x] (+ k (loc-twice x))))
+(let [site-before (outcome (fn [_] (loc-site 2.5)) nil)
+      before (outcome (fn [_] (jolt.native/native-fn '[^double x] '((loc-twice x)))) nil)
+      spec-before (outcome (fn [_] (spec-loc 1.0 2.0)) nil)
+      spec-sites (count (filter #(re-find #"\$0\$" (str %)) (keys (jolt.native/specializations))))
+      _ (jolt.ffi/load-library loc-so)
+      after (outcome (fn [_] ((jolt.native/native-fn '[^double x] '((loc-twice x))) 2.5)) nil)
+      site-after (outcome (fn [_] (loc-site 2.5)) nil)
+      spec-after (outcome (fn [_] (spec-loc 1.0 2.0)) nil)]
+  (check-eq "a call site loaded before the library resolves its region once the library loads"
+            [(:throw site-before) site-after spec-after]
+            ["java.lang.UnsupportedOperationException" {:value 5.0} {:value 5.0}])
+  (check-eq "native-fn raises a region's link failure before it returns"
+            [(:throw before) (boolean (re-find #"undefined symbol jn_loc_twice" (str (:msg before))))]
+            ["java.lang.UnsupportedOperationException" true])
+  (check-eq "a variant that failed to link is no variant: the site runs the region as written"
+            [(:throw spec-before) (count (filter #(re-find #"\$0\$" (str %)) (keys (jolt.native/specializations))))]
+            ["java.lang.UnsupportedOperationException" spec-sites])
+  (check-eq "a region calls a function from a library ffi/load-library opened, once it has"
+            after {:value 5.0}))
 
 ;; --- the machine the JIT compiles for: (on ...) bodies chosen per CPU ------------
 ;; jolt build (cc here) compiles for whatever its compiler targets, the
@@ -1444,6 +1540,12 @@
   (check-eq "the JIT picks the body for this CPU's features"
             ((:call (:jit c))) (if (:avx2 feats) 2 sse2)))
 (check-eq "cpu-features answers keywords" (every? keyword? feats) true)
+;; JOLT_MIR_CPU=baseline keeps what every core of the architecture has, as cc's
+;; default target does: Advanced SIMD on AArch64 (x86-64's SSE2 has no keyword)
+(let [arm? (= "aarch64" (System/getProperty "os.arch"))
+      _ (scm/eval-string "(putenv \"JOLT_MIR_CPU\" \"baseline\")")
+      base (try (jolt.native/cpu-features) (finally (scm/eval-string "(putenv \"JOLT_MIR_CPU\" \"\")")))]
+  (check-eq "the baseline JIT keeps the architecture's own SIMD" base (if arm? #{:neon} #{})))
 
 (defextern ^double ext-dot-avx2 [^doubles xs ^doubles ys] {:c "jn_ext_dot_avx2"})
 (defextern ^long ext-dot-calls [] {:c "jn_ext_dot_calls"})

@@ -5,7 +5,7 @@
   (:require [clojure.string :as str]
             [jolt.backend-scheme.names :refer [chez-str-lit]]
             [jolt.backend-scheme.session :refer [fresh-label target]]
-            [jolt.backend-scheme.hoist :refer [hoist-load-time]]))
+            [jolt.backend-scheme.hoist :refer [hoist-load-time *load-time-pool*]]))
 
 ;; jolt.ffi/__cfn -> a Chez foreign-procedure (jolt-ffi). The C symbol + types are
 ;; compile-time literals from the analyzer, so this emits a real typed binding;
@@ -795,26 +795,48 @@
 ;; other thread's collection waits for the region (Chez's stop-the-world needs
 ;; each active thread). It costs ~2.5ns against ~45ns, for short regions.
 (defn- native-accessors
-  "The region's entry and its helpers, each resolved once at load by hoist-load-time."
+  "The region's entry and its helpers, each resolved once at load by
+  hoist-load-time. :retry is an expression that resolves them all again and
+  answers the entry, or #f: a site that loaded before the library defining a
+  function its C calls (ffi/load-library, a :jolt/native) re-resolves on a
+  call that finds no entry, and the JIT compiles the region again once the
+  loaded-library set has changed. It only runs where the entry is #f, so a
+  site that resolved pays one test for it."
   [node pinned?]
   (let [sym (:sym node)
         result (:result node)
-        entry-of (fn [suffix args ret] (hoist-load-time (native-entry-expr (str sym suffix) args ret)))
+        pool? (some? *load-time-pool*)
+        retries (atom [])
+        entry-of (fn [suffix args ret]
+                   (let [e (native-entry-expr (str sym suffix) args ret)
+                         nm (hoist-load-time e)]
+                     (swap! retries conj [nm e])
+                     nm))
+        entry-e (native-entry-expr sym (mapv native-arg-chez (:kinds node))
+                                   (native-result-chez result) pinned?)
         ;; first: it registers the source the JIT compiles the helpers' entries from
         entry (hoist-load-time
                (str "(begin (jolt-native-register! " (chez-str-lit sym) " " (chez-str-lit (:src node)) ") "
-                    (native-entry-expr sym (mapv native-arg-chez (:kinds node))
-                                       (native-result-chez result) pinned?) ")"))]
-    {:entry entry
-     :status (entry-of "_status" [] "integer-64")
-     :err-l (entry-of "_err_l" ["integer-64"] "integer-64")
-     :err-d (entry-of "_err_d" [] "double")
-     :copy-out (case result
-                 "doubles" (entry-of "_copy_out" ["scheme-object" "uptr" "integer-64"] "void")
-                 "longs" (entry-of "_copy_out" ["scheme-object" "uptr" "integer-64"] "integer-64")
-                 nil)
-     :elem (when (= result "longs") (entry-of "_elem" ["uptr" "integer-64"] "integer-64"))
-     :free (when (contains? #{"doubles" "longs"} result) (entry-of "_free" ["uptr"] "void"))}))
+                    entry-e ")"))
+        acc {:entry entry
+             :status (entry-of "_status" [] "integer-64")
+             :err-l (entry-of "_err_l" ["integer-64"] "integer-64")
+             :err-d (entry-of "_err_d" [] "double")
+             :copy-out (case result
+                         "doubles" (entry-of "_copy_out" ["scheme-object" "uptr" "integer-64"] "void")
+                         "longs" (entry-of "_copy_out" ["scheme-object" "uptr" "integer-64"] "integer-64")
+                         nil)
+             :elem (when (= result "longs") (entry-of "_elem" ["uptr" "integer-64"] "integer-64"))
+             :free (when (contains? #{"doubles" "longs"} result) (entry-of "_free" ["uptr"] "void"))}]
+    ;; with no load-time scope the entry expression runs at every call, which
+    ;; retries by itself
+    (assoc acc :retry
+           (if pool?
+             (let [e (fresh-label "jn_re")]
+               (str "(let ((" e " " entry-e ")) (when " e " (set! " entry " " e ") "
+                    (apply str (map (fn [[nm x]] (str "(set! " nm " " x ") ")) @retries))
+                    ") " e ")"))
+             "#f"))))
 
 (defn- native-result-value
   "The jolt value of a successful call's result R, an owned array of length N."
@@ -878,13 +900,13 @@
                                 (map vector as kinds)))]
         (str "(let ((" p " " (:entry acc) ")"
              (apply str (map (fn [a k v] (str " (" a " (" (native-arg-check k) " " v "))")) as kinds args))
-             ") (if " p " "
+             ") (let ((" p " (or " p " " (:retry acc) "))) (if " p " "
              "(let-values (((" r " " code " " info ") "
              (native-call-expr p as backings (and pinned? (seq backings)) (:result node) acc)
              ")) "
              "(if (fx= 0 " code ") " r " "
              "(jolt-invoke " (emit (:raise node)) " " code " (vector-ref " info " 0) (vector-ref " info " 1) (vector-ref " info " 2)))) "
-             "(jolt-native-unavailable " sym ")))")))))
+             "(jolt-native-unavailable " sym "))))")))))
 
 (defn emit-ffi-node [emit node]
   (case (:op node)
