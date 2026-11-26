@@ -12,10 +12,10 @@
 ;; under 2^60; past a bound the divide is fxquotient.
 (define-syntax fx-quot10
   (syntax-rules ()
-    ((_ m0) (let ((m m0)) (if (fx<? m 100000000) (fxsra (fx* m 429496730) 32) (fxquotient m 10))))))
+    ((_ m0) (let ((m m0)) (if (sa-ufx<? m 100000000) (sa-ufxsra (sa-ufx* m 429496730) 32) (fxquotient m 10))))))
 (define-syntax fx-quot100
   (syntax-rules ()
-    ((_ m0) (let ((m m0)) (if (fx<? m 10000000) (fxsra (fx* m 42949673) 32) (fxquotient m 100))))))
+    ((_ m0) (let ((m m0)) (if (sa-ufx<? m 10000000) (sa-ufxsra (sa-ufx* m 42949673) 32) (fxquotient m 100))))))
 ;; "000102...99": pair i at 2i
 (define fx-digit-pairs
   (let ((s (make-string 200 #\0)))
@@ -25,20 +25,45 @@
 (define fx-pow10
   (let ((v (make-vector 19 1)))
     (do ((k 1 (fx+ k 1))) ((fx=? k 19) v) (vector-set! v k (* 10 (vector-ref v (fx- k 1)))))))
-;; how many decimal digits positive fixnum M has
+;; how many decimal digits positive fixnum M has: a binary search over the
+;; powers of ten, five compares where a linear count took up to nineteen
 (define (fx-decimal-length m)
-  (let count ((k 1))
-    (if (or (fx=? k 19) (fx<? m (vector-ref fx-pow10 k))) k (count (fx+ k 1)))))
-;; M's digits (M >= 0) into S, the last one at index END - 1, two at a time
+  (let search ((lo 1) (hi 19))          ; 10^(lo-1) <= m, and m < 10^hi or hi = 19
+    (if (sa-ufx>=? lo hi)
+        lo
+        (let ((mid (sa-ufxsra (sa-ufx+ lo hi) 1)))
+          (if (sa-ufx<? m (sa-uvector-ref fx-pow10 mid))
+              (search lo mid)
+              (search (sa-ufx+ mid 1) hi))))))
+;; M's digits (M >= 0) into S, the last one at index END - 1. Seven at a time
+;; from the low end, each block split off with one fxquotient and filled two
+;; digits per multiply-shift; the top block (below 10^7) the same way without
+;; padding.
 (define (fx-fill-digits! s m end)
-  (let fill ((m m) (i (fx- end 1)))
-    (cond ((fx>=? m 100)
-           (let* ((q (fx-quot100 m)) (r (fx* 2 (fx- m (fx* q 100)))))
-             (string-set! s i (string-ref fx-digit-pairs (fx+ r 1)))
-             (string-set! s (fx- i 1) (string-ref fx-digit-pairs r))
-             (fill q (fx- i 2))))
-          ((fx>=? m 10)
-           (let ((r (fx* 2 m)))
-             (string-set! s i (string-ref fx-digit-pairs (fx+ r 1)))
-             (string-set! s (fx- i 1) (string-ref fx-digit-pairs r))))
-          (else (string-set! s i (integer->char (fx+ 48 m)))))))
+  (if (fx>=? m 10000000)
+      (let* ((q (fxquotient m 10000000)) (r (fx- m (fx* q 10000000))))
+        (fx-fill-7! s r end)
+        (fx-fill-digits! s q (fx- end 7)))
+      (fx-fill-small! s m end)))
+;; M below 10^7, its digits only
+(define (fx-fill-small! s m end)
+  (let fill ((m m) (i (sa-ufx- end 1)))
+    (cond ((sa-ufx>=? m 100)
+           (let* ((q (fx-quot100 m)) (r (sa-ufx* 2 (sa-ufx- m (sa-ufx* q 100)))))
+             (sa-ustring-set! s i (sa-ustring-ref fx-digit-pairs (sa-ufx+ r 1)))
+             (sa-ustring-set! s (sa-ufx- i 1) (sa-ustring-ref fx-digit-pairs r))
+             (fill q (sa-ufx- i 2))))
+          ((sa-ufx>=? m 10)
+           (let ((r (sa-ufx* 2 m)))
+             (sa-ustring-set! s i (sa-ustring-ref fx-digit-pairs (sa-ufx+ r 1)))
+             (sa-ustring-set! s (sa-ufx- i 1) (sa-ustring-ref fx-digit-pairs r))))
+          (else (sa-ustring-set! s i (integer->char (sa-ufx+ 48 m)))))))
+;; R below 10^7 as exactly seven digits, zero-padded, ending at END - 1
+(define (fx-fill-7! s r end)
+  (let loop ((r r) (i (sa-ufx- end 1)) (pairs 3))
+    (if (sa-ufx=? pairs 0)
+        (sa-ustring-set! s i (integer->char (sa-ufx+ 48 r)))
+        (let* ((q (fx-quot100 r)) (p (sa-ufx* 2 (sa-ufx- r (sa-ufx* q 100)))))
+          (sa-ustring-set! s i (sa-ustring-ref fx-digit-pairs (sa-ufx+ p 1)))
+          (sa-ustring-set! s (sa-ufx- i 1) (sa-ustring-ref fx-digit-pairs p))
+          (loop q (sa-ufx- i 2) (sa-ufx- pairs 1))))))

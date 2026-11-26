@@ -178,6 +178,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   chain of hardware divides, and a double's plain decimal form is written into
   one string. `clojure.lang.PersistentList/create` builds a vector's list
   directly (2 to 3 times faster; tools.reader reads every list through it).
+- Printing a double is about twice as fast again, and a short decimal like
+  `1.5` about three times (#1713). Schubfach's three rounded products are
+  computed over 28-bit limbs in fixnums instead of bignums, a double's digits
+  stay a fixnum until they are laid out straight into the printed string, and
+  long digit runs are split seven at a time. Output is unchanged: `str` of 2.5
+  million doubles and longs is identical to the JVM's.
 
 ### Fixed
 

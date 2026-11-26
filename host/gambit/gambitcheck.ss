@@ -147,6 +147,7 @@
     sa-foreign-callable sa-foreign-callable-collect-safe
     ;; capability-unchecked: expand to the checked primitives here
     sa-ufx+ sa-ufx- sa-ufx<? sa-ufx>=? sa-ufx=? sa-ufxand sa-ufxxor sa-uvector-ref sa-uvector-set! sa-ustring-ref
+    sa-ufx* sa-ufxior sa-ufxsra sa-ufxsll sa-ustring-set!
     sa-uflvector-ref sa-uflvector-set!
     sa-ubytevector-ieee-single-native-ref sa-ubytevector-ieee-single-native-set!
     sa-ubytevector-ieee-double-native-ref sa-ubytevector-ieee-double-native-set!))
@@ -242,6 +243,11 @@
   (check "sa-ufx=?" (sa-ufx=? 3 3) #t)
   (check "sa-ufxand" (sa-ufxand 12 10) 8)
   (check "sa-ufxxor" (sa-ufxxor 12 10) 6)
+  (check "sa-ufx*" (sa-ufx* 6 7) 42)
+  (check "sa-ufxior" (sa-ufxior 12 10) 14)
+  (check "sa-ufxsra" (sa-ufxsra 40 3) 5)
+  (check "sa-ufxsll" (sa-ufxsll 5 3) 40)
+  (check "sa-ustring-set!" (let ((s (make-string 2 #\a))) (sa-ustring-set! s 1 #\b) s) "ab")
   (check "sa-uvector-ref" (sa-uvector-ref (vector 1 2 3) 1) 2)
   (check "sa-uvector-set!" (let ((v (vector 1 2 3))) (sa-uvector-set! v 1 9) (vector-ref v 1)) 9)
   (check "sa-ustring-ref" (sa-ustring-ref "abc" 1) #\b)
