@@ -3832,6 +3832,7 @@
   ;; one. A surrogate is no scalar value, so (char 55296) is the surrogate-unit
   ;; value (#1454), a Character whose int is the unit.
   {:suite "char / code points" :expr "[(int (char 65)) (int (char 128515)) (int (first (str (char 128515)))) (char 55296) (int (char 55296)) (try (char 1114112) (catch Exception e (ex-message e)))]" :expected "[65 128515 128515 \\uD800 55296 \"Value out of range for char: 1114112\"]"}
+  {:suite "char / code points" :label "write(int) of a supplementary code point writes it whole; other ints keep the low 16 bits" :expr "(let [sw (fn [f] (let [w (java.io.StringWriter.)] (f w) (mapv int (str w))))] [(sw #(.write % (int 0x1F512))) (sw #(doseq [c (str \"a\" (char 0x1F512) \"b\")] (.write % (int c)))) (sw #(do (.write % (int 0xD83D)) (.write % (int 0xDD12)))) (sw #(.write % (int 0x11F512))) (sw #(.write % -1)) (let [o (java.io.ByteArrayOutputStream.) w (java.io.OutputStreamWriter. o \"UTF-8\")] (.write w (int 0x1F512)) (.flush w) (vec (.toByteArray o))) (let [w (java.io.StringWriter.) p (java.io.PrintWriter. w)] (.write p (int 0x1F512)) (.flush p) (mapv int (str w)))])" :expected "[[128274] [97 128274 98] [128274] [62738] [65535] [-16 -97 -108 -110] [128274]]"}
   ;; The same model seen from the string side: an astral character is ONE element,
   ;; so there is no surrogate half to index out. A JVM string holds two code units
   ;; here, which is why a parser test that expects a lone surrogate to be rejected

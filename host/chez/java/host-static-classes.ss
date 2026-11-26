@@ -581,10 +581,16 @@
         (else (render-piece x))))
 ;; write(int) writes one UTF-16 unit: a char's one-char string, or for a
 ;; surrogate the unit value, which the sink pairs with its partner (#1455).
-;; The JDK keeps only the low 16 bits of the int.
+;; The JDK keeps only the low 16 bits of the int. A supplementary code point
+;; (U+10000..U+10FFFF) is written whole instead: a jolt char is a code point,
+;; so (.write w (int c)) over a string's chars hands one over, and keeping its
+;; low 16 bits would write a different character with no error. Anything else
+;; outside the BMP keeps the JDK's low 16 bits.
 (define (unit-piece n)
-  (let ((u (if (and (fixnum? n) (fx>=? n 0) (fx<=? n #xFFFF)) n (bitwise-and n #xFFFF))))
-    (if (and (fx>=? u #xD800) (fx<=? u #xDFFF)) (jolt-surrogate u) (string (integer->char u)))))
+  (if (and (fixnum? n) (fx>=? n #x10000) (fx<=? n #x10FFFF))
+      (string (integer->char n))
+      (let ((u (if (and (fixnum? n) (fx>=? n 0) (fx<=? n #xFFFF)) n (bitwise-and n #xFFFF))))
+        (if (and (fx>=? u #xD800) (fx<=? u #xDFFF)) (jolt-surrogate u) (string (integer->char u))))))
 
 ;; --- surrogate units written one at a time to a sink with no builder -----------
 ;; A StringWriter pairs units in its StringBuffer (string-builder.ss). A sink

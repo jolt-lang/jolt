@@ -140,6 +140,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or the value itself. This covers call arguments, `write` and layout fields,
   and a foreign-callable whose fn returns a number for a `:bool` result. Code
   that passed `1` for true has to change too.
+- `Writer.write(int)` writes a supplementary code point (U+10000 to U+10FFFF)
+  whole, where the JDK keeps the int's low 16 bits. A jolt char is a code
+  point, so a library that writes text char by char with `(.write w (int c))`
+  hands one over, and every emoji came out as a different BMP character with no
+  error. Other ints keep the JDK's low 16 bits, and a surrogate pair written as
+  two units still joins. This covers `StringWriter`, `PrintWriter` and the
+  charset writers. It is recorded in `known-divergences.edn` next to
+  `(char 128515)`.
 
 ### Performance
 
