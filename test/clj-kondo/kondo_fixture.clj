@@ -26,6 +26,10 @@
   raw-multi
   ([s] (raw-multi s))
   ([s extra] (+ extra (raw-multi s))))
+;; a by-value struct result: the binding takes the destination pointer first
+(ffi/defcfn c-div "div" [:int :int] [:by-value [:struct [[:quot :int] [:rem :int]]]])
+(ffi/defcfn div-into "div" [:int :int] [:by-value [:struct [[:quot :int] [:rem :int]]]]
+  raw-div [n d] (let [dst (ffi/alloc 8)] (raw-div dst n d)))
 
 ;; -- other public macros --------------------------------------------------
 
@@ -55,6 +59,8 @@
 (defn use-varargs-bare-2 [] (c-bare-snprintf (ffi/alloc 8) 8 "%d" 42))
 (defn use-multi-1 [] (multi-wrapper "hi"))
 (defn use-multi-2 [] (multi-wrapper "hi" 3))
+(defn use-by-value [] (c-div (ffi/alloc 8) 7 2))
+(defn use-by-value-wrapper [] (div-into 7 2))
 
 (defn use-with-arena []
   (ffi/with-arena [arena-1]
@@ -93,3 +99,4 @@
 (defn wrong-varargs-bare [] (c-bare-snprintf (ffi/alloc 8) 8))
 (defn wrong-multi [] (multi-wrapper))
 (defn wrong-multi-2 [] (multi-wrapper "hi" 3 4))
+(defn wrong-by-value [] (c-div 7 2))

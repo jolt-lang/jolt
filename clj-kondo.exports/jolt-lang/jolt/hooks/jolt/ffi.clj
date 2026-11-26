@@ -75,8 +75,21 @@
   (api/list-node [(api/token-node 'clojure.core/deref)
                   (api/list-node [(api/token-node 'clojure.core/atom) (api/token-node nil)])]))
 
-(defn- raw-fn-node [argtypes-node]
-  (api/list-node [(api/token-node 'clojure.core/fn) (arg-params argtypes-node) (opaque-value)]))
+(defn- by-value-result?
+  "A rettype written [:by-value descriptor]. Such a binding takes the caller's
+  destination pointer as its first argument, ahead of one per argtype (see
+  jolt.ffi's docstring on structs by value). A rettype named through a var
+  can't be seen here, so it keeps the argtype count."
+  [rettype-node]
+  (and (api/vector-node? rettype-node)
+       (= :by-value (some-> rettype-node :children first api/sexpr))))
+
+(defn- raw-fn-node [argtypes-node rettype-node]
+  (let [params (arg-params argtypes-node)
+        params (if (by-value-result? rettype-node)
+                 (api/vector-node (into [(api/token-node '_dst)] (:children params)))
+                 params)]
+    (api/list-node [(api/token-node 'clojure.core/fn) params (opaque-value)])))
 
 (defn- wrapper-arities
   "def-cfn-form splices the wrapper's own forms straight after the name:
@@ -98,11 +111,11 @@
   from a `defn` or from `(def name (fn ...))` directly, but not through a
   `let` between `def` and the `fn`. Verified empirically, since neither
   ffi.clj nor clj-kondo's docs say so outright."
-  [raw-sym argtypes-node {:keys [params body]}]
+  [raw-sym argtypes-node rettype-node {:keys [params body]}]
   (api/list-node
    [params
     (api/list-node (list* (api/token-node 'clojure.core/let)
-                          (api/vector-node [raw-sym (raw-fn-node argtypes-node)])
+                          (api/vector-node [raw-sym (raw-fn-node argtypes-node rettype-node)])
                           body))]))
 
 (defn defcfn
@@ -125,12 +138,12 @@
                 tail (if option? (vec (rest after)) after)]
             {:node
              (if (empty? tail)
-               (api/list-node [(api/token-node 'clojure.core/def) name-node (raw-fn-node argtypes-node)])
+               (api/list-node [(api/token-node 'clojure.core/def) name-node (raw-fn-node argtypes-node rettype-node)])
                (let [raw-sym (first tail)
                      fn-tail (vec (rest tail))]
                  (api/list-node
                   (list* (api/token-node 'clojure.core/defn) name-node
-                         (map (partial wrapper-arity-node raw-sym argtypes-node)
+                         (map (partial wrapper-arity-node raw-sym argtypes-node rettype-node)
                               (wrapper-arities fn-tail))))))}))))))
 
 ;; -- with-arena ------------------------------------------------------------
