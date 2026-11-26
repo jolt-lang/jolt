@@ -17,7 +17,7 @@
 
   ([text line col offset full-text]
    (let [ch (first text)]
-     (if-not (nil? ch)
+     (when-not (nil? ch)
        (cons
         (Location. ch line col offset full-text)
         (lazy-seq
@@ -40,7 +40,7 @@
     input))
 
 (defn show-error [location]
-  (if (and location (< (:offset location) (count (:full-text location))))
+  (when (and location (< (:offset location) (count (:full-text location))))
     (let [input   (:full-text location)
           start   (inc (or (s/last-index-of input "\n" (:offset location)) -1))
           end     (or (s/index-of input "\n" (:offset location)) (count input))

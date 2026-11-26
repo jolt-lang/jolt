@@ -20,4 +20,15 @@
  ;; clojure.core's shards, which have no ns form for a namespace glob to match, and
  ;; the stubs of SCI's host modules, whose vars sci.impl.namespaces names
  :api-paths ["jolt-core/clojure/core" "stdlib/clojure/sci/host_stubs.clj"
-             "stdlib/clojure/sci/lang_stubs.clj"]}
+             "stdlib/clojure/sci/lang_stubs.clj"]
+ ;; Lint rules run at jolt-metrics' default levels; ci/metrics-gate.clj fails on
+ ;; a :warning or performance finding that ci/metrics-allow.edn doesn't list.
+ ;; missing-else-branch and cond-else stay on, since the style guide asks for
+ ;; when over a one-armed if and an :else to end a cond. Of the performance
+ ;; rules, linear-membership stays off: its hits here are searches by a
+ ;; predicate or over a value's own elements, which a set wouldn't replace.
+ ;; lazy-into stays off too: on jolt the transducer form it suggests,
+ ;; (into [] (map f) xs), measured slower than (into [] (map f xs)) from 16
+ ;; elements up (1.6x at 1000).
+ :linters {:linear-membership {:level :off}
+           :lazy-into {:level :off}}}

@@ -48,7 +48,7 @@
   [& args]
   (let [[options body] (loop [body args acc []]
                          (if (#{:prefix :per-line-prefix :suffix} (first body))
-                           (recur (drop 2 body) (concat acc (take 2 body)))
+                           (recur (drop 2 body) (into acc (take 2 body)))
                            [(apply hash-map acc) body]))]
     ;; the helpers are private, so the expansion reaches them through their vars,
     ;; as the reference does — a caller's ns may not name them (jolt#1095)
@@ -192,7 +192,7 @@ exactly equivalent to (pprint *1)."
         (cond
           (neg? n) ""
           (not (= (nth s n) c)) (subs s 0 (inc n))
-          true (recur (dec n))))
+          :else (recur (dec n))))
       s)))
 
 (defn- ltrim [s c]
@@ -370,7 +370,7 @@ exactly equivalent to (pprint *1)."
           (and (not (= (:type token) :fill))
                @(:done-nl (:logical-block token))))
     (emit-nl this token)
-    (if-let [tws (getf :trailing-white-space)]
+    (when-let [tws (getf :trailing-white-space)]
       (-write (getf :base) tws)))
   (setf :trailing-white-space nil))
 
@@ -380,8 +380,8 @@ exactly equivalent to (pprint *1)."
   ;; a buffered separator before a line break can't leak a trailing space).
   ;; Only whitespace still pending after the last token is force-written.
   (doseq [token tokens]
-    (if-not (= (:type-tag token) :nl-t)
-      (if-let [tws (getf :trailing-white-space)]
+    (when-not (= (:type-tag token) :nl-t)
+      (when-let [tws (getf :trailing-white-space)]
         (-write (getf :base) tws)))
     (write-token this token)
     (setf :trailing-white-space (:trailing-white-space token)))
@@ -445,17 +445,17 @@ exactly equivalent to (pprint *1)."
   (reset! (:intra-block-nl lb) true)
   (reset! (:done-nl lb) true)
   (loop [lb (:parent lb)]
-    (if lb
-      (do (reset! (:done-nl lb) true)
-          (reset! (:intra-block-nl lb) true)
-          (recur (:parent lb))))))
+    (when lb
+      (reset! (:done-nl lb) true)
+      (reset! (:intra-block-nl lb) true)
+      (recur (:parent lb)))))
 
 (defn- emit-nl [this nl]
   (-write (getf :base) (pp-newline))
   (setf :trailing-white-space nil)
   (let [lb (:logical-block nl)
         prefix (:per-line-prefix lb)]
-    (if prefix
+    (when prefix
       (-write (getf :base) prefix))
     (let [istr (apply str (repeat (- @(:indent lb) (count prefix)) \space))]
       (-write (getf :base) istr))
@@ -467,46 +467,45 @@ exactly equivalent to (pprint *1)."
 
 (defn- write-token-string [this tokens]
   (let [[a b] (split-at-newline tokens)]
-    (if a (write-tokens this a false))
-    (if b
+    (when a (write-tokens this a false))
+    (when b
       (let [[section remainder] (get-section b)
-            newl (first b)]
-        (let [do-nl (emit-nl? newl this section (get-sub-section b))
-              result (if do-nl
-                       (do
-                         (emit-nl this newl)
-                         (next b))
-                       b)
-              long-section (not (tokens-fit? this result))
-              result (if long-section
-                       (let [rem2 (write-token-string this section)]
-                         (if (= rem2 section)
-                           (do
-                             (write-tokens this section false)
-                             remainder)
-                           (into [] (concat rem2 remainder))))
-                       result)]
-          result)))))
+            newl (first b)
+            do-nl (emit-nl? newl this section (get-sub-section b))
+            result (if do-nl
+                     (do
+                       (emit-nl this newl)
+                       (next b))
+                     b)
+            long-section (not (tokens-fit? this result))
+            result (if long-section
+                     (let [rem2 (write-token-string this section)]
+                       (if (= rem2 section)
+                         (do
+                           (write-tokens this section false)
+                           remainder)
+                         (into [] (concat rem2 remainder))))
+                     result)]
+        result))))
 
 (defn- write-line [this]
   (loop [buffer (getf :buffer)]
     (setf :buffer (into [] buffer))
-    (if (not (tokens-fit? this buffer))
+    (when (not (tokens-fit? this buffer))
       (let [new-buffer (write-token-string this buffer)]
-        (if-not (identical? buffer new-buffer)
+        (when-not (identical? buffer new-buffer)
           (recur new-buffer))))))
 
 (defn- add-to-buffer [this token]
   (setf :buffer (conj (getf :buffer) token))
-  (if (not (tokens-fit? this (getf :buffer)))
+  (when (not (tokens-fit? this (getf :buffer)))
     (write-line this)))
 
 (defn- write-buffered-output [this]
   (write-line this)
-  (if-let [buf (getf :buffer)]
-    (do
-      (write-tokens this buf true)
-      (setf :buffer []))))
+  (when-let [buf (getf :buffer)]
+    (write-tokens this buf true)
+    (setf :buffer [])))
 
 (defn- write-white-space [this]
   (when-let [tws (getf :trailing-white-space)]
@@ -532,7 +531,7 @@ exactly equivalent to (pprint *1)."
         (doseq [l (next (butlast lines))]
           (-write (getf :base) l)
           (-write (getf :base) (pp-newline))
-          (if prefix
+          (when prefix
             (-write (getf :base) prefix)))
         (setf :buffering :writing)
         (last lines)))))
@@ -606,7 +605,7 @@ exactly equivalent to (pprint *1)."
       (do
         (write-white-space this)
         (when-let [cb (getf :logical-block-callback)] (cb :start))
-        (if prefix
+        (when prefix
           (-write (getf :base) prefix))
         (let [col (get-column (getf :base))]
           (reset! (:start-col lb) col)
@@ -622,7 +621,7 @@ exactly equivalent to (pprint *1)."
     (if (= (getf :mode) :writing)
       (do
         (write-white-space this)
-        (if suffix
+        (when suffix
           (-write (getf :base) suffix))
         (when-let [cb (getf :logical-block-callback)] (cb :end)))
       (let [oldpos (getf :pos)
@@ -705,7 +704,7 @@ exactly equivalent to (pprint *1)."
       (if length-reached
         (-write *out* "...")
         (do
-          (if *current-length* (set! *current-length* (inc *current-length*)))
+          (when *current-length* (set! *current-length* (inc *current-length*)))
           (*print-pprint-dispatch* object))))
     length-reached))
 
@@ -738,9 +737,9 @@ exactly equivalent to (pprint *1)."
             (write-out object))
           (binding [*out* base-writer]
             (pr object)))
-        (if (true? optval)
+        (when (true? optval)
           (clojure.core/print (str sb)))
-        (if (nil? optval)
+        (when (nil? optval)
           (str sb))))))
 
 (defn pprint
@@ -758,7 +757,7 @@ exactly equivalent to (pprint *1)."
    (with-pretty-writer writer
      (binding [*print-pretty* true]
        (write-out object))
-     (if (not (= 0 (get-column *out*)))
+     (when (not (= 0 (get-column *out*)))
        (-write *out* "\n")))))
 
 (defn set-pprint-dispatch [function]
@@ -766,7 +765,7 @@ exactly equivalent to (pprint *1)."
   nil)
 
 (defn- check-enumerated-arg [arg choices]
-  (if-not (choices arg)
+  (when-not (choices arg)
     (throw (Exception. (str "Bad argument: " arg ". It must be one of " choices)))))
 
 (defn- level-exceeded []
@@ -871,7 +870,7 @@ exactly equivalent to (pprint *1)."
           (= raw-val :remaining-arg-count)
           [(count (:rest navigator)) navigator]
 
-          true
+          :else
           [raw-val navigator])]
     [[param [real-param offset]] new-navigator]))
 
@@ -888,9 +887,9 @@ exactly equivalent to (pprint *1)."
 (defn- format-simple-number [n]
   (cond
     (integer? n) (if (= *print-base* 10)
-                   (str n (if *print-radix* "."))
+                   (str n (when *print-radix* "."))
                    (str
-                     (if *print-radix* (or (get special-radix-markers *print-base*) (str "#" *print-base* "r")))
+                     (when *print-radix* (or (get special-radix-markers *print-base*) (str "#" *print-base* "r")))
                      (opt-base-str *print-base* n)))
     :else nil))
 
@@ -956,7 +955,7 @@ exactly equivalent to (pprint *1)."
             signed-str (cond
                          neg (str "-" group-str)
                          (:at params) (str "+" group-str)
-                         true group-str)
+                         :else group-str)
             padded-str (if (< (count signed-str) (:mincol params))
                          (str (apply str (repeat (- (:mincol params) (count signed-str))
                                                  (:padchar params)))
@@ -1013,7 +1012,7 @@ exactly equivalent to (pprint *1)."
 (defn- round-str [m e d w]
   (if (or d w)
     (let [len (count m)
-          w (if w (max 2 w))
+          w (when w (max 2 w))
           round-pos (cond
                       d (+ e d 1)
                       (>= e 0) (max (inc e) (dec w))
@@ -1069,7 +1068,7 @@ exactly equivalent to (pprint *1)."
         add-sign (or (:at params) (neg? arg))
         append-zero (and (not d) (<= (dec (count mantissa)) scaled-exp))
         [rounded-mantissa scaled-exp expanded] (round-str mantissa scaled-exp
-                                                          d (if w (- w (if add-sign 1 0))))
+                                                          d (when w (- w (if add-sign 1 0))))
         fixed-repr (get-fixed rounded-mantissa (if expanded (inc scaled-exp) scaled-exp) d)
         fixed-repr (if (and w d
                             (>= d 1)
@@ -1088,14 +1087,14 @@ exactly equivalent to (pprint *1)."
         (if (and (> full-len w) (:overflowchar params))
           (print (apply str (repeat w (:overflowchar params))))
           (print (str (apply str (repeat (- w full-len) (:padchar params)))
-                      (if add-sign sign)
-                      (if prepend-zero "0")
+                      (when add-sign sign)
+                      (when prepend-zero "0")
                       fixed-repr
-                      (if append-zero "0")))))
-      (print (str (if add-sign sign)
-                  (if prepend-zero "0")
+                      (when append-zero "0")))))
+      (print (str (when add-sign sign)
+                  (when prepend-zero "0")
                   fixed-repr
-                  (if append-zero "0"))))
+                  (when append-zero "0"))))
     navigator))
 
 (defn- dollar-float [params navigator offsets]
@@ -1110,9 +1109,9 @@ exactly equivalent to (pprint *1)."
         full-repr (str (apply str (repeat (- n (.indexOf fixed-repr (int \.))) \0)) fixed-repr)
         full-len (+ (count full-repr) (if add-sign 1 0))]
     (print (str
-             (if (and (:colon params) add-sign) (if (neg? arg) \- \+))
+             (when (and (:colon params) add-sign) (if (neg? arg) \- \+))
              (apply str (repeat (- w full-len) (:padchar params)))
-             (if (and (not (:colon params)) add-sign) (if (neg? arg) \- \+))
+             (when (and (not (:colon params)) add-sign) (if (neg? arg) \- \+))
              full-repr))
     navigator))
 
@@ -1128,7 +1127,7 @@ exactly equivalent to (pprint *1)."
         base-char (bit-and as-int 127)
         meta (bit-and as-int 128)
         special (get special-chars base-char)]
-    (if (> meta 0) (print "Meta-"))
+    (when (> meta 0) (print "Meta-"))
     (print (cond
              special special
              (< base-char 32) (str "Control-" (char (+ base-char 64)))
@@ -1279,7 +1278,7 @@ exactly equivalent to (pprint *1)."
 (defn- check-arg-conditional [params arg-navigator offsets]
   (let [[arg navigator] (next-arg arg-navigator)
         clauses (:clauses params)
-        clause (if arg (first clauses))]
+        clause (when arg (first clauses))]
     (if arg
       (if clause
         (execute-sub-format clause arg-navigator (:base-args params))
@@ -1301,7 +1300,7 @@ exactly equivalent to (pprint *1)."
     (loop [count 0
            args args
            last-pos -1]
-      (if (and (not max-count) (= (:pos args) last-pos) (> count 1))
+      (when (and (not max-count) (= (:pos args) last-pos) (> count 1))
         (throw (Exception. "~{ construct not consuming any arguments: Infinite loop!")))
       (if (or (and (empty? (:rest args))
                    (or (not (:colon (:right-params params))) (> count 0)))
@@ -1342,7 +1341,7 @@ exactly equivalent to (pprint *1)."
     (loop [count 0
            navigator navigator
            last-pos -1]
-      (if (and (not max-count) (= (:pos navigator) last-pos) (> count 1))
+      (when (and (not max-count) (= (:pos navigator) last-pos) (> count 1))
         (throw (Exception. "~@{ construct not consuming any arguments: Infinite loop!")))
       (if (or (and (empty? (:rest navigator))
                    (or (not (:colon (:right-params params))) (> count 0)))
@@ -1426,24 +1425,23 @@ exactly equivalent to (pprint *1)."
         pad (max minpad (quot total-pad slots))
         extra-pad (- total-pad (* pad slots))
         pad-str (apply str (repeat pad (:padchar params)))]
-    (if (and eol-str (> (+ (get-column (:base (deref (.-fields *out*)))) min-remaining result-columns)
-                        max-columns))
+    (when (and eol-str (> (+ (get-column (:base (deref (.-fields *out*)))) min-remaining result-columns)
+                          max-columns))
       (print eol-str))
     (loop [slots slots
            extra-pad extra-pad
            strs strs
            pad-only (or (:colon params)
                         (and (= (count strs) 1) (not (:at params))))]
-      (if (seq strs)
-        (do
-          (print (str (if (not pad-only) (first strs))
-                      (if (or pad-only (next strs) (:at params)) pad-str)
-                      (if (pos? extra-pad) (:padchar params))))
-          (recur
-            (dec slots)
-            (dec extra-pad)
-            (if pad-only strs (next strs))
-            false))))
+      (when (seq strs)
+        (print (str (when (not pad-only) (first strs))
+                    (when (or pad-only (next strs) (:at params)) pad-str)
+                    (when (pos? extra-pad) (:padchar params))))
+        (recur
+          (dec slots)
+          (dec extra-pad)
+          (if pad-only strs (next strs))
+          false)))
     navigator))
 
 ;;----------------------------------------------------------------------
@@ -1459,7 +1457,7 @@ exactly equivalent to (pprint *1)."
 
 (defn fresh-line []
   (if (instance? PrettyWriter *out*)
-    (if (not (= 0 (get-column (:base (deref (.-fields *out*))))))
+    (when (not (= 0 (get-column (:base (deref (.-fields *out*))))))
       (prn))
     (prn)))
 
@@ -1571,13 +1569,12 @@ exactly equivalent to (pprint *1)."
     [:base [nil Long] :mincol [0 Long] :padchar [\space Character] :commachar [\, Character]
      :commainterval [3 Long]]
     #{:at :colon :both} {}
-    (do
-      (cond
-        (first (:base params)) #(format-integer (:base %1) %1 %2 %3)
-        (and (:at params) (:colon params)) format-old-roman
-        (:at params) format-new-roman
-        (:colon params) format-ordinal-english
-        true format-cardinal-english)))
+    (cond
+      (first (:base params)) #(format-integer (:base %1) %1 %2 %3)
+      (and (:at params) (:colon params)) format-old-roman
+      (:at params) format-new-roman
+      (:colon params) format-ordinal-english
+      :else format-cardinal-english))
 
   (\C
     [:char-format [nil Character]]
@@ -1611,7 +1608,7 @@ exactly equivalent to (pprint *1)."
     #{:pretty} {}
     (fn [params arg-navigator offsets]
       (let [cnt (:count params)]
-        (if (pos? cnt) (fresh-line))
+        (when (pos? cnt) (fresh-line))
         (dotimes [i (dec cnt)]
           (prn)))
       arg-navigator))
@@ -1636,7 +1633,7 @@ exactly equivalent to (pprint *1)."
     []
     #{:colon :at} {}
     (fn [params arg-navigator offsets]
-      (if (:at params)
+      (when (:at params)
         (prn))
       arg-navigator))
 
@@ -1693,7 +1690,7 @@ exactly equivalent to (pprint *1)."
       (:at params)
       check-arg-conditional
 
-      true
+      :else
       choice-conditional))
 
   (\; [:min-remaining [nil Long] :max-columns [nil Long]]
@@ -1714,7 +1711,7 @@ exactly equivalent to (pprint *1)."
       (:at params)
       iterate-main-list
 
-      true
+      :else
       iterate-sublist))
 
   (\} [] #{:colon} {} nil)
@@ -1743,7 +1740,7 @@ exactly equivalent to (pprint *1)."
           arg1
           (if (= arg1 0) [exit navigator] navigator)
 
-          true
+          :else
           (if (if (:colon params)
                 (empty? (:rest (:base-args params)))
                 (empty? (:rest navigator)))
@@ -1813,7 +1810,7 @@ exactly equivalent to (pprint *1)."
      (and (= (count p) 1) (contains? #{\v \V} (nth p 0))) :parameter-from-args
      (and (= (count p) 1) (= \# (nth p 0))) :remaining-arg-count
      (and (= (count p) 2) (= \' (nth p 0))) (nth p 1)
-     true (Long/parseLong p))
+     :else (Long/parseLong p))
    offset])
 
 (def ^{:private true} flag-defs {\: :colon, \@ :at})
@@ -1835,20 +1832,20 @@ exactly equivalent to (pprint *1)."
 
 (defn- check-flags [dirdef flags]
   (let [allowed (:flags dirdef)]
-    (if (and (not (:at allowed)) (:at flags))
+    (when (and (not (:at allowed)) (:at flags))
       (format-error (str "\"@\" is an illegal flag for format directive \"" (:directive dirdef) "\"")
                     (nth (:at flags) 1)))
-    (if (and (not (:colon allowed)) (:colon flags))
+    (when (and (not (:colon allowed)) (:colon flags))
       (format-error (str "\":\" is an illegal flag for format directive \"" (:directive dirdef) "\"")
                     (nth (:colon flags) 1)))
-    (if (and (not (:both allowed)) (:at flags) (:colon flags))
+    (when (and (not (:both allowed)) (:at flags) (:colon flags))
       (format-error (str "Cannot combine \"@\" and \":\" flags for format directive \""
                          (:directive dirdef) "\"")
                     (min (nth (:colon flags) 1) (nth (:at flags) 1))))))
 
 (defn- map-params [dirdef params flags offset]
   (check-flags dirdef flags)
-  (if (> (count params) (count (:params dirdef)))
+  (when (> (count params) (count (:params dirdef)))
     (format-error
       (cl-format
         nil
@@ -1857,8 +1854,8 @@ exactly equivalent to (pprint *1)."
       (second (first params))))
   (doall
     (map #(let [val (first %1)]
-            (if (not (or (nil? val) (contains? special-params val)
-                         (instance? (second (second %2)) val)))
+            (when (not (or (nil? val) (contains? special-params val)
+                           (instance? (second (second %2)) val)))
               (format-error (str "Parameter " (name (first %2))
                                  " has bad type in directive \"" (:directive dirdef) "\": "
                                  (class val))
@@ -1875,13 +1872,13 @@ exactly equivalent to (pprint *1)."
   (let [[raw-params [rest offset]] (extract-params s offset)
         [_ [rest offset flags]] (extract-flags rest offset)
         directive (first rest)
-        dirdef (if directive
+        dirdef (when directive
                  (or (get directive-table (first (clojure.string/upper-case (str directive))))
                      (get directive-table directive)))
-        params (if dirdef (map-params dirdef (map translate-param raw-params) flags offset))]
-    (if (not directive)
+        params (when dirdef (map-params dirdef (map translate-param raw-params) flags offset))]
+    (when (not directive)
       (format-error "Format string ended in the middle of a directive" offset))
-    (if (not dirdef)
+    (when (not dirdef)
       (format-error (str "Directive \"" directive "\" is undefined") offset))
     [(->compiled-directive ((:generator-fn dirdef) params offset) dirdef params offset)
      (let [remainder (subs rest 1)
@@ -1933,7 +1930,7 @@ exactly equivalent to (pprint *1)."
             (separator? this)
             [nil [:separator nil nil remainder]]
 
-            true
+            :else
             [this remainder]))))
     remainder))
 
@@ -1964,7 +1961,7 @@ exactly equivalent to (pprint *1)."
                 "The else clause (\"~:;\") is only allowed in the first position for this directive."
                 offset)
 
-              true
+              :else
               (if (= :first (:else bracket-info))
                 [true [(merge-with concat clause-map {:else [clause] :else-params else-params})
                        false remainder]]
@@ -1980,7 +1977,7 @@ exactly equivalent to (pprint *1)."
               (format-error "A separator (\"~;\") is in a bracket type that doesn't support it."
                             offset)
 
-              true
+              :else
               [true [(merge-with concat clause-map {:clauses [clause]})
                      false remainder]]))))
       [{:clauses []} false remainder])))
@@ -2009,7 +2006,7 @@ exactly equivalent to (pprint *1)."
                 (cond
                   (neg? tilde) [(compile-raw-string s offset) ["" (+ offset (count s))]]
                   (zero? tilde) (compile-directive (subs s 1) (inc offset))
-                  true
+                  :else
                   [(compile-raw-string (subs s 0 tilde) offset) [(subs s tilde) (+ tilde offset)]]))))
           [format-str 0])))))
 
@@ -2043,7 +2040,7 @@ exactly equivalent to (pprint *1)."
        (try
          (execute-format format args)
          (finally
-           (if-not (identical? real-stream wrapped-stream)
+           (when-not (identical? real-stream wrapped-stream)
              (-pflush wrapped-stream)))))
      ;; outside the binding, for the same reason as pprint's one-arg form
      (cond
@@ -2096,7 +2093,7 @@ exactly equivalent to (pprint *1)."
           (recur (next alis)))))))
 
 (defn- pprint-list [alis]
-  (if-not (pprint-reader-macro alis)
+  (when-not (pprint-reader-macro alis)
     (pprint-simple-list alis)))
 
 (defn- pprint-vector [avec]
@@ -2239,16 +2236,15 @@ exactly equivalent to (pprint *1)."
 
 ;; the params and body of a defn with a single arity
 (defn- single-defn [alis has-doc-str?]
-  (if (seq alis)
-    (do
-      (if has-doc-str?
-        ((formatter-out " ~_"))
-        ((formatter-out " ~@_")))
-      ((formatter-out "~{~w~^ ~_~}") alis))))
+  (when (seq alis)
+    (if has-doc-str?
+      ((formatter-out " ~_"))
+      ((formatter-out " ~@_")))
+    ((formatter-out "~{~w~^ ~_~}") alis)))
 
 ;; the param and body sublists of a defn with multiple arities
 (defn- multi-defn [alis has-doc-str?]
-  (if (seq alis)
+  (when (seq alis)
     ((formatter-out " ~_~{~w~^ ~_~}") alis)))
 
 (defn- pprint-defn [alis]
@@ -2262,9 +2258,9 @@ exactly equivalent to (pprint *1)."
                              [nil stuff])]
       (pprint-logical-block :prefix "(" :suffix ")"
         ((formatter-out "~w ~1I~@_~w") defn-sym defn-name)
-        (if doc-str
+        (when doc-str
           ((formatter-out " ~_~w") doc-str))
-        (if attr-map
+        (when attr-map
           ((formatter-out " ~_~w") attr-map))
         ;; the multi-defn case works for malformed defns too
         (cond
@@ -2400,7 +2396,7 @@ exactly equivalent to (pprint *1)."
        'struct-map pprint-hold-first, 'ns pprint-ns})))
 
 (defn- pprint-code-list [alis]
-  (if-not (pprint-reader-macro alis)
+  (when-not (pprint-reader-macro alis)
     (if-let [special-form (*code-table* (first alis))]
       (special-form alis)
       (pprint-simple-code-list alis))))

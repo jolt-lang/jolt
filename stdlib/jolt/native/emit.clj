@@ -102,7 +102,7 @@
   (let [n (var-name id)]
     (swap! *decls* assoc n
            (str (ctype t) " " n " = "
-                (if (ast/array-type? t) (str "{0, 0}") "0") ";"))
+                (if (ast/array-type? t) "{0, 0}" "0") ";"))
     n))
 
 (defn- fresh! [t]

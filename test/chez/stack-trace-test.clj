@@ -214,10 +214,10 @@
 (defn- ret-f [x] (ret-g x))
 (defn- ret-host [x] (count x))
 (defn- frame-names [e] (mapv first (own-frames (.getStackTrace e))))
-(let [e (try (do (ret-f 1) (nth [] 3)) (catch Exception x x))]
+(let [e (try (ret-f 1) (nth [] 3) (catch Exception x x))]
   (ok= (frame-names e) []
        "a returned tail call (to a jolt fn) is not a frame of the next host throw"))
-(let [e (try (do (ret-host [1]) (nth [] 3)) (catch Exception x x))]
+(let [e (try (ret-host [1]) (nth [] 3) (catch Exception x x))]
   (ok= (frame-names e) []
        "a returned tail call (to a host fn) is not a frame of the next host throw"))
 (defn- ret-then-throw [] (ret-f 1) (ret-host [1]) (nth [] 3))
@@ -233,7 +233,7 @@
 (let [e (try (tail-host-thrower) (catch Exception x x))]
   (ok= (frame-names e) ["stack_trace_test$tail_host_thrower"]
        "a tail call into a throwing host fn keeps its erased frame"))
-(let [e (try (do (ret-f 1) (tail-host-thrower)) (catch Exception x x))]
+(let [e (try (ret-f 1) (tail-host-thrower) (catch Exception x x))]
   (ok= (frame-names e) ["stack_trace_test$tail_host_thrower"]
        "...after a returned tail call too"))
 (defn- chain-c [v] (nth v 3))

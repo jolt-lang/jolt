@@ -376,7 +376,7 @@
 ;; one name bb of a directive, before or after its &. st is [acc sel b->k].
 (def ^:private destructure-directive-name
   (fn* destructure-directive-name [m st bb kind dnsp req? preamp?]
-    (let* [_ (if (and (not preamp?) (symbol? bb))
+    (let* [_ (when (and (not preamp?) (symbol? bb))
                (throw (new IllegalArgumentException
                         (str "'" bb "' - binding symbols can only appear before '&', use keys after"))))
            a    (nth st 0)
@@ -485,7 +485,7 @@
            defaults-as (get pat :defaults)
            ;; :defaults binds a map of the resolved :or defaults, so it
            ;; requires :or (CLJ-2966).
-           _ (if (and defaults-as (not defaults))
+           _ (when (and defaults-as (not defaults))
                (throw (new IllegalArgumentException "Can't specify :defaults without :or")))
            select (get pat :select)
            as-sym (get pat :as)
