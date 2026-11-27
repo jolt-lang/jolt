@@ -5,7 +5,8 @@
   core arithmetic/cast rewrites. Answers names and forms; never analyzes."
   (:require [jolt.host :refer [resolve-global resolve-class-hint host-class-name?
                                namespace-for ns-shaped-name? late-bound-namespace?
-                               allow-unresolved-vars? compile-ns invoke-rewriter]]
+                               allow-unresolved-vars? compile-ns invoke-rewriter
+                               form-sym? form-sym-name form-sym-meta]]
             [jolt.analyzer.diagnostics :refer [analysis-error]]))
 
 ;; A `.-field` head: `(.-field target)` is field access (the dash signals field
@@ -196,3 +197,36 @@
     (let [r (resolve-global ctx head)]
       (when (= :var (:kind r))
         (f (:ns r) (:name r) form)))))
+
+;; class names that catch everything (the JVM root types); a (catch Throwable e …)
+;; clause matches any thrown value unconditionally.
+(def ^:private catch-all-names #{"Throwable" "java.lang.Throwable" "Object" "java.lang.Object"})
+
+;; The catch clauses as ONE form over the caught value `evar`: a nested-if chain
+;; testing each clause's class in order, re-throwing when none matches.
+(defn catch-dispatch-form [evar catches]
+  (reduce
+    (fn [else cl]
+      (let [cform (nth cl 1)
+            ;; the binding has the caught class, as the JVM's catch local does,
+            ;; so a host call on it resolves (hints.clj node-jclass)
+            bindsym (let [b (nth cl 2) m (form-sym-meta b)]
+                      (if (and (form-sym? cform) (not (and (map? m) (get m :tag))))
+                        (with-meta b (assoc (if (map? m) m {}) :tag cform))
+                        b))
+            bodyf (drop 3 cl)
+            ;; clojure.core-qualified: a ns that excludes (or
+            ;; :only-omits) let/or/instance? and defines its
+            ;; own must still get core's here (jolt#1095).
+            letform (cons 'clojure.core/let (cons (vector bindsym evar) bodyf))
+            fullname (when (form-sym? cform) (form-sym-name cform))
+            catch-all? (or (not (form-sym? cform))
+                           (contains? catch-all-names fullname))]
+        (if catch-all?
+          letform
+          (list 'if (list 'clojure.core/or
+                          (list 'clojure.core/instance? cform evar)
+                          (list 'clojure.core/__catch-broad? fullname evar))
+                letform else))))
+    (list 'throw evar)
+    (reverse catches)))
