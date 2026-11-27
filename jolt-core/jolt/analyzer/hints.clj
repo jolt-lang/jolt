@@ -174,6 +174,21 @@
 (defn sym-tag-class [ctx sym]
   (let [m (form-sym-meta sym)] (when m (tag-class ctx (get m :tag)))))
 (declare node-jclass jvm-type reflect-arg-classes)
+;; A call's types, memoized by the node's identity for one top-level analysis
+;; (analyzer.clj binds it): a call is typed from its arguments' types, asked
+;; once per enclosing call each way (node-jclass, jvm-type, the reflect check),
+;; so nested calls unmemoized cost exponential time in their depth. A node is
+;; only ever typed in the env it was analyzed in.
+(def ^:dynamic *jmemo* nil)
+(defn- memo [k node f]
+  (if-let [m *jmemo*]
+    (let [h (jolt.host/identity-hash node)
+          hit (some #(when (identical? (nth % 0) node) %) (get-in @m [k h]))]
+      (if hit
+        (nth hit 1)
+        (let [v (f)] (vswap! m update-in [k h] (fnil conj []) [node v]) v)))
+    (f)))
+(defn jmemo [] (volatile! {}))
 (def ^:private jvm-prims #{"long" "double" "boolean" "int" "float" "char" "short" "byte"})
 ;; An argument's class as the JVM compiler matches it against a method's
 ;; parameters: node-jclass's, else the type jvm-type gives it ("long" for 1,
@@ -276,8 +291,9 @@
     :quote (when (form-list? (:form node)) "clojure.lang.PersistentList")
     :bigdec "java.math.BigDecimal"
     :do (node-jclass ctx (:ret node) env)
-    :host-call (call-return-class ctx (:target-class node) (:method node) false (:args node) env)
-    :invoke (invoke-jclass ctx node env)
+    :host-call (memo :nj node #(call-return-class ctx (:target-class node) (:method node) false
+                                                (:args node) env))
+    :invoke (memo :nj node #(invoke-jclass ctx node env))
     nil))
 ;; The class a (.method target ...) call's target has: its ^Tag, else what the
 ;; analyzed target node is known to be.
@@ -466,8 +482,8 @@
                                            {:init init :env e :memo (volatile! nil)}))
                              env (:bindings node)))
       :coerce (if-let [c (:cast-fn node)] (get cast-jtypes c :unknown) (jvm-type ctx (:expr node) env))
-      :invoke (or (node-jclass ctx node env) (invoke-jtype ctx node env))
-      :host-call (host-call-jtype ctx node env)
+      :invoke (memo :jt node #(or (node-jclass ctx node env) (invoke-jtype ctx node env)))
+      :host-call (memo :jt node #(host-call-jtype ctx node env))
       :recur :recur
       ;; a loop or try as an argument compiles as a call to a fn: an Object
       (:loop :try :fn :throw) nil

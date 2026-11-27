@@ -50,7 +50,7 @@
             [jolt.analyzer.hints :refer [jvm-boolean-prim? jvm-non-boolean-class hint-of
                                          init-proves-hint add-hint tag->nkind ahint-of
                                          sym-tag-class init-jclass add-jclass
-                                         binding-jlocal add-jlocal loop-body note-recur!
+                                         binding-jlocal add-jlocal loop-body note-recur! *jmemo* jmemo
                                          host-call-arg-casts static-invoke host-call-target-class
                                          with-ret-nhint fi-tag-class fi-adapt-form
                                          parse-params strip-arglist-meta arglist-ret-nkind arglist-type-method? arglist-meta
@@ -1811,7 +1811,7 @@
    ;; :compile-syntax-check, not the outer macro's run.
    (binding [*positioned-form-box* (or *positioned-form-box* (atom nil))
              *expansion-box* (or *expansion-box* (atom nil))
-             *macro-run-box* (atom nil)]
+             *macro-run-box* (atom nil) *jmemo* (or *jmemo* (jmemo))]
      (try
        ;; ` is a reader macro in Clojure, so a form is already past its backticks
        ;; by the time anything looks at it. jolt reads one to a marker and lowers
