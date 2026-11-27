@@ -391,8 +391,9 @@
     ((jrec-retired? x) (jolt-retired-class-token (jrec-desc x)))
     ((and (procedure? x) (procedure-class-token-hook x)))
     (else
+     ;; by the name's identity (class-model.ss jolt-class-for/eq)
      (let ((n (jolt-class-name x)))
-       (if (jolt-nil? n) jolt-nil (jolt-class-for n))))))
+       (if (jolt-nil? n) jolt-nil (jolt-class-for/eq n))))))
 
 (def-var! "clojure.core" "class" jolt-class)
 

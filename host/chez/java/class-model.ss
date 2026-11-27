@@ -201,6 +201,29 @@
           (set-box! site (cons epoch tok))
           tok))))
 
+;; (class x)'s interner: jolt-class-for keyed by the IDENTITY of the name string,
+;; in front of its string-keyed table. The class-name walk answers each type
+;; with the same string object every time (a literal, or a tag held by the
+;; type's descriptor), so an eq? probe finds it without hashing and comparing
+;; the characters -- that hash was most of what (class x) cost: 100 ns for a
+;; java.io.File or a Long, 40 with this. Only (class x) asks it: the analyzer
+;; and resolve hand jolt-class-for names they just built, which would only
+;; churn this table. An entry carries the drop epoch it was made in, so a token
+;; the hook below drops is never served from here. Ephemeron-keyed: a name's
+;; own token may hold that string as its canonical name. Reads are lock-free
+;; like every runtime table; inserts take their own mutex.
+(define jolt-class-for-eq-tbl (make-ephemeron-eq-hashtable))
+(define jolt-class-for-eq-mu (make-mutex))
+(define (jolt-class-for/eq name)
+  (let ((e (hashtable-ref jolt-class-for-eq-tbl name #f)))
+    (if (and e (fx= (car e) jolt-class-for-drop-epoch))
+        (cdr e)
+        (let* ((epoch jolt-class-for-drop-epoch)
+               (tok (jolt-class-for name)))
+          (jolt-with-mutex jolt-class-for-eq-mu
+            (hashtable-set! jolt-class-for-eq-tbl name (cons epoch tok)))
+          tok))))
+
 ;; Long/TYPE and its eight siblings are the primitive CLASSES, not their names.
 ;; They are declared beside the rest of each wrapper's statics
 ;; (host-static-methods.ss), which loads before the interner exists, so they are
