@@ -188,9 +188,8 @@
                            (str text'
                              (str/join (repeat (dec (count lines)) \newline))
                              (str/join (repeat (count (last lines)) \space))))]
-              (do
-                (.append patched text'')
-                (recur)))
+              (.append patched text'')
+              (recur))
             (do
               (.append patched text)
               (recur)))

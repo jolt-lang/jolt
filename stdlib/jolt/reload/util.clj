@@ -77,9 +77,6 @@
     m
     (partition 2 kvs)))
 
-(defn some-map [& kvs]
-  (apply assoc-some nil kvs))
-
 (defn some-set [& vals]
   (not-empty
     (set (filter some? vals))))

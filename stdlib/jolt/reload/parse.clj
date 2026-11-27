@@ -196,6 +196,6 @@
        (persistent! res)
        (let [ends  (reduce into #{} (vals deps))
              roots (->> (keys deps) (remove ends) (sort))]
-         (if (not (empty? roots))
+         (if (seq roots)
            (recur (reduce conj! res roots) (reduce dissoc deps roots))
            (on-cycle deps all-deps)))))))

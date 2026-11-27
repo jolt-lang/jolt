@@ -7,7 +7,7 @@
     [jolt.reload.parse :as parse]
     [jolt.reload.util :as util]
     [clojure.java.io :as io]
-    [clojure.test :refer [is deftest testing use-fixtures]])
+    [clojure.test :refer [is deftest testing]])
   (:import
     [java.io PushbackReader StringReader StringWriter]))
 

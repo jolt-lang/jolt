@@ -3,8 +3,7 @@
 ;; jolt.reload; changes are marked "jolt:".
 (ns jolt.reload.keep-test
   (:require
-    [clojure.string :as str]
-    [clojure.test :refer [is are deftest testing use-fixtures]]
+    [clojure.test :refer [is deftest use-fixtures]]
     [jolt.reload :as reload]
     [jolt.reload.keep :as keep]
     [jolt.reload.test-util :as tu]))
