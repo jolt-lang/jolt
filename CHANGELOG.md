@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`jolt.reload`: clj-reload, built in.** A port of Nikita Prokopov's
+  [clj-reload](https://github.com/tonsky/clj-reload) 1.0.0 (MIT). `init` names
+  the source dirs; `reload` unloads every namespace whose file changed, and
+  everything that depends on it, then loads them back in dependency order.
+  `defonce` and `^:jolt.reload/keep` vars survive a reload (deftype, defrecord
+  and defprotocol included), `^:jolt.reload/no-reload` and `no-unload` opt a
+  namespace out, and the upstream `:clj-reload/...` spellings work too. With no
+  `init`, it watches every source dir on the class path
+  (`JOLT_RELOAD_AUTO_INIT=false` turns that off). clj-reload's own parse, core
+  and keep suites run as a smoke gate: 48 tests, all passing.
+
 - **`java.util.StringJoiner`.** `add`, `toString`, `length`, `setEmptyValue`
   and `merge`, with the JDK's answers for nil parts, empty values and merging.
   `add` and `length` are O(1) and `toString` copies each part once, so a
@@ -215,6 +226,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   million doubles and longs is identical to the JVM's.
 
 ### Fixed
+
+- **The reader honors `*reader-resolver*` and `*suppress-read*`.** With a
+  `clojure.lang.LispReader$Resolver` bound, `::k`, `::alias/k`, `#::{}` and
+  `#::alias{}` ask it for their namespace, as on the JVM, so a tool can read
+  source whose aliases were never loaded; an alias it answers nil for is an
+  invalid token. Under `*suppress-read*` a record literal reads as a
+  `TaggedLiteral` instead of being refused when `*read-eval*` is false.
 
 - Negative integer constants past the fixnum range keep their value in a `jolt
   build` binary: `-1152921504606846977` printed as `-17293822569102704639N`

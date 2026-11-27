@@ -2223,6 +2223,22 @@ else
   fails=$((fails + 1))
 fi
 
+# jolt.reload — the clj-reload port, running clj-reload's own parse, core and
+# keep suites. They rewrite fixture files and restore them, so they run from a
+# scratch copy of test/chez/reload with that copy as the working directory.
+reload_dir="$(mktemp -d)"
+cp -R test/chez/reload/. "$reload_dir"
+reload_jolt="$jolt_timeout $(cd "$(dirname "$jolt_bin")" && pwd)/$(basename "$jolt_bin")"
+reload_out="$(cd "$reload_dir" && JOLT_PWD="$reload_dir" JOLT_RELOAD_AUTO_INIT=false $reload_jolt run run.clj 2>&1)"
+if printf '%s' "$reload_out" | grep -q 'RELOAD OK'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: jolt.reload"
+  printf '%s\n' "$reload_out" | grep -E 'FAIL|ERROR|expected|actual' | head -8 | sed 's/^/    /'
+  fails=$((fails + 1))
+fi
+rm -rf "$reload_dir"
+
 # jolt.line-editor — the interactive REPL's editing model, driven without a
 # terminal: parinfer-balanced typing and deleting, the Enter rule, newline
 # indentation, key decoding and layout. The file self-checks.
