@@ -144,14 +144,8 @@
 ;; seq.ss: floorMod is modulo with Java's zero message, floorDiv needs floor semantics, abs is the
 ;; generic one there too.
 (%eval-fn (define (jolt-l-abs a) (let ((r (abs a))) (if (eqv? r 9223372036854775808) (- r) r))))
-;; the transcendentals are fdlibm's (fdlibm.ss), as seq.ss's jolt-fl-* open-code
-(%eval-fn (define (jolt-fl-pow a b) (fdlibm-pow a b)))
-(%eval-fn (define (jolt-fl-sin x) (fdlibm-sin x)))
-(%eval-fn (define (jolt-fl-cos x) (fdlibm-cos x)))
-(%eval-fn (define (jolt-fl-log x) (fdlibm-log x)))
-(%eval-fn (define (jolt-fl-exp x) (fdlibm-exp x)))
-(%eval-fn (define (jolt-fl-atan x) (fdlibm-atan x)))
-(%eval-fn (define (jolt-fl-atan2 y x) (fdlibm-atan2 y x)))
+(%eval-fn (define (jolt-fl-pow a b)
+            (if (or (nan? b) (and (infinite? b) (fl= (flabs a) 1.0))) +nan.0 (flexpt a b))))
 (%eval-fn (define (jolt-floor-quotient a b)
             (when (eqv? b 0) (jolt-l-div0-throw))
             (let ((q (quotient a b)))

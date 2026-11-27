@@ -1781,33 +1781,15 @@
 (define-syntax jolt-l-abs
   (syntax-rules () ((_ a) (let ((r (abs a)))
                             (if (eqv? r 9223372036854775808) -9223372036854775808 r)))))
-;; Math's transcendentals over proven doubles: StrictMath's fdlibm
-;; (java/fdlibm.ss), not the host libm (flsin, flexpt, ...), whose special
-;; cases and last digits are not Java's. The common case (sin and cos inside
-;; pi/4, log of a normal, exp in range, atan below 2^66, atan2 over 1.0, pow
-;; squaring) is open-coded at the call so its flonums stay unboxed; the rest
-;; calls the procedure.
+;; Math.pow over proven doubles. Java's pow is not C's: a NaN exponent is NaN
+;; even for a base of 1.0, and so is a base of magnitude 1.0 to an infinite
+;; power, where flexpt (C's pow) answers 1.0. Every other special case agrees.
 (define-syntax jolt-fl-pow
-  (syntax-rules () ((_ ea eb) (let ((a ea) (b eb)) (if (fl= b 2.0) (fl* a a) (fdlibm-pow a b))))))
-(define-syntax jolt-fl-sin
   (syntax-rules ()
-    ((_ e) (let ((x e)) (if (fx<= (fdl-ix x) #x3fe921fb) (fdl-ksin x 0.0 0) (fdlibm-sin x))))))
-(define-syntax jolt-fl-cos
-  (syntax-rules ()
-    ((_ e) (let ((x e)) (if (fx<= (fdl-ix x) #x3fe921fb) (fdl-kcos x 0.0) (fdlibm-cos x))))))
-(define-syntax jolt-fl-log
-  (syntax-rules ()
-    ((_ e) (let* ((x e) (hx (fdl-hi x)))
-             (if (and (fx>= hx #x00100000) (fx< hx #x7ff00000)) (fdl-log-body x hx 0) (fdlibm-log x))))))
-(define-syntax jolt-fl-exp
-  (syntax-rules ()
-    ((_ e) (let* ((x e) (hx (fdl-ix x))) (if (fx< hx #x40862E42) (fdl-exp-body x hx) (fdlibm-exp x))))))
-(define-syntax jolt-fl-atan
-  (syntax-rules ()
-    ((_ e) (let* ((x e) (ix (fdl-ix x))) (if (fx< ix #x44100000) (fdl-atan-body x ix) (fdlibm-atan x))))))
-(define-syntax jolt-fl-atan2
-  (syntax-rules ()
-    ((_ ey ex) (let ((y ey) (x ex)) (if (fl= x 1.0) (jolt-fl-atan y) (fdlibm-atan2 y x))))))
+    ((_ ea eb) (let ((a ea) (b eb))
+                 (if (or (nan? b) (and (infinite? b) (fl= (flabs a) 1.0)))
+                     +nan.0
+                     (flexpt a b))))))
 (define-syntax jolt-l-inc (syntax-rules () ((_ a) (jolt-l-checked (+ a 1)))))
 (define-syntax jolt-l-dec (syntax-rules () ((_ a) (jolt-l-checked (- a 1)))))
 

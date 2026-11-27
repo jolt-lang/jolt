@@ -1259,6 +1259,16 @@
 (register-method-params! "java.lang.Throwable" "addSuppressed" '("java.lang.Throwable"))
 (register-method-params! "java.lang.Throwable" "initCause" '("java.lang.Throwable") "java.lang.Throwable")
 (register-method-params! "java.lang.Object" "toString" '() "java.lang.String")
+;; StringBuilder/StringBuffer append, every overload JDK 21 has, so a call the
+;; JVM compiler finds ambiguous ((.append sb (byte 97)) fits int and long) is
+;; refused here too
+(for-each
+ (lambda (cls)
+   (for-each (lambda (ps) (register-method-params! cls "append" ps cls))
+             '(("java.lang.Object") ("java.lang.String") ("java.lang.StringBuffer")
+               ("java.lang.CharSequence") ("java.lang.CharSequence" "int" "int") ("[C")
+               ("[C" "int" "int") ("boolean") ("char") ("int") ("long") ("float") ("double"))))
+ '("java.lang.StringBuilder" "java.lang.StringBuffer"))
 ;; compareTo on the Comparables whose parameter is their own class
 (for-each (lambda (c) (register-method-params! c "compareTo" (list c)))
           '("java.lang.Long" "java.lang.Double" "java.lang.Float" "java.lang.String"
@@ -1395,6 +1405,9 @@
       ("divideExact" ("int" "int")) ("floorDivExact" ("int" "int"))
       ("ceilDivExact" ("int" "int")) ("floorDiv" ("int" "int")) ("ceilDiv" ("int" "int")))))
  '("java.lang.Math" "java.lang.StrictMath"))
+;; System's clocks are primitive longs: (Math/round (System/currentTimeMillis))
+;; fits no overload, as on the JVM
+(register-static-rows! "java.lang.System" '(("currentTimeMillis" "J") ("nanoTime" "J")))
 ;; the boxed numbers' parsers, and Integer/valueOf
 (register-static-rows! "java.lang.Integer" '(("parseInt" "IS" "ISI")))
 (register-static-rows! "java.lang.Long" '(("parseLong" "JS" "JSI")))

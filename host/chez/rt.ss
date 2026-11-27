@@ -3782,7 +3782,6 @@
 (load "host/chez/java/class-enum.ss")
 ;; clojure.math and the IEEE 754 bit patterns (dbl->bits, flt->bits, ...).
 ;; Self-contained; ahead of byte-buffer.ss, which encodes floats with them.
-(load "host/chez/java/fdlibm.ss")              ; StrictMath's libm, which math.ss answers with
 (load "host/chez/java/math.ss")
 (load "host/chez/java/math-int.ss")          ; the integer statics, fma, clamp, and StrictMath's
 (load "host/chez/java/byte-buffer.ss")          ; java.nio.ByteBuffer over a byte-array

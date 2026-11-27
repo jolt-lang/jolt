@@ -409,12 +409,17 @@
         (cond st (tag-jtype ctx st)
               (or (nil? vt) (= vt "Object")) nil
               :else :unknown)))))
+;; (Class/member) with no arguments: the field's or no-arg method's type, a
+;; primitive included ((System/currentTimeMillis) is a long)
+(defn- static-member-jtype [ctx args]
+  (let [[c m] (map :val args) cls (when (and (string? c) (string? m)) (tag-class ctx c))]
+    (if cls (method-jtype cls m true []) :unknown)))
 (defn- invoke-jtype [ctx node env]
   (let [f (:fn node) args (:args node)]
     (case (:op f)
-      :var (if (= "clojure.core" (str (:ns f)))
-             (core-invoke-jtype ctx node (str (:name f)) args env)
-             (var-invoke-jtype ctx f (count args)))
+      :var (cond (static-member-call? f args) (static-member-jtype ctx args)
+                 (= "clojure.core" (str (:ns f))) (core-invoke-jtype ctx node (str (:name f)) args env)
+                 :else (var-invoke-jtype ctx f (count args)))
       :host-static (let [cls (tag-class ctx (:class f))]
                      (if cls (method-jtype cls (:member f) true (args-jtypes ctx args env)) :unknown))
       ;; a local, a keyword, a fn: an InvokeExpr with no tag

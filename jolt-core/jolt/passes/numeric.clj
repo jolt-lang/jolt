@@ -37,13 +37,12 @@
 ;; its "No matching method" miss: without the arity, (Math/floor 4.5 1) lowered
 ;; to (flfloor 4.5 1.0) and failed Chez's compile-time arity check instead. (Chez
 ;; flatan and fllog take a second argument; Math/atan and Math/log do not.)
-;; The transcendentals are StrictMath's fdlibm (host/chez/java/fdlibm.ss), not
-;; the host libm's digits: fdlibm-* procedures, or jolt-fl-* (host/chez/seq.ss)
-;; where the common case is open-coded.
+;; pow is jolt-fl-pow (host/chez/seq.ss), flexpt behind the two special cases
+;; where Java's pow and C's disagree.
 (def ^:private math-fl-ops
-  {"sqrt" ["flsqrt" 1] "sin" ["jolt-fl-sin" 1] "cos" ["jolt-fl-cos" 1] "tan" ["fdlibm-tan" 1]
-   "asin" ["fdlibm-asin" 1] "acos" ["fdlibm-acos" 1] "atan" ["jolt-fl-atan" 1] "atan2" ["jolt-fl-atan2" 2]
-   "exp" ["jolt-fl-exp" 1] "log" ["jolt-fl-log" 1] "floor" ["flfloor" 1] "ceil" ["flceiling" 1]
+  {"sqrt" ["flsqrt" 1] "sin" ["flsin" 1] "cos" ["flcos" 1] "tan" ["fltan" 1]
+   "asin" ["flasin" 1] "acos" ["flacos" 1] "atan" ["flatan" 1] "atan2" ["flatan" 2]
+   "exp" ["flexp" 1] "log" ["fllog" 1] "floor" ["flfloor" 1] "ceil" ["flceiling" 1]
    "pow" ["jolt-fl-pow" 2] "abs" ["flabs" 1]})
 
 ;; java.lang.Math members that are integer-in/integer-out on the JVM, as

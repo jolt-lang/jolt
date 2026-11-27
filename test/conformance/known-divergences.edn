@@ -1935,20 +1935,30 @@
            :jvm "\"integer overflow\""
            :jolt "2147483648"}
    :note "A call the JVM compiles against long arguments (literals, ^long locals) takes the long overload there too and agrees. Reflection over boxed Longs takes the overload Class.getMethods lists first where two fit, as jolt does from the order it records for JDK 21: addExact(long, long), so (Math/addExact (identity Long/MAX_VALUE) (identity 1)) is long overflow on both. getMethods' order is unspecified, so another JDK build may list the int one first."}
-  ;; Math.sin and Math.cos are HotSpot intrinsics whose digits are the CPU's
-  ;; stub's, not StrictMath's: aarch64 and x86-64 each have their own (and
-  ;; x86-64's also covers tan, exp, log, log10 and pow). jolt answers
-  ;; StrictMath's fdlibm digits, the one answer the spec makes deterministic, so
-  ;; Math/sin and StrictMath/sin agree here and differ from the JVM's in the last
-  ;; digit on a few inputs in a hundred.
-  {:category :host-model
-   :behavior "(Math/sin 206.1958268488095), and Math/cos, where the JVM's intrinsic and StrictMath differ"
-   :jvm "-0.9124729837463843 (JDK 21 on aarch64; x86-64's intrinsic has its own digits)"
-   :jolt "-0.9124729837463844, StrictMath's"
-   :check {:expr "[(Math/sin 206.1958268488095) (StrictMath/sin 206.1958268488095)]"
-           :jvm "[-0.9124729837463843 -0.9124729837463844]"
-           :jolt "[-0.9124729837463844 -0.9124729837463844]"}
-   :note "Every other Math transcendental delegates to StrictMath on JDK 21 aarch64 and matches it bit for bit here (sweep of 100k inputs per method)."}
+  ;; A BigInt inside the long range is the same fixnum as a long here, so Math's
+  ;; long overloads take it; the JVM's Reflector finds no overload for a BigInt.
+  {:category :integer-box-model
+   :behavior "(Math/abs 2N)"
+   :jvm "IllegalArgumentException \"No matching method abs found taking 1 args\""
+   :jolt "2"
+   :check {:expr "(try (Math/abs 2N) (catch IllegalArgumentException e :iae))"
+           :jvm ":iae"
+           :jolt "2"}
+   :note "A BigInt past the long range is a bignum and is refused as on the JVM."}
+  ;; jolt computes java.lang.Math's transcendentals with the platform's libm (a
+  ;; Chez flonum op or the C call behind it), not fdlibm. JDK 21's StrictMath is
+  ;; fdlibm, and its Math is fdlibm too except where HotSpot substitutes a
+  ;; per-CPU intrinsic (sin, cos on aarch64; sin, cos, tan, exp, log, log10, pow
+  ;; on x86-64). The libm's last digit differs from both on a few inputs in a
+  ;; thousand, and which inputs depends on the platform's libm, so no one
+  ;; expression has a fixed answer on every host.
+  {:category :numeric-model
+   :behavior "the last digit of Math/StrictMath sin, cos, tan, asin, acos, atan, atan2, sinh, cosh, tanh, exp, expm1, log, log1p, pow and hypot (and clojure.math's, which are the same)"
+   :jvm "StrictMath's fdlibm digits, or the HotSpot intrinsic's for Math where there is one, e.g. (Math/sinh 2.0) is 3.626860407847019"
+   :jolt "the platform libm's digits, e.g. (Math/sinh 2.0) is 3.6268604078470186 with macOS's libm"
+   :check :prose
+   :why "the jolt side is the host libm's answer, which differs between macOS, glibc, musl and Windows; the JVM side differs between CPUs for the intrinsics"
+   :note "Chosen for speed: an fdlibm port in Scheme made Math calls 1.3x to 20x slower. sqrt, cbrt, log10, IEEEremainder, toRadians and toDegrees match JDK 21 bit for bit."}
 ]
  :entries
  [;; sorted-map/sorted-set are a B+tree, not PersistentTreeMap's red-black tree,

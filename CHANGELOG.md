@@ -223,12 +223,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `java.lang.Math`'s transcendentals answer StrictMath's fdlibm digits instead
-  of the host libm's, which were a last digit off on a few inputs in a
-  thousand (sinh, tan, hypot, exp, log, pow, atan2 and the rest). A sweep of
-  100k inputs per method matches JDK 21 bit for bit, except `sin` and `cos`,
-  whose JVM digits come from a CPU-specific intrinsic (known-divergences.edn).
-  `toRadians` and `toDegrees` multiply by one rounded constant as the JDK does.
+- `Math/toRadians` and `Math/toDegrees` multiply by one rounded constant, as
+  the JDK does, instead of rounding twice through pi and 180.
 
 - An untyped `Math` call picks its overload as the Reflector does: Floats
   widen to Doubles when no float overload fits (`(Math/nextAfter x y)` over two
@@ -237,6 +233,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wraps or overflows at 32 bits (`(Math/abs (int -2147483648))`,
   `(Math/addExact (int a) (int b))`), and `Math/abs` and `Math/floorDiv` of
   `Long/MIN_VALUE` wrap instead of answering a BigInt.
+
+- `(.append sb (byte 97))` is refused as ambiguous between `append(int)` and
+  `append(long)`, as the JVM compiler refuses it, and `System/currentTimeMillis`
+  and `System/nanoTime` are primitive longs, so `(Math/round (System/currentTimeMillis))`
+  finds no overload, as on the JVM.
 
 - `Long/valueOf`, `Double/valueOf` and `Float/valueOf` of an untyped argument
   refuse what the JVM's Reflector refuses: `((fn [x] (Double/valueOf x)) 2)`
