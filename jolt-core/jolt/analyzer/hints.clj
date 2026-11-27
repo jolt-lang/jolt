@@ -501,6 +501,18 @@
   (let [[target cell] (:jloop env)]
     (when (and cell (= target (:recur env)))
       (vswap! cell conj (fn [] (mapv #(jvm-type ctx % env) args))))))
+;; The candidates some recur passes a mismatched type for, added to BOXED: one
+;; it cannot type stays :unknown, any other mismatch boxes it as a Number.
+(defn- recur-mismatches [boxed cands recur-types]
+  (reduce (fn [m ts]
+            (reduce (fn [m [i nm p]]
+                      (let [t (nth ts i)]
+                        (cond (contains? m nm) m
+                              (keyword? t) (assoc m nm :unknown)
+                              (contains? (recur-fits p) t) m
+                              :else (assoc m nm "java.lang.Number"))))
+                    m cands))
+          boxed recur-types))
 (defn loop-body [ctx names env analyze]
   (let [cands (keep-indexed
                (fn [i nm]
@@ -514,17 +526,7 @@
               e (reduce (fn [e [_ nm p]] (add-jlocal e nm (or (get boxed nm) {:tag p :seen seen})))
                         (assoc env :jloop [(:recur env) recurs]) cands)
               node (analyze e)
-              m (if @seen
-                  (reduce (fn [m ts]
-                            (reduce (fn [m [i nm p]]
-                                      (let [t (nth ts i)]
-                                        (cond (contains? m nm) m
-                                              (keyword? t) (assoc m nm :unknown)
-                                              (contains? (recur-fits p) t) m
-                                              :else (assoc m nm "java.lang.Number"))))
-                                    m cands))
-                          boxed (map #(%) @recurs))
-                  boxed)]
+              m (if @seen (recur-mismatches boxed cands (map #(%) @recurs)) boxed)]
           (if (= m boxed) node (recur m)))))))
 
 ;; The resolved record ctor-key ("ns/->Name") for a ^Type param hint, or nil.
