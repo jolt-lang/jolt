@@ -24,7 +24,8 @@
 
   Helpers: new-socket, set-listener-reuse!, set-dual-stack!, set-int-option!,
   set-timeout!, pending-error, close-on-exec!, set-blocking!, available,
-  make-sockaddr, alloc-sockaddr, sockaddr-family, sockaddr-ip, sockaddr-port,
+  make-sockaddr, make-sockaddr-un, sockaddr-un-path, local-path,
+  alloc-sockaddr, sockaddr-family, sockaddr-ip, sockaddr-port,
   sockaddr-scope-id, local-address, peer-address, resolve-addrs, pollfd
   helpers and poll-one, error classification and messages, host-name,
   numeric-address?, reverse-lookup, interface-index, interface-addresses.
@@ -63,6 +64,10 @@
   [os]
   (let [mac? (= os :macos) win? (= os :windows) bsd? (or mac? win?)]
     {:af-inet        2
+     ;; AF_UNIX/AF_LOCAL, and the size of sockaddr_un's sun_path: 108 on Linux
+     ;; and Windows 10+ (afunix.h), 104 on macOS
+     :af-unix        1
+     :sun-path-size  (if mac? 104 108)
      :af-inet6       (case os :macos 30 :windows 23 10)
      :sock-stream    1
      ;; or'd into socket()'s type (and accept4's flags) for an fd that is
@@ -138,6 +143,8 @@
 
 (def af-inet        (:af-inet consts))
 (def af-inet6       (:af-inet6 consts))
+(def af-unix        (:af-unix consts))
+(def sun-path-size  (:sun-path-size consts))
 (def sock-stream    (:sock-stream consts))
 (def sock-cloexec   (:sock-cloexec consts))
 (def sol-socket     (:sol-socket consts))
@@ -492,7 +499,8 @@
   (not windows?))
 
 (defn new-socket
-  "A new stream socket of family (af-inet or af-inet6), or throws IOException.
+  "A new stream socket of family (af-inet, af-inet6 or af-unix), or throws
+  IOException.
   Initializes Winsock first. The fd is close-on-exec, and on macOS it carries
   SO_NOSIGPIPE, so a send to a peer that has gone raises an error rather than
   the signal that would end the process. Linux suppresses that per send
@@ -603,6 +611,55 @@
   []
   (let [sa (ffi/alloc sockaddr-storage-size)]
     [sa (int-cell sockaddr-storage-size)]))
+
+;; sockaddr_un: the same header as the inet families (a length byte then a
+;; family byte on macOS, a 16-bit family elsewhere), then sun_path, a
+;; NUL-terminated path in sun-path-size bytes. Linux's abstract namespace (a
+;; sun_path starting with NUL) is not written or read here, as the JDK does not
+;; have it either: a path is a filesystem name.
+
+(defn- utf8-bytes [s] (.getBytes (str s) "UTF-8"))
+
+(defn make-sockaddr-un
+  "A freshly allocated sockaddr_un for the filesystem path, as [sa len], or nil
+  when the path's UTF-8 bytes do not fit sun_path with the terminating NUL. len is the family header plus the path and its NUL,
+  which is what bind and connect want. The caller frees sa."
+  [path]
+  (let [bs (utf8-bytes path) n (alength bs)]
+    (when (< n sun-path-size)
+      (let [size (+ 2 sun-path-size)
+            len  (+ 2 n 1)
+            sa   (ffi/alloc size)]
+        (dotimes [i size] (ffi/write sa :uint8 0 i))
+        (write-header! sa af-unix len)
+        (dotimes [i n] (ffi/write sa :uint8 (bit-and (aget bs i) 0xff) (+ 2 i)))
+        [sa len]))))
+
+(defn sockaddr-un-path
+  "The path in a sockaddr_un that getsockname, getpeername or accept filled in,
+  len being the length they answered. \"\" for an unnamed socket: an unbound
+  client, or the peer of an accepted connection."
+  [sa len]
+  (let [end (min (+ 2 sun-path-size) (max 2 len))
+        bs  (loop [i 2 acc []]
+              (if (< i end)
+                (let [b (ffi/read sa :uint8 i)]
+                  (if (zero? b) acc (recur (inc i) (conj acc b))))
+                acc))]
+    (String. (byte-array (map unchecked-byte bs)) "UTF-8")))
+
+(defn- named-path [f fd]
+  (let [[sa lenp] (alloc-sockaddr)]
+    (try
+      (let [[r _] (f fd sa lenp)]
+        (when-not (neg? r)
+          (sockaddr-un-path sa (ffi/read lenp :int 0))))
+      (finally (ffi/free sa) (ffi/free lenp)))))
+
+(defn local-path
+  "The path a unix-domain socket fd is bound to, \"\" when unnamed, or nil when
+  getsockname fails."
+  [fd] (named-path c-getsockname fd))
 
 (defn- named-address [f fd]
   (let [[sa lenp] (alloc-sockaddr)]

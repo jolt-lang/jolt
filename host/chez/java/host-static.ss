@@ -1704,7 +1704,9 @@
               "java.net.Inet6Address" "java.net.InterfaceAddress"
               "java.net.NetworkInterface" "java.net.Socket"
               "java.net.ServerSocket" "java.net.InetSocketAddress"
-              "java.net.StandardSocketOptions"))
+              "java.net.StandardSocketOptions" "java.net.UnixDomainSocketAddress"
+              "java.nio.channels.SocketChannel" "java.nio.channels.ServerSocketChannel"
+              "java.nio.channels.Channels"))
            (box #f))))
 (define lib-class-providers core-class-providers)
 

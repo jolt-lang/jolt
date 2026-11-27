@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Unix-domain sockets and NIO socket channels** (#1911).
+  `java.net.UnixDomainSocketAddress`, `java.net.StandardProtocolFamily`,
+  `java.nio.channels.ServerSocketChannel` and `SocketChannel` (`open`, `bind`,
+  `accept`, `connect`, `read`/`write` of a `ByteBuffer`, `shutdownInput`/
+  `shutdownOutput`, local and remote addresses), and `Channels/newInputStream`
+  and `newOutputStream` over a socket channel, so `io/reader` and `io/writer`
+  take them. Channels work over `AF_UNIX`, `AF_INET` and `AF_INET6` and park a
+  fiber like a `Socket` does. Semantics follow the JDK: binding a path that
+  exists throws `BindException`, closing a listener leaves its path, a path
+  over `sun_path` (108 bytes on Linux, 104 on macOS) throws "Unix domain path
+  too long", and Linux's abstract namespace is not supported. Channels are
+  blocking only: there is no `Selector`, so `configureBlocking(false)` throws.
+  `jolt.socket.native` gains `af-unix`, `make-sockaddr-un`, `sockaddr-un-path`
+  and `local-path`.
+
+### Fixed
+
+- **`Class/forName` finds a class a stdlib provider declares** before anything
+  has loaded it: `(Class/forName "java.net.ServerSocket")` threw
+  `ClassNotFoundException` until `jolt.socket` was required, so a capability
+  probe reported the class missing.
+
 ## [0.8.31] - 2026-11-27
 
 `jolt.native` regions now always run as native code: outside a `jolt build`
