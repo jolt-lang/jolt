@@ -22,13 +22,19 @@
 (def ^:dynamic *instances* nil)
 (defn- next-id [] (swap! *ids* inc))
 
+(def error-data
+  "The ex-data every native region compile error carries. The kind marks it as
+  the program's mistake, so the analyzer reports it under its own name rather
+  than as :analyze/internal-failure, a fault in the compiler."
+  {:jolt.native/error true :jolt.error/kind :native/invalid-region})
+
 (defn fail
   "Raise a region compile error pointing at form."
   [form msg & {:as data}]
   (let [m (meta form)]
     (throw (ex-info (str "native region: " msg
                          (when (:line m) (str " (line " (:line m) ")")))
-                    (merge {:jolt.native/error true :form form} data)))))
+                    (merge error-data {:form form} data)))))
 
 (defn owned? [t] (and (vector? t) (= :array (first t))))
 ;; [:ref e] is an array borrowed from Jolt (a region parameter: the flvector or

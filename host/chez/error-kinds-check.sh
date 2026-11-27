@@ -62,9 +62,9 @@ grep -oE '^[{ ]*:[a-z]+/[a-z-]+' "$reg" | tr -d '{ ' | LC_ALL=C sort -u > "$tmp/
 {
   find jolt-core stdlib compatibility tools \( -name '*.clj' -o -name '*.cljc' \) \
     -exec sed 's/;;.*//' {} + 2>/dev/null \
-    | grep -ohE ':(analyze|read|runtime|ffi|codegen|aot)/[a-z-]+' 
+    | grep -ohE ':(analyze|read|runtime|ffi|native|codegen|aot)/[a-z-]+' 
   find host -name '*.ss' -not -path '*/seed/*' \
-    -exec grep -ohE '\(keyword "(analyze|read|runtime|ffi|codegen|aot)" "[a-z-]+"\)' {} + 2>/dev/null \
+    -exec grep -ohE '\(keyword "(analyze|read|runtime|ffi|native|codegen|aot)" "[a-z-]+"\)' {} + 2>/dev/null \
     | sed -E 's/\(keyword "([a-z]+)" "([a-z-]+)"\)/:\1\/\2/'
 } | LC_ALL=C sort -u > "$tmp/raised"
 

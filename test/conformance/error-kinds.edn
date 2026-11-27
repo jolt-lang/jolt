@@ -206,6 +206,12 @@
  :analyze/invalid-native-region
  "A jolt.native/__region form whose shape does not parse (the native macro emits it)."
 
+ :native/invalid-region
+ "A `jolt.native` region, `defnative` helper or `defextern` the region compiler
+  rejects: a form or call regions do not support, a type it cannot infer, an
+  array used after it was given away or let escape, a bad `:specialize` or
+  `:header`."
+
  :analyze/internal-failure
  "Anything else raised while analyzing a form, carrying the position of the
   innermost form under analysis. A diagnostic that reaches a user with this kind
