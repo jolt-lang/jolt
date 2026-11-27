@@ -744,8 +744,8 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.m2/repository
-          key: m2-${{ runner.os }}-${{ github.job }}-${{ hashFiles('**/deps.edn') }}
-          restore-keys: m2-${{ runner.os }}-${{ github.job }}-
+          key: m2-${{ runner.os }}-${{ github.job }}-${{ matrix.repo }}-${{ hashFiles('**/deps.edn') }}
+          restore-keys: m2-${{ runner.os }}-${{ github.job }}-${{ matrix.repo }}-
       - name: Test
         run: jolt/ci/fleet-smoke.sh lib ./jolt-bin
 
