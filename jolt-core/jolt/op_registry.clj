@@ -102,19 +102,21 @@
    ;; was var-deref + jolt-invoke + the variadic rest-list fold — 29 ns against
    ;; 3.6 for + on the same operands, and the hinted-Clojure idiom libraries
    ;; write (unchecked-inc on a loop counter, unchecked-add on an accumulator) is
-   ;; exactly what paid it. :fixed names the 2-arg entry; :lng keeps the proven-
-   ;; long path on the same WRAPPING helpers (never the raising fx ops); :dbl is
-   ;; the same flonum op as +/-/*: unchecked-* wrap only longs and are ordinary
-   ;; arithmetic on a flonum operand, so a proven-double pair unboxes too.
-   "unchecked-add"      {:call "jolt-unchecked-add" :fixed {2 "jolt-uncadd2"}
+   ;; exactly what paid it. :lng keeps the proven-long path on the same WRAPPING
+   ;; helpers (never the raising fx ops); :dbl is the same flonum op as +/-/*:
+   ;; unchecked-* wrap only longs and are ordinary arithmetic on a flonum operand,
+   ;; so a proven-double pair unboxes too. add/subtract/multiply take exactly two
+   ;; args, as on the JVM, where each has a single [x y] arity; (+ a b c) under
+   ;; *unchecked-math* becomes nested pairs (jolt.analyzer.interop).
+   "unchecked-add"      {:call "jolt-uncadd2" :arity #(= % 2)
                          :lng "jolt-uncadd2" :dbl "fl+"
-                         :arg1-identity? true :dbl-contagion? true :num-result? true :num-args? true}
-   "unchecked-subtract" {:call "jolt-unchecked-sub" :fixed {2 "jolt-uncsub2"}
+                         :dbl-contagion? true :num-result? true :num-args? true}
+   "unchecked-subtract" {:call "jolt-uncsub2" :arity #(= % 2)
                          :lng "jolt-uncsub2" :dbl "fl-"
                          :dbl-contagion? true :num-result? true :num-args? true}
-   "unchecked-multiply" {:call "jolt-unchecked-mul" :fixed {2 "jolt-uncmul2"}
+   "unchecked-multiply" {:call "jolt-uncmul2" :arity #(= % 2)
                          :lng "jolt-uncmul2" :dbl "fl*"
-                         :arg1-identity? true :dbl-contagion? true :num-result? true :num-args? true}
+                         :dbl-contagion? true :num-result? true :num-args? true}
    "unchecked-inc"      {:call "jolt-uncinc" :arity #(= % 1)
                          :dbl-contagion? true :num-result? true :num-args? true}
    "unchecked-dec"      {:call "jolt-uncdec" :arity #(= % 1)

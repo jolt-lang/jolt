@@ -961,15 +961,6 @@
            :jvm "5"
            :jolt "1"}
    :note "Between values the calls match: each argument of print/pr/println/prn is its own write, the space and the newline are appends, and PrintWriter.printf writes each Formatter piece. The text is identical; only a Writer that logs its calls can tell. jolt renders a value in the host printer, which is also what keeps pr-str fast, rather than walking print-method once per element."}
-  ;; unchecked-add/-subtract/-multiply accept any arity (the JVM's take exactly 2).
-  {:category :permissive
-   :behavior "(unchecked-add x) or (unchecked-add a b c), e.g. through apply"
-   :jvm "throws ArityException — these are arity-2 only"
-   :jolt "folds like +: no args => 0, one => the operand, N => a left fold"
-   :check {:expr "(unchecked-add)"
-           :jvm "throws ArityException"
-           :jolt "0"}
-   :note "The overlay is variadic where the JVM's is fixed-arity. At arity 2 — every arity the JVM accepts — the wrapping result is identical, 64-bit edges included, so portable code is unaffected. Costs nothing on the hot path either: proven-long operands lower straight to jolt-uncadd2 (a left fold past 2 operands) and never reach the variadic overlay, which only serves value position."}
   ;; defonce takes a docstring, as def does; the JVM's defonce is [name expr] only.
   {:category :permissive
    :behavior "(defonce name \"doc\" init) — the (def sym doc-string? init) shape, on defonce"

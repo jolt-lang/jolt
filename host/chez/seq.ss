@@ -1598,10 +1598,6 @@
         ((number? x) (- x))
         ((jfloat? x) (fl- (jfloat-fl x)))
         (else (jolt-sub2 0 x))))
-(define (jolt-unchecked-add . xs) (if (null? xs) 0 (fold-left jolt-uncadd2 (car xs) (cdr xs))))
-(define (jolt-unchecked-mul . xs) (if (null? xs) 1 (fold-left jolt-uncmul2 (car xs) (cdr xs))))
-(define (jolt-unchecked-sub . xs)
-  (cond ((null? xs) 0) ((null? (cdr xs)) (jolt-uncneg (car xs))) (else (fold-left jolt-uncsub2 (car xs) (cdr xs)))))
 ;; The -int family is Numbers.unchecked_int_add(int, int) and its siblings: the
 ;; compiler casts EACH operand to int before the op, and only the op wraps. So
 ;; (unchecked-add-int 1/2 1/2) is 0 + 0 and (unchecked-add-int 1.5 1.5) is 2.

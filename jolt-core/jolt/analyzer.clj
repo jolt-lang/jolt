@@ -62,7 +62,7 @@
             [jolt.analyzer.interop :refer [field-head? method-head? ctor-head?
                                            array-class-dims array-class-name
                                            method-value-form static-class-ns
-                                           unchecked-arith num-cast invoke-rewrite]]))
+                                           unchecked-arith unchecked-form num-cast invoke-rewrite]]))
 
 (declare analyze)
 ;; the quote arm reaches it well before its definition (it needs analyze itself)
@@ -1658,7 +1658,7 @@
         (cond
           ;; *unchecked-math* rewrite, before macro/special dispatch (these are
           ;; ordinary core fns). The unchecked-* form re-analyzes normally.
-          unm (analyze ctx (cons (symbol unm) (rest items)) env)
+          unm (analyze ctx (unchecked-form unm (rest items)) env)
           ;; Canonical order (Clojure/CLJS analyze-seq): macroexpand FIRST, then
           ;; dispatch special forms / interop / invoke. A local shadows the macro.
           ;; A true special form is NOT shadowable by a same-named macro, matching

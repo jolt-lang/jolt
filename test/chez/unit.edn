@@ -3652,6 +3652,8 @@
   {:suite "type-check" :label "the same call inside a catching try compiles and throws at runtime" :expr "(try (count :a) (catch UnsupportedOperationException e :uoe))" :expected ":uoe"}
   {:suite "type-check" :label "an opaque operand compiles and throws at runtime" :expr "(try (+ (identity \"a\") 1) (catch ClassCastException e :cce))" :expected ":cce"}
   {:suite "type-check" :label "1-arg min of a string is its argument, not an error" :expr "(min \"s\")" :expected "\"s\""}
+  {:suite "unchecked-arity" :label "unchecked-add/-subtract/-multiply take exactly two args, as on the JVM (jolt-985)" :expr "(let [ar (fn [f n] (try (apply f (repeat n 1)) :ok (catch clojure.lang.ArityException e :arity)))] (mapv (fn [f] (mapv #(ar f %) [0 1 2 3])) [unchecked-add unchecked-subtract unchecked-multiply]))" :expected "[[:arity :arity :ok :arity] [:arity :arity :ok :arity] [:arity :arity :ok :arity]]"}
+  {:suite "unchecked-arity" :label "under *unchecked-math*, n-ary + - * are nested pairs and (+ a), (+), (*) stay the ordinary fns (JVM values)" :expr "(binding [*unchecked-math* true] (eval '[(+ Long/MAX_VALUE 1 1) (* Long/MAX_VALUE 3 1) (- Long/MIN_VALUE 1 1) (- Long/MIN_VALUE) (+ 5) (+) (* 7) (*) (+ 1 2 3 4 5) (- 10 1 2 3)]))" :expected "[-9223372036854775807 9223372036854775805 9223372036854775806 -9223372036854775808 5 0 7 1 15 4]"}
   {:suite "r6-kernel-throws" :expr "(try (conj {} [1]) (catch IllegalArgumentException e :iae) (catch Throwable t :other))" :expected ":iae"}
   {:suite "r6-kernel-throws" :expr "(try (conj {} [1]) (catch NullPointerException e :npe) (catch Throwable t :t))" :expected ":t"}
   {:suite "r6-kernel-throws" :expr "(try (nth :x 0) (catch UnsupportedOperationException e :uoe) (catch Throwable t :other))" :expected ":uoe"}

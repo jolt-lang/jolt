@@ -120,9 +120,12 @@
          (lambda (x y) (list (jolt-uncinc x) (jolt-uncdec x) (jolt-uncneg x)))
          (lambda (x y) (list ((unc1 (lambda (v) (+ v 1))) x) ((unc1 (lambda (v) (- v 1))) x)
                              ((unc1 -) x))))
-  (ok (format "c. the variadic fns wrap (~a)" label)
-      (equal? (list (jolt-unchecked-mul 31 (- 2^63 1) 7) (jolt-unchecked-add (- 2^63 1) 1 1)
-                    (jolt-unchecked-sub (- 2^63) 1 1) (jolt-unchecked-sub (- 2^63)))
+  ;; unchecked-add/-subtract/-multiply take two args, as on the JVM; a longer
+  ;; (+ a b c) under *unchecked-math* is the nested pairs below, and wraps the same
+  (ok (format "c. nested pairs wrap (~a)" label)
+      (equal? (list (jolt-uncmul2 (jolt-uncmul2 31 (- 2^63 1)) 7)
+                    (jolt-uncadd2 (jolt-uncadd2 (- 2^63 1) 1) 1)
+                    (jolt-uncsub2 (jolt-uncsub2 (- 2^63) 1) 1) (jolt-uncneg (- 2^63)))
               (list (wrap (* 31 (- 2^63 1) 7)) (- 1 2^63) (- 2^63 2) (- 2^63)))))
 
 (check-ops (if patched? "kernel path" "stock path"))
