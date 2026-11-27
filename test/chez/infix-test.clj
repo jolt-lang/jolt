@@ -343,6 +343,8 @@
                         (list 'clojure.core/double? 'y)))))
 (chk= "fp-no-locals" (specialize '{} '(+ a 1)) '(+ a 1))
 (chk= "fp-no-arith" (specialize '{x nil} '(and x true)) '(and x true))
+(chk= "fp-plain-arith" (specialize '{x nil y nil} '(+ (* x 3) (- y x))) '(+ (* x 3) (- y x)))
+(chk= "fp-div-guarded" (first (specialize '{x nil} '(+ 1 (/ x 2)))) 'if)
 (chk= "fp-head-not-operand" (specialize '{f nil} '(f 1 2)) '(f 1 2))
 (chk= "fp-local-sym" (specialize '{x nil} 'x) 'x)
 
