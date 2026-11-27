@@ -240,6 +240,15 @@
    ;; known-divergences.edn. The JVM runs the same 106 tests with 0 fails.
    :expect {:tests 106 :pass 237 :fail 1 :error 0}}
 
+  {:name "editscript"
+   ;; juji-io/editscript, read on its :clj branches (jolt does not advertise :bb
+   ;; by default). Its :clj string patch builds the result in a
+   ;; java.util.StringJoiner, which was every one of the 11 errors before the
+   ;; host-static-classes.ss shim.
+   :paths ["src" "test"]
+   :deps ["@test.check/src/main/clojure"]
+   :expect {:tests 63 :pass 291 :fail 0 :error 0}}
+
   {:name "instaparse"
    :paths ["src" "test"]
    ;; All five remaining failures are one divergence, in abnf-test's unicode-test:

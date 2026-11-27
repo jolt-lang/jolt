@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`java.util.StringJoiner`.** `add`, `toString`, `length`, `setEmptyValue`
+  and `merge`, with the JDK's answers for nil parts, empty values and merging.
+  `add` and `length` are O(1) and `toString` copies each part once, so a
+  200k-part join runs as fast as on the JVM. editscript's `:clj` string patch
+  builds its result in one; its suite (now in the library conformance
+  manifest) goes from 11 errors to 63 tests, 291 passing, none failing.
+
 - **`deps.local.edn`: per-machine overrides merged over deps.edn.** A project's
   `deps.local.edn` (or the file `$JOLT_DEPS_LOCAL` names, relative to the
   project) merges over its deps.edn the way deps.edn merges over the user's,
