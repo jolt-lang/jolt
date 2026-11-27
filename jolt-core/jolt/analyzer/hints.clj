@@ -8,7 +8,8 @@
                                form-coll-meta form-list? form-vec? form-elements
                                record-type? record-ctor-key resolve-global
                                resolve-class-hint method-return-class
-                               method-param-classes method-overload-entry]]
+                               method-param-classes method-overload-entry
+                               method-sig-registered?]]
             [jolt.analyzer.diagnostics :refer [analysis-error]]
             [jolt.ir :refer [invoke]]))
 
@@ -172,22 +173,23 @@
         (if (= :class (:kind r)) (:name r) (resolve-class-hint nm))))))
 (defn sym-tag-class [ctx sym]
   (let [m (form-sym-meta sym)] (when m (tag-class ctx (get m :tag)))))
-(declare node-jclass)
+(declare node-jclass jvm-type reflect-arg-classes)
+(def ^:private jvm-prims #{"long" "double" "boolean" "int" "float" "char" "short" "byte"})
 ;; An argument's class as the JVM compiler matches it against a method's
-;; parameters: node-jclass's, or a literal's own JVM type ("long" for 1, "null"
-;; for nil). nil is an untyped argument, which the compiler takes as an Object.
+;; parameters: node-jclass's, else the type jvm-type gives it ("long" for 1,
+;; "double" for (* x 2.0), "null" for nil). nil is an untyped argument, which
+;; the compiler takes as an Object.
 (defn- arg-jclass [ctx node env]
   (or (node-jclass ctx node env)
-      (when (= :const (:op node))
-        (let [c (const-jvm-class (:val node))]
-          (cond (= :null c) "null" (string? c) c :else nil)))))
+      (let [t (jvm-type ctx node env)] (when (string? t) t))))
 ;; The class a host method's result has: the runtime's signature table
 ;; (jolt.host/method-return-class) decides from the receiver class and the
 ;; arguments' classes, as the JVM compiler picks the method it compiles against.
+;; A primitive result is left out: node-jclass types no primitive.
 (defn- call-return-class [ctx cls method static? args env]
   (when cls
     (let [r (method-return-class cls method static? (mapv #(arg-jclass ctx % env) args))]
-      (when (string? r) r))))
+      (when (and (string? r) (not (jvm-prims r))) r))))
 ;; The parameter classes a resolved call (receiver class cls) casts its
 ;; arguments to, or nil when the call is not resolved to one method — the
 ;; runtime's signature table picks the method as the JVM compiler does, and
@@ -211,7 +213,8 @@
         (assoc (invoke (if (string? entry) (assoc f :entry entry) f) args) :arg-casts (vec ps)))
       ;; no overload fits: the Reflector's member when the runtime has one
       ;; (records-interop.ss register-reflect-entry!)
-      (let [entry (when cls (method-overload-entry cls (:member f) acs))]
+      (let [rcs (when cls (reflect-arg-classes ctx args env))
+            entry (when rcs (method-overload-entry cls (:member f) rcs))]
         (invoke (if (string? entry) (assoc f :entry entry) f) args)))))
 (defn host-call-arg-casts [ctx cls method args env]
   (when cls
@@ -245,7 +248,6 @@
 ;; IfExpr: both branches typed, and the same class, or one null and the other
 ;; not a primitive; the then branch's class unless it is null. A primitive
 ;; result is left untyped here, as node-jclass types no primitive.
-(def ^:private jvm-prims #{"long" "double" "boolean" "int" "float" "char" "short" "byte"})
 (defn- if-jclass [t e]
   (when (and t e)
     (let [c (cond (= t e) t
@@ -293,6 +295,209 @@
 (defn init-jclass [ctx init env] (node-jclass ctx init env))
 (defn add-jclass [env nm c]
   (if c (assoc env :jclasses (assoc (:jclasses env) nm c)) env))
+
+;; --- the JVM type of an argument ---------------------------------------------
+;; What the JVM compiler types an expression as when it picks a method for it:
+;; a class, a primitive ("double" for (* x 2.0)), "null", nil for an Object, or
+;; :unknown when jolt cannot say what the JVM would. A static call no overload
+;; fits reaches the Reflector on the JVM, which picks by the arguments' runtime
+;; classes; it takes the Reflector's member here (reflect-arg-classes) unless
+;; an argument is :unknown, since the JVM may have typed that one a primitive
+;; and resolved the call statically ((Float/valueOf d) for a double d).
+;; Where the JVM compiler leaves an expression an Object, so does this.
+(def ^:private cast-jtypes
+  {"jolt-double" "double" "jolt-long-cast" "long" "jolt-int-cast" "int"
+   "jolt-float" "float" "jolt-byte-cast" "byte" "jolt-short-cast" "short"
+   "jolt-char" "char" "jolt-unchecked-long" "long" "jolt-unchecked-int" "int"
+   "jolt-unchecked-float" "float"})
+;; clojure.core fns the JVM compiler inlines to a clojure.lang.Numbers static:
+;; at two arguments, folded left past two, and at one
+(def ^:private numbers-nary
+  {"+" "add" "+'" "addP" "-" "minus" "-'" "minusP" "*" "multiply" "*'" "multiplyP"
+   "/" "divide" "max" "max" "min" "min"})
+(def ^:private numbers-binary
+  {"quot" "quotient" "rem" "remainder" "unchecked-add" "unchecked_add"
+   "unchecked-subtract" "unchecked_minus" "unchecked-multiply" "unchecked_multiply"})
+(def ^:private numbers-unary
+  {"-" "minus" "-'" "minusP" "inc" "inc" "inc'" "incP" "dec" "dec" "dec'" "decP"
+   "abs" "abs" "unchecked-inc" "unchecked_inc" "unchecked-dec" "unchecked_dec"
+   "unchecked-negate" "unchecked_minus"})
+;; the other inlines whose result the JVM types the same whatever the arguments:
+;; name -> {arity type}
+(def ^:private core-inline-jtypes
+  (merge
+   (zipmap ["count" "alength"] (repeat {1 "int"}))
+   (zipmap ["compare"] (repeat {2 "int"}))
+   (zipmap ["unchecked-add-int" "unchecked-subtract-int" "unchecked-multiply-int"
+            "unchecked-divide-int" "unchecked-remainder-int"] (repeat {2 "int"}))
+   (zipmap ["unchecked-inc-int" "unchecked-dec-int" "unchecked-negate-int" "int"
+            "unchecked-int"] (repeat {1 "int"}))
+   (zipmap ["double" "unchecked-double"] (repeat {1 "double"}))
+   (zipmap ["float" "unchecked-float"] (repeat {1 "float"}))
+   (zipmap ["long" "unchecked-long" "bit-not"] (repeat {1 "long"}))
+   (zipmap ["bit-shift-left" "bit-shift-right" "unsigned-bit-shift-right"] (repeat {2 "long"}))
+   (zipmap ["char" "unchecked-char"] (repeat {1 "char"}))
+   (zipmap ["byte" "unchecked-byte"] (repeat {1 "byte"}))
+   (zipmap ["short" "unchecked-short"] (repeat {1 "short"}))
+   (zipmap ["boolean" "NaN?" "infinite?" "reduced?" "zero?" "pos?" "neg?" "nil?"] (repeat {1 "boolean"}))
+   (zipmap ["=" "==" "<" "<=" ">" ">=" "identical?"] (repeat {2 "boolean"}))
+   {"num" {1 "java.lang.Number"}}))
+(def ^:private bit-nary #{"bit-and" "bit-or" "bit-xor" "bit-and-not"})
+(def ^:private array-components
+  {"[D" "double" "[F" "float" "[J" "long" "[I" "int" "[S" "short" "[B" "byte"
+   "[C" "char" "[Z" "boolean"})
+
+;; any keyword: :unknown, a recur, or a loop local's :loop-long
+(defn- some-unknown? [ts] (some keyword? ts))
+;; A ^tag: a primitive's name, a class jolt resolves, or :unknown.
+(defn- tag-jtype [ctx tag]
+  (let [s (cond (form-sym? tag) (form-sym-name tag) (symbol? tag) (name tag) (string? tag) tag)]
+    (cond (jvm-prims s) s
+          :else (or (tag-class ctx tag) :unknown))))
+;; Numbers.<m> at these argument types, as getMatchingParams picks it; no
+;; overload fitting is a reflective call, an Object.
+(defn- numbers-jtype [m ts]
+  (if (some-unknown? ts)
+    :unknown
+    (let [r (method-return-class "clojure.lang.Numbers" m true ts)] (when (string? r) r))))
+;; A method call's result: the one overload the arguments pick and the class it
+;; returns; a reflective call (registered overloads, none fitting) is an Object;
+;; a method the signature table does not have, or whose primitive result it
+;; does not record, is :unknown.
+(defn- method-jtype [cls method static? ts]
+  (if (some-unknown? ts)
+    :unknown
+    (let [ps (method-param-classes cls method ts static?)]
+      (cond (true? ps) :unknown
+            (some? ps) (let [r (method-return-class cls method static? ts)]
+                         (if (string? r) r :unknown))
+            (method-sig-registered? cls method static? (count ts)) nil
+            :else :unknown))))
+(defn- args-jtypes [ctx args env] (mapv #(jvm-type ctx % env) args))
+(defn- core-invoke-jtype [ctx node nm args env]
+  (let [n (count args)
+        ts #(args-jtypes ctx args env)]
+    (cond
+      (and (>= n 2) (numbers-nary nm))
+      (let [[a b & more] (ts) m (numbers-nary nm)]
+        (reduce (fn [t x] (numbers-jtype m [t x])) (numbers-jtype m [a b]) more))
+      (and (= n 2) (numbers-binary nm)) (numbers-jtype (numbers-binary nm) (ts))
+      (and (= n 1) (numbers-unary nm)) (numbers-jtype (numbers-unary nm) (ts))
+      (and (>= n 2) (bit-nary nm)) "long"
+      (get-in core-inline-jtypes [nm n]) (get-in core-inline-jtypes [nm n])
+      (jvm-boolean-prim? node env) "boolean"
+      ;; RT.aget: the component of an array the compiler knows, else reflective
+      (and (= nm "aget") (= n 2))
+      (let [a (jvm-type ctx (first args) env)]
+        (if (keyword? a) :unknown (get array-components a)))
+      ;; a helper jolt's own macros expand to has no JVM expansion to compare
+      (or (= "__" (subs nm 0 (min 2 (count nm))))
+          (:private (meta (find-var (symbol "clojure.core" nm)))))
+      :unknown
+      :else nil)))
+;; InvokeExpr of a var: the arglist's :tag at this arity (a ^double arglist is
+;; a primitive invoke), else the var's :tag (node-jclass has the class ones).
+(defn- var-invoke-jtype [ctx f n]
+  (let [ns (str (:ns f))]
+    (if (= "jolt." (subs ns 0 (min 5 (count ns))))
+      :unknown
+      (let [m (meta (find-var (symbol ns (str (:name f)))))
+            al (some #(when (and (vector? %) (= n (count %)) (not (some #{'&} %))) %)
+                     (:arglists m))
+            st (some-> al meta :tag)
+            vt (invoke-jvm-class f)]
+        (cond st (tag-jtype ctx st)
+              (or (nil? vt) (= vt "Object")) nil
+              :else :unknown)))))
+(defn- invoke-jtype [ctx node env]
+  (let [f (:fn node) args (:args node)]
+    (case (:op f)
+      :var (if (= "clojure.core" (str (:ns f)))
+             (core-invoke-jtype ctx node (str (:name f)) args env)
+             (var-invoke-jtype ctx f (count args)))
+      :host-static (let [cls (tag-class ctx (:class f))]
+                     (if cls (method-jtype cls (:member f) true (args-jtypes ctx args env)) :unknown))
+      ;; a local, a keyword, a fn: an InvokeExpr with no tag
+      nil)))
+(defn- host-call-jtype [ctx node env]
+  (let [t (or (:target-class node) (jvm-type ctx (:target node) env))]
+    (cond (keyword? t) :unknown
+          ;; untyped, null or primitive: reflective, an Object
+          (or (nil? t) (= t "null") (jvm-prims t)) nil
+          :else (method-jtype t (:method node) false (args-jtypes ctx (:args node) env)))))
+;; IfExpr: both branches typed, and the same, or one null and the other not a
+;; primitive; a recur branch takes the other's type. Anything else is an Object.
+(defn- if-jtype [t e]
+  (cond (= t :recur) e
+        (= e :recur) t
+        (or (keyword? t) (keyword? e)) :unknown
+        (and (string? t) (string? e))
+        (cond (= t e) t
+              (and (= t "null") (not (jvm-prims e))) e
+              (and (= e "null") (not (jvm-prims t))) t)
+        :else nil))
+;; What a local's binding records in :jlocals (analyzer analyze-bindings): its
+;; tag's type, or its init to type when asked, memoized.
+(defn binding-jlocal [ctx bsym init env]
+  (let [m (form-sym-meta bsym) tag (when m (get m :tag))]
+    (if tag (tag-jtype ctx tag) {:init init :env env :memo (volatile! nil)})))
+(defn add-jlocal [env nm j] (assoc env :jlocals (assoc (:jlocals env) nm j)))
+;; A loop local the JVM types a primitive is boxed instead, a Number, when a
+;; recur passes it something else, which jolt does not check for. A long one
+;; is :loop-long: either way a valueOf no overload fits reflects on its runtime
+;; class, while a double one may resolve Float/valueOf, so it is :unknown.
+(defn loop-jlocals [env names]
+  (reduce (fn [e nm]
+            (let [j (get (:jlocals e) nm)]
+              (if (some? j) (add-jlocal e nm (assoc (if (map? j) j {:tag j}) :loop? true)) e)))
+          env names))
+(defn- local-jtype [ctx nm env]
+  (let [j (get (:jlocals env) nm)
+        t (cond (string? j) j
+                (keyword? j) j
+                (:tag j) (:tag j)
+                (map? j) (let [v (:memo j)]
+                           (or @v (vreset! v (let [t (jvm-type ctx (:init j) (:env j))]
+                                              (if (nil? t) :object t))))))
+        t (if (= t :object) nil t)]
+    (cond (not (:loop? j)) t
+          (#{"long" "int"} t) :loop-long
+          (or (jvm-prims t) (keyword? t)) :unknown
+          :else t)))
+(defn jvm-type [ctx node env]
+  (if (:jtag node)
+    :unknown
+    (case (:op node)
+      :local (or (get (:jclasses env) (:name node)) (local-jtype ctx (:name node) env))
+      :const (let [v (:val node) c (const-jvm-class v)]
+               (cond (= :null c) "null" (string? c) c :else (const-jclass v)))
+      :if (if-jtype (jvm-type ctx (:then node) env) (jvm-type ctx (:else node) env))
+      :do (jvm-type ctx (:ret node) env)
+      :let (jvm-type ctx (:body node)
+                     (reduce (fn [e [nm init]]
+                               (add-jlocal (update e :jclasses dissoc nm) nm
+                                           {:init init :env e :memo (volatile! nil)}))
+                             env (:bindings node)))
+      :coerce (if-let [c (:cast-fn node)] (get cast-jtypes c :unknown) (jvm-type ctx (:expr node) env))
+      :invoke (or (node-jclass ctx node env) (invoke-jtype ctx node env))
+      :host-call (host-call-jtype ctx node env)
+      :recur :recur
+      ;; a loop or try as an argument compiles as a call to a fn: an Object
+      (:loop :try :fn :throw) nil
+      (:vector :set :map :quote :bigdec :host-new) (node-jclass ctx node env)
+      :unknown)))
+;; The classes a static call no overload fits reflects on, a primitive as its
+;; box, an Object as one and a long loop local as a Number, or nil when an
+;; argument's type is :unknown.
+(def ^:private jvm-boxes
+  {"long" "java.lang.Long" "double" "java.lang.Double" "int" "java.lang.Integer"
+   "float" "java.lang.Float" "char" "java.lang.Character" "boolean" "java.lang.Boolean"
+   "short" "java.lang.Short" "byte" "java.lang.Byte"})
+(defn- reflect-arg-classes [ctx args env]
+  (let [ts (mapv #(or (node-jclass ctx % env) (jvm-type ctx % env)) args)]
+    (when-not (some #(#{:unknown :recur} %) ts)
+      (mapv #(cond (nil? %) "java.lang.Object" (= % :loop-long) "java.lang.Number"
+                   (jvm-prims %) (get jvm-boxes %) :else %) ts))))
 
 ;; The resolved record ctor-key ("ns/->Name") for a ^Type param hint, or nil.
 ;; Unlike hint-of (which collapses any record hint to the coarse :struct guard-
@@ -507,7 +712,9 @@
         (conj-hint :nhints nm nh)
         (conj-hint :ahints nm ah)
         (conj-hint :dhints nm dh)
-        (conj-hint :jclasses nm (sym-tag-class ctx p)))))
+        (conj-hint :jclasses nm (sym-tag-class ctx p))
+        (conj-hint :jlocals nm (let [m (form-sym-meta p) t (when m (get m :tag))]
+                                 (when t (tag-jtype ctx t)))))))
 
 (defn- rest-param-name [r]
   (when-not (form-sym? r)
@@ -523,7 +730,7 @@
   ;; same for the hints a program wrote, which the optimizing passes turn into a
   ;; type test on the param (jolt.passes.types guard-declared-records).
   (loop [i 0 acc {:fixed [] :rest nil :hints [] :phints [] :uphints [] :nhints []
-                  :ahints [] :dhints [] :jclasses []}]
+                  :ahints [] :dhints [] :jclasses [] :jlocals []}]
     (if (< i (count pvec))
       (let [p (nth pvec i)]
         (when-not (form-sym? p)

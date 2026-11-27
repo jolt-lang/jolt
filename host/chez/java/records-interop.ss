@@ -710,6 +710,12 @@
           (m (apply jolt-vector (vector-ref m 2)))
           (else jolt-nil))))
 (def-var! "jolt.host" "method-param-classes" method-param-classes)
+;; Whether the table has (cls).method at argc arguments at all: a call none of
+;; them fits is reflective, where a method it does not have is one it cannot
+;; type (hints.clj method-jtype).
+(define (method-sig-registered? cls method static? argc)
+  (pair? (method-sig-candidates cls method (jolt-truthy? static?) argc)))
+(def-var! "jolt.host" "method-sig-registered?" method-sig-registered?)
 ;; Does an argument the compiler types as A (a JVM class name, "long"/"double"
 ;; for a numeric literal, "null" for nil, nil when it has no type and so is an
 ;; Object) fit parameter P? Clojure's Reflector.paramArgTypeMatch, which the
@@ -1209,6 +1215,39 @@
 (for-each (lambda (c) (register-reflect-entry! c "valueOf" 1 "valueOf(reflect)"))
           '("java.lang.Long" "java.lang.Double" "java.lang.Float"))
 (register-static-method! "java.lang.Long" "decode" '("java.lang.String") "java.lang.Long")
+;; clojure.lang.Numbers, the statics clojure.core's arithmetic inlines to on the
+;; JVM ((* x 2.0) is Numbers.multiply(Object, double)), so the analyzer types
+;; such a call's result as the JVM compiler does (hints.clj numbers-jtype). A
+;; return class here may be a primitive. Each row is a method and its overloads,
+;; return class first: D double, J long, O Object, N Number, I BigInteger.
+(let ((cls (lambda (ch)
+             (case ch
+               ((#\D) "double") ((#\J) "long") ((#\O) "java.lang.Object")
+               ((#\N) "java.lang.Number") (else "java.math.BigInteger")))))
+  (for-each
+   (lambda (row)
+     (for-each (lambda (sig)
+                 (let ((cs (map cls (string->list sig))))
+                   (register-static-method! "clojure.lang.Numbers" (car row) (cdr cs) (car cs))))
+               (cdr row)))
+   '(("add" "DDD" "DDJ" "DDO" "DJD" "DOD" "JJJ" "NJO" "NOJ" "NOO")
+     ("addP" "DDD" "DDJ" "DDO" "DJD" "DOD" "NJJ" "NJO" "NOJ" "NOO")
+     ("minus" "DD" "DDD" "DDJ" "DDO" "DJD" "DOD" "JJ" "JJJ" "NJO" "NO" "NOJ" "NOO")
+     ("minusP" "DD" "DDD" "DDJ" "DDO" "DJD" "DOD" "NJ" "NJJ" "NJO" "NO" "NOJ" "NOO")
+     ("multiply" "DDD" "DDJ" "DDO" "DJD" "DOD" "JJJ" "NJO" "NOJ" "NOO")
+     ("multiplyP" "DDD" "DDJ" "DDO" "DJD" "DOD" "NJJ" "NJO" "NOJ" "NOO")
+     ("divide" "DDD" "DDJ" "DDO" "DJD" "DOD" "NII" "NJJ" "NJO" "NOJ" "NOO")
+     ("inc" "DD" "JJ" "NO") ("incP" "DD" "NJ" "NO")
+     ("dec" "DD" "JJ" "NO") ("decP" "DD" "NJ" "NO")
+     ("max" "DDD" "JJJ" "ODJ" "ODO" "OJD" "OJO" "OOD" "OOJ" "OOO")
+     ("min" "DDD" "JJJ" "ODJ" "ODO" "OJD" "OJO" "OOD" "OOJ" "OOO")
+     ("abs" "DD" "JJ" "NO")
+     ("quotient" "DDD" "DDJ" "DJD" "JJJ" "NDO" "NJO" "NOD" "NOJ" "NOO")
+     ("remainder" "DDD" "DDJ" "DJD" "JJJ" "NDO" "NJO" "NOD" "NOJ" "NOO")
+     ("unchecked_add" "DDD" "DDJ" "DDO" "DJD" "DOD" "JJJ" "NJO" "NOJ" "NOO")
+     ("unchecked_minus" "DD" "DDD" "DDJ" "DDO" "DJD" "DOD" "JJ" "JJJ" "NJO" "NO" "NOJ" "NOO")
+     ("unchecked_multiply" "DDD" "DDJ" "DDO" "DJD" "DOD" "JJJ" "NJO" "NOJ" "NOO")
+     ("unchecked_inc" "DD" "JJ" "NO") ("unchecked_dec" "DD" "JJ" "NO"))))
 (register-static-method! "java.lang.Character" "valueOf" '("char") "java.lang.Character")
 ;; UUID, URI, File
 (register-static-method! "java.util.UUID" "randomUUID" '() "java.util.UUID")

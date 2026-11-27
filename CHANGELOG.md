@@ -216,6 +216,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `Long/valueOf`, `Double/valueOf` and `Float/valueOf` of an untyped argument
+  refuse what the JVM's Reflector refuses: `((fn [x] (Double/valueOf x)) 2)`
+  throws `IllegalArgumentException` instead of answering `2.0`. The analyzer
+  now types arguments as the JVM compiler does, so a call the JVM resolves
+  statically still works: clojure.core arithmetic by the `Numbers` overload it
+  inlines to (`(Float/valueOf (* x 2.0))` is a double), primitive casts, a
+  `^double` or `^long` arglist, `^double` parameters and tags, and let locals,
+  `if` and `case` built from them. An argument it cannot type that way (a
+  static jolt has no signature for, such as `Math/abs`) keeps the lenient call.
 - Negative integer constants past the fixnum range keep their value in a `jolt
   build` binary: `-1152921504606846977` printed as `-17293822569102704639N`
   there (and right under `jolt -M`), as did every negative bignum except

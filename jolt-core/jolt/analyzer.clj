@@ -50,6 +50,7 @@
             [jolt.analyzer.hints :refer [jvm-boolean-prim? jvm-non-boolean-class hint-of
                                          init-proves-hint add-hint tag->nkind ahint-of
                                          sym-tag-class init-jclass add-jclass
+                                         binding-jlocal add-jlocal loop-jlocals
                                          host-call-arg-casts static-invoke host-call-target-class
                                          with-ret-nhint fi-tag-class fi-adapt-form
                                          parse-params strip-arglist-meta arglist-ret-nkind arglist-type-method? arglist-meta
@@ -217,6 +218,7 @@
       (update :locals #(reduce conj % names))
       (update :hints #(reduce dissoc % names))
       (update :jclasses #(reduce dissoc % names))
+      (update :jlocals #(reduce dissoc % names))
       (update :jprims #(reduce dissoc % names))))
 ;; &env value handed to a macro: a map of each in-scope local SYMBOL to nil
 ;; (Clojure's &env maps locals to compiler binding objects; consumers like
@@ -283,12 +285,16 @@
               ;; one, a splice replaces an invoke), and a key on the old node was
               ;; lost with it. The back end emits an array-kind coerce as its expr.
               ak (ahint-of ctx bsym)
-              init (if ak (coerce-node ak init0) init0)]
+              init (if ak (coerce-node ak init0) init0)
+              ;; a let nested in an argument types its locals from their inits,
+              ;; not seeing the tag that types this one (hints.clj jvm-type)
+              init (if (get (form-sym-meta bsym) :tag) (assoc init :jtag true) init)]
           ;; an explicit hint wins; init-proves-hint only fills in where the
           ;; programmer wrote nothing.
           (recur (+ i 2) (let [e (-> (add-locals env [nm])
                                      (add-hint nm (or (hint-of ctx bsym) (init-proves-hint init)))
-                                     (add-jclass nm (or (sym-tag-class ctx bsym) (init-jclass ctx init env))))]
+                                     (add-jclass nm (or (sym-tag-class ctx bsym) (init-jclass ctx init env)))
+                                     (add-jlocal nm (binding-jlocal ctx bsym init env)))]
                            (if (jvm-boolean-prim? init env)
                              (assoc-in e [:jprims nm] :boolean)
                              e))
@@ -411,6 +417,7 @@
         env0 (-> (add-locals env names) (with-recur rname (+ (count fixed) (if rst 1 0))))
         env* (reduce (fn [e pr] (add-hint e (nth pr 0) (nth pr 1))) env0 (:hints pp))
         env* (reduce (fn [e pr] (add-jclass e (nth pr 0) (nth pr 1))) env* (:jclasses pp))
+        env* (reduce (fn [e pr] (add-jlocal e (nth pr 0) (nth pr 1))) env* (:jlocals pp))
         ;; One of the two recur-target roots (the other is loop*): the body is
         ;; where a recur against THIS arity may legally sit, so it is where the
         ;; tail-position check starts.
@@ -917,6 +924,7 @@
         bvec (binding-vector items)
         rname (gen-name "loop")
         [pairs env*] (analyze-bindings ctx bvec env)
+        env* (loop-jlocals env* (mapv first pairs))
         body-env (assoc (with-recur env* rname (quot (count bvec) 2)
                                     (mapv (fn [[nm _]] (get (:jprims env*) nm)) pairs))
                         :recur-locals (mapv first pairs))
@@ -1818,6 +1826,12 @@
     ;; fasl and a built binary and does not need a process-local side table.
     :else (embedded-value ctx form env)))
 
+;; A form written with a ^tag: the JVM compiler types it by the tag, which jolt
+;; does not model for an argument's type (hints.clj jvm-type takes it as
+;; :unknown).
+(defn- jtag-node [node m]
+  (if (and (map? m) (get m :tag)) (assoc node :jtag true) node))
+
 (defn analyze
   ([ctx form]
    ;; One position box per compilation, over the catch too — as-analysis-diagnostic
@@ -1848,7 +1862,7 @@
   ([ctx form env]
    (cond
      (form-literal? form) (const form)
-     (form-sym? form) (analyze-symbol ctx form env)
+     (form-sym? form) (jtag-node (analyze-symbol ctx form env) (form-sym-meta form))
      (and (or (:top? env) (:def-name env) (not (contains? #{:expression :eval} (:cx env))))
           (or (form-vec? form) (form-map? form) (form-set? form)))
      ;; a collection's elements are expressions (:eval under :eval); at top
@@ -1863,5 +1877,5 @@
                                         (form-map-pairs form))))
      (form-set? form) (with-coll-meta ctx form env
                         (set-node (mapv #(analyze ctx % env) (form-set-items form))))
-     (form-list? form) (analyze-list ctx form env)
+     (form-list? form) (jtag-node (analyze-list ctx form env) (form-coll-meta form))
      :else (analyze-leaf ctx form env))))
