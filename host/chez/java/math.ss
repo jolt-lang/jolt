@@ -74,57 +74,14 @@
          (cond ((> r jolt-math-long-max) jolt-math-long-max)
                ((< r jolt-math-long-min) jolt-math-long-min)
                (else (exact r))))))))
-(define (jolt-math-to-degrees r) (/ (* r 180.0) jolt-math-pi))
-(define (jolt-math-to-radians d) (/ (* d jolt-math-pi) 180.0))
-;; java.lang.Math.hypot — scale by a power of 2 (exact) so a^2+b^2 can't overflow
-;; before the sqrt; the only rounding is the correctly-rounded sqrt. NaN->NaN,
-;; either Inf -> +Inf. (Naive sqrt(a^2+b^2) returns Inf for 3e200,4e200.)
-(define (jolt-math-hypot a b)
-  ;; Java Math.hypot: Inf if either is Inf (even if the other is NaN), else NaN if
-  ;; either is NaN. Otherwise la * sqrt(1 + (sm/la)^2), factoring out the larger
-  ;; magnitude so the squares never overflow (sm/la <= 1). This is exact for the
-  ;; scaled Pythagorean cases (e.g. 3e200,4e200 -> 5e200) and within 1 ULP
-  ;; elsewhere, matching Java's correctly-rounded result to ~15-16 digits.
-  (cond
-    ((or (infinite? a) (infinite? b)) +inf.0)
-    ((or (nan? a) (nan? b)) +nan.0)
-    (else
-     (let* ((ax (abs a)) (bx (abs b))
-            (la (max ax bx)) (sm (min ax bx)))
-       (if (= la 0.0)
-           0.0
-           (let ((r (/ sm la)))
-             (* la (sqrt (+ 1.0 (* r r))))))))))
-;; java.lang.Math.expm1 — Taylor series for |x|<0.5 (where exp(x)-1 cancels badly),
-;; else exp(x)-1. +Inf->+Inf, -Inf->-1.0, NaN->NaN.
-(define (jolt-math-expm1 x)
-  (let ((ax (abs x)))
-    (cond
-      ((nan? x) x)
-      ((infinite? x) (if (> x 0.0) x -1.0))
-      ((= x 0.0) x)                     ; expm1(0) = 0 (also ±0.0 passthrough)
-      ((< ax 0.5)
-       (let loop ((term x) (n 2) (acc x))
-         (let* ((nt (* term (/ x n))) (acc2 (+ acc nt)))
-           ;; terminate on a term that adds nothing, or is negligible relative to
-           ;; the accumulator. Guard the threshold with (max 1.0 …) so an acc that
-           ;; rounds toward 0 can't make the bound 0 and spin forever (expm1 0).
-           (if (or (= nt 0.0) (< (abs nt) (* 1e-18 (max 1.0 (abs acc2))))) acc2
-               (loop nt (+ n 1) acc2)))))
-      (else (- (exp x) 1.0)))))
-;; java.lang.Math.log1p — alternating series for |x|<0.3 (where 1+x rounds to 1),
-;; else log(1+x). log1p(-1)->-Inf, log1p(<-1)->NaN.
-(define (jolt-math-log1p x)
-  (cond
-    ((nan? x) x)
-    ((= x -1.0) -inf.0)
-    ((< x -1.0) +nan.0)
-    ((< (abs x) 0.3)
-     (let loop ((n 1) (xp x) (acc 0.0) (sign 1))
-       (let* ((term (* sign (/ xp n))) (acc2 (+ acc term)))
-         (if (< (abs term) (* 1e-18 (max 1.0 (abs acc2)))) acc2
-             (loop (+ n 1) (* xp x) acc2 (- sign))))))
-    (else (real-or-nan (log (+ 1.0 x))))))
+;; JDK 21 multiplies by one rounded constant; dividing pi*d by 180 rounds twice
+(define (jolt-math-to-degrees r) (fl* (exact->inexact r) 57.29577951308232))
+(define (jolt-math-to-radians d) (fl* (exact->inexact d) 0.017453292519943295))
+;; java.lang.Math's hypot, expm1 and log1p are StrictMath's: fdlibm
+;; (java/fdlibm.ss), shared with clojure.math.
+(define (jolt-math-hypot a b) (fdlibm-hypot (exact->inexact a) (exact->inexact b)))
+(define (jolt-math-expm1 x) (fdlibm-expm1 (exact->inexact x)))
+(define (jolt-math-log1p x) (fdlibm-log1p (exact->inexact x)))
 ;; floor-div/floor-mod take ^long args and return a long. Coerce each operand
 ;; toward zero (Java's ^long cast) so a double like 7.0 becomes 7, then compute
 ;; on exact integers so the result is a long, not a double.
@@ -279,15 +236,10 @@
 ;; guards exactly the complex leak; NaN/Inf are real and pass through unchanged.
 (define (real-or-nan x) (if (and (number? x) (real? x)) (exact->inexact x) +nan.0))
 (define (m1c f) (lambda (x) (real-or-nan (f (->dbl x)))))
-(define (m2c f) (lambda (a b) (real-or-nan (f (->dbl a) (->dbl b)))))
-;; Math.pow, and clojure.math/pow which is it: Java's special cases, not C's. A
-;; NaN exponent is NaN even over a base of 1.0, and a base of magnitude 1.0 to an
-;; infinite power is NaN, where expt (C's pow) answers 1.0 for both. The proven-
-;; double lowering, jolt-fl-pow in seq.ss, makes the same two checks.
-(define (jolt-math-pow a b)
-  (if (or (nan? b) (and (infinite? b) (= (abs a) 1.0)))
-      +nan.0
-      (real-or-nan (expt a b))))
+;; Math.pow, and clojure.math/pow which is it: StrictMath's fdlibm pow, Java's
+;; special cases included (a NaN exponent is NaN even over 1.0, where C's pow
+;; answers 1.0). The proven-double lowering, jolt-fl-pow in seq.ss, is the same.
+(define (jolt-math-pow a b) (fdlibm-pow (exact->inexact a) (exact->inexact b)))
 ;; the clojure.math fns implemented above take their numbers as given; these
 ;; take any jolt number first, as the m1/m2 wrappers do (a Float is the double
 ;; it widens to, which is what clojure.math's ^double parameters receive)
@@ -296,57 +248,16 @@
 (def-var! "clojure.math" "sqrt" (m1c sqrt))
 (def-var! "clojure.math" "cbrt" (n1 jolt-math-cbrt))
 (def-var! "clojure.math" "pow" (lambda (a b) (jolt-math-pow (->dbl a) (->dbl b))))
-(def-var! "clojure.math" "exp" (m1 exp))
+(def-var! "clojure.math" "exp" (m1 fdlibm-exp))
 (def-var! "clojure.math" "expm1" (n1 jolt-math-expm1))
-(def-var! "clojure.math" "log" (m1c log))
+(def-var! "clojure.math" "log" (m1 fdlibm-log))
 ;; Math.log10 is fdlibm's e_log10 (the JDK's FdLibm.Log10), ported over the
 ;; high word as cbrt is above; it also backs clojure.math/log10 so the two never
 ;; disagree. ln(x)/ln(10), which (log x 10.0) is, misses exact powers of ten:
 ;; log10(1000.0) came out 2.9999999999999996. fdlibm splits x into 2^k * m with
 ;; m in [1,2) (or [0.5,1) when k<0) and adds k*log10(2) in two parts, so a power
 ;; of ten lands on its integer.
-;; fdlibm's e_log (the JDK's FdLibm.Log) for a positive normal finite x: the
-;; natural log log10 is built on. The host libm's log is not the same function
-;; (one or two ulps apart on about 1 in 3000 doubles), so log10 over it missed
-;; the JVM's digits.
-(define (fdlibm-log x)
-  (let* ((hx0 (sa-flonum-hi32 x))
-         (k0 (- (quotient hx0 1048576) 1023))
-         (hx (bitwise-and hx0 #x000fffff))
-         (i (bitwise-and (+ hx #x95f64) #x100000))
-         (x (cbrt-with-hi x (bitwise-ior hx (bitwise-xor i #x3ff00000))))   ; x or x/2
-         (k (+ k0 (quotient i 1048576)))
-         (f (fl- x 1.0))
-         (dk (exact->inexact k))
-         (ln2-hi 6.93147180369123816490e-01)
-         (ln2-lo 1.90821492927058770002e-10))
-    (if (< (bitwise-and #x000fffff (+ 2 hx)) 3)                           ; |f| < 2^-20
-        (if (fl= f 0.0)
-            (if (= k 0) 0.0 (fl+ (fl* dk ln2-hi) (fl* dk ln2-lo)))
-            (let ((r (fl* (fl* f f) (fl- 0.5 (fl* 0.33333333333333333 f)))))
-              (if (= k 0)
-                  (fl- f r)
-                  (fl- (fl* dk ln2-hi) (fl- (fl- r (fl* dk ln2-lo)) f)))))
-        (let* ((s (fl/ f (fl+ 2.0 f)))
-               (z (fl* s s))
-               (w (fl* z z))
-               (t1 (fl* w (fl+ 3.999999999940941908e-01
-                               (fl* w (fl+ 2.222219843214978396e-01
-                                           (fl* w 1.531383769920937332e-01))))))
-               (t2 (fl* z (fl+ 6.666666666666735130e-01
-                               (fl* w (fl+ 2.857142874366239149e-01
-                                           (fl* w (fl+ 1.818357216161805012e-01
-                                                       (fl* w 1.479819860511658591e-01))))))))
-               (r (fl+ t2 t1)))
-          (if (> (bitwise-ior (- hx #x6147a) (- #x6b851 hx)) 0)
-              (let ((hfsq (fl* 0.5 (fl* f f))))
-                (if (= k 0)
-                    (fl- f (fl- hfsq (fl* s (fl+ hfsq r))))
-                    (fl- (fl* dk ln2-hi)
-                         (fl- (fl- hfsq (fl+ (fl* s (fl+ hfsq r)) (fl* dk ln2-lo))) f))))
-              (if (= k 0)
-                  (fl- f (fl* s (fl- f r)))
-                  (fl- (fl* dk ln2-hi) (fl- (fl- (fl* s (fl- f r)) (fl* dk ln2-lo)) f))))))))
+;; The natural log it is built on is fdlibm-log (java/fdlibm.ss).
 (define (jolt-math-log10 x)
   (let ((x (exact->inexact x)))
     (cond
@@ -367,17 +278,16 @@
          (fl+ z (fl* y 3.01029995663611771306e-01)))))))           ; log10(2) hi
 (def-var! "clojure.math" "log10" (n1 jolt-math-log10))
 (def-var! "clojure.math" "log1p" (n1 jolt-math-log1p))
-(def-var! "clojure.math" "sin" (m1 sin))
-(def-var! "clojure.math" "cos" (m1 cos))
-(def-var! "clojure.math" "tan" (m1 tan))
-(def-var! "clojure.math" "asin" (m1c asin))
-(def-var! "clojure.math" "acos" (m1c acos))
-(def-var! "clojure.math" "atan" (m1 atan))
-;; clojure.math/atan2 is atan2(y, x); Chez's 2-arg atan is (atan y x).
-(def-var! "clojure.math" "atan2" (m2 atan))
-(def-var! "clojure.math" "sinh" (m1 sinh))
-(def-var! "clojure.math" "cosh" (m1 cosh))
-(def-var! "clojure.math" "tanh" (m1 tanh))
+(def-var! "clojure.math" "sin" (m1 fdlibm-sin))
+(def-var! "clojure.math" "cos" (m1 fdlibm-cos))
+(def-var! "clojure.math" "tan" (m1 fdlibm-tan))
+(def-var! "clojure.math" "asin" (m1 fdlibm-asin))
+(def-var! "clojure.math" "acos" (m1 fdlibm-acos))
+(def-var! "clojure.math" "atan" (m1 fdlibm-atan))
+(def-var! "clojure.math" "atan2" (m2 fdlibm-atan2))
+(def-var! "clojure.math" "sinh" (m1 fdlibm-sinh))
+(def-var! "clojure.math" "cosh" (m1 fdlibm-cosh))
+(def-var! "clojure.math" "tanh" (m1 fdlibm-tanh))
 (def-var! "clojure.math" "floor" (m1 floor))
 (def-var! "clojure.math" "ceil" (m1 ceiling))
 (def-var! "clojure.math" "rint" (m1 round))
@@ -495,7 +405,9 @@
 
 (define math-float-overloads
   (list
-    (math-float-overload "abs" abs (lambda (d) (make-jfloat (abs d))))
+    ;; abs(long) wraps: Long.MIN_VALUE is its own absolute value
+    (math-float-overload "abs" (lambda (x) (if (and (exact? x) (integer? x)) (jvm-wrap (abs x) 64) (abs x)))
+                         (lambda (d) (make-jfloat (abs d))))
     (math-float-overload "signum" jolt-math-signum (lambda (d) (make-jfloat (jolt-math-signum d))))
     (math-float-overload "ulp" jolt-math-ulp (lambda (d) (make-jfloat (flt-ulp d))))
     (math-float-overload "nextUp" jolt-math-next-up (lambda (d) (make-jfloat (flt-next-up d))))
@@ -520,7 +432,8 @@
     (both-floats "min" jolt-math-min jolt-math-min)
     (both-floats "copySign" jolt-math-copy-sign jolt-math-copy-sign)))
 
-(register-class-statics! "Math"
+;; StrictMath has the same statics, and the same digits: fdlibm's
+(define math-statics
   (append math-float-overloads
   (map math-checked
   (list (cons "sqrt" (lambda (x) (real-or-nan (sqrt x))))
@@ -536,21 +449,20 @@
         (cons "ceil" (lambda (x) (->dbl (ceiling x))))
         (cons "rint" (lambda (x) (->dbl (round x))))            ; round-half-even -> double
         ;; Math.floorDiv/floorMod: integer floor division / modulus (long -> long).
-        (cons "floorDiv" (lambda (a b) (if (zero? b) (jolt-l-div0-throw) (exact (floor (/ a b))))))
         (cons "floorMod" (lambda (a b) (if (zero? b) (jolt-l-div0-throw) (exact (- a (* b (floor (/ a b))))))))
-        (cons "sin" (lambda (x) (->dbl (sin x)))) (cons "cos" (lambda (x) (->dbl (cos x))))
-        (cons "tan" (lambda (x) (->dbl (tan x)))) (cons "asin" (lambda (x) (real-or-nan (asin x))))
-        (cons "acos" (lambda (x) (real-or-nan (acos x)))) (cons "atan" (lambda (x) (->dbl (atan x))))
-        ;; Math.atan2(y, x) — Chez's 2-arg atan is (atan y x).
-        (cons "atan2" (lambda (y x) (->dbl (atan y x))))
-        (cons "sinh" (lambda (x) (->dbl (sinh x)))) (cons "cosh" (lambda (x) (->dbl (cosh x))))
-        (cons "tanh" (lambda (x) (->dbl (tanh x))))
-        (cons "log" (lambda (x) (real-or-nan (log x)))) (cons "log10" (lambda (x) (jolt-math-log10 (->dbl x))))
+        ;; the transcendentals are StrictMath's fdlibm (java/fdlibm.ss)
+        (cons "sin" (lambda (x) (fdlibm-sin (->dbl x)))) (cons "cos" (lambda (x) (fdlibm-cos (->dbl x))))
+        (cons "tan" (lambda (x) (fdlibm-tan (->dbl x)))) (cons "asin" (lambda (x) (fdlibm-asin (->dbl x))))
+        (cons "acos" (lambda (x) (fdlibm-acos (->dbl x)))) (cons "atan" (lambda (x) (fdlibm-atan (->dbl x))))
+        (cons "atan2" (lambda (y x) (fdlibm-atan2 (->dbl y) (->dbl x))))
+        (cons "sinh" (lambda (x) (fdlibm-sinh (->dbl x)))) (cons "cosh" (lambda (x) (fdlibm-cosh (->dbl x))))
+        (cons "tanh" (lambda (x) (fdlibm-tanh (->dbl x))))
+        (cons "log" (lambda (x) (fdlibm-log (->dbl x)))) (cons "log10" (lambda (x) (jolt-math-log10 (->dbl x))))
         (cons "log1p" (lambda (x) (jolt-math-log1p (->dbl x))))
-        (cons "exp" (lambda (x) (->dbl (exp x))))
+        (cons "exp" (lambda (x) (fdlibm-exp (->dbl x))))
         (cons "expm1" (lambda (x) (jolt-math-expm1 (->dbl x))))
-        (cons "toRadians" (lambda (d) (->dbl (/ (* d jolt-math-pi) 180.0))))
-        (cons "toDegrees" (lambda (r) (->dbl (/ (* r 180.0) jolt-math-pi))))
+        (cons "toRadians" (lambda (d) (jolt-math-to-radians d)))
+        (cons "toDegrees" (lambda (r) (jolt-math-to-degrees r)))
         ;; the IEEE 754 bit-level ops and the exact long arithmetic, shared with
         ;; clojure.math; test.check's double generator uses
         ;; getExponent and scalb
@@ -563,12 +475,10 @@
         (cons "negateExact" (lambda (a) (jolt-math-negate-exact a)))
         (cons "PI" jolt-math-pi) (cons "E" jolt-math-e)
         (cons "random" (lambda args (jolt-random 1.0)))))))
-;; The Math methods with overloads a runtime class chooses among, and
-;; Integer/valueOf: a call no overload fits at compile time (an untyped
-;; argument, a long to round) takes the Reflector's member (records-interop.ss).
-(for-each (lambda (m) (register-reflect-member! "java.lang.Math" "Math" (car m) (cadr m)))
-          '(("abs" 1) ("max" 2) ("min" 2) ("round" 1) ("signum" 1) ("ulp" 1) ("nextUp" 1)
-            ("nextDown" 1) ("nextAfter" 2) ("scalb" 2) ("getExponent" 1) ("copySign" 2)))
+(register-class-statics! "Math" math-statics)
+(register-class-statics! "StrictMath" math-statics)
+;; Integer/valueOf: a call no overload fits at compile time takes the
+;; Reflector's member (records-interop.ss); Math's are math-int.ss's.
 (register-reflect-member! "java.lang.Integer" "Integer" "valueOf" 1)
 
 ;; ---- Double / Float bit casts -----------------------------------------------

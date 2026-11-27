@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The rest of JDK 21's `java.lang.Math`, and `StrictMath`.** `fma` (one
+  rounding, float and double), `clamp` (all four overloads and their
+  `IllegalArgumentException`s), `ceilDiv`, `ceilMod`, `divideExact`,
+  `floorDivExact`, `ceilDivExact`, `absExact`, `toIntExact`, `multiplyFull`,
+  `multiplyHigh`, `unsignedMultiplyHigh` and `TAU`. `StrictMath` answers the
+  same set with the same digits.
+
 - **`java.util.StringJoiner`.** `add`, `toString`, `length`, `setEmptyValue`
   and `merge`, with the JDK's answers for nil parts, empty values and merging.
   `add` and `length` are O(1) and `toString` copies each part once, so a
@@ -215,6 +222,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   million doubles and longs is identical to the JVM's.
 
 ### Fixed
+
+- `java.lang.Math`'s transcendentals answer StrictMath's fdlibm digits instead
+  of the host libm's, which were a last digit off on a few inputs in a
+  thousand (sinh, tan, hypot, exp, log, pow, atan2 and the rest). A sweep of
+  100k inputs per method matches JDK 21 bit for bit, except `sin` and `cos`,
+  whose JVM digits come from a CPU-specific intrinsic (known-divergences.edn).
+  `toRadians` and `toDegrees` multiply by one rounded constant as the JDK does.
+
+- An untyped `Math` call picks its overload as the Reflector does: Floats
+  widen to Doubles when no float overload fits (`(Math/nextAfter x y)` over two
+  Floats is a Double), a tie goes to the overload `getMethods` lists first, and
+  an int pick takes the Long's `intValue`. A call resolved to an int overload
+  wraps or overflows at 32 bits (`(Math/abs (int -2147483648))`,
+  `(Math/addExact (int a) (int b))`), and `Math/abs` and `Math/floorDiv` of
+  `Long/MIN_VALUE` wrap instead of answering a BigInt.
 
 - `Long/valueOf`, `Double/valueOf` and `Float/valueOf` of an untyped argument
   refuse what the JVM's Reflector refuses: `((fn [x] (Double/valueOf x)) 2)`

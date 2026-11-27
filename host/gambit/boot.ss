@@ -94,7 +94,9 @@
 (##include "../chez/java/java-parse.ss")
 (##include "host-statics.ss")
 ;; java.lang.Math and clojure.math: one portable file, shared with Chez
+(##include "../chez/java/fdlibm.ss")
 (##include "../chez/java/math.ss")
+(##include "../chez/java/math-int.ss")
 (##include "../chez/java/class-model.ss")
 (##include "../chez/java/string-builder.ss")
 (##include "../chez/java/dot-forms.ss")

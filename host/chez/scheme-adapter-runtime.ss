@@ -719,29 +719,20 @@
   (let ((bv (make-bytevector 8)))
     (bytevector-u64-set! bv 0 b (endianness little))
     (bytevector-ieee-double-ref bv 0 (endianness little))))
-;; The high word is read straight out of the flonum, without a buffer, which is
-;; most of a bit cast's cost (fdlibm's cbrt makes four). The payload's offset
-;; from the tagged pointer is found once at load by probing 2.5 for its own
-;; bytes. Every probe has to stay inside the object: one below the payload reads
-;; the bytes in front of it, and one above reads past its end, either of which is
-;; unmapped memory when the flonum sits at the edge of a segment (a probe from
-;; below killed scheme.exe at load on Windows, #1337). On 64-bit Chez the 8-byte
-;; payload is the object's last 8 bytes, 6 past the tagged pointer, so the probe
-;; starts there and only counts down if that misses. The high word is the
-;; payload's upper half in the machine's byte order.
-(define (sa-flonum-payload-disp x)
-  (let loop ((d (if (fx> (fixnum-width) 32) 6 8)))
-    (cond ((fx< d 0) (error 'sa-flonum-disp "no flonum payload"))
-          ((eqv? (#%$object-ref 'double x d) x) d)
-          (else (loop (fx- d 1))))))
-(define sa-flonum-disp (sa-flonum-payload-disp 2.5))
-(define sa-flonum-hi-disp
-  (if (eq? (native-endianness) (endianness little)) (fx+ sa-flonum-disp 4) sa-flonum-disp))
-(define (sa-flonum-hi32 x) (#%$object-ref 'unsigned-32 x sa-flonum-hi-disp))
-;; and the low word, the payload's other half (number-print.ss reads both)
-(define sa-flonum-lo-disp
-  (if (eq? (native-endianness) (endianness little)) sa-flonum-disp (fx+ sa-flonum-disp 4)))
-(define (sa-flonum-lo32 x) (#%$object-ref 'unsigned-32 x sa-flonum-lo-disp))
+;; The high and low words, read with Chez's flbit-field, without a buffer,
+;; which is most of a bit cast's cost (fdlibm's cbrt makes four). Syntax, so
+;; fdlibm's word reads (java/fdlibm.ss) compile to a field extract in the
+;; caller's code, where the flonum may never have been boxed.
+(define-syntax sa-flonum-hi32 (syntax-rules () ((_ x) (flbit-field x 32 64))))
+(define-syntax sa-flonum-lo32 (syntax-rules () ((_ x) (flbit-field x 0 32))))
+;; and a double built from its two words (fdlibm's __HI(x, h) keeps x's low
+;; word), through an 8-byte buffer of the call's own
+(define sa-words-hi-off (if (eq? (native-endianness) (endianness little)) 4 0))
+(define (sa-words->flonum hi lo)
+  (let ((bv (make-bytevector 8)))
+    (bytevector-u32-native-set! bv sa-words-hi-off hi)
+    (bytevector-u32-native-set! bv (fx- 4 sa-words-hi-off) lo)
+    (bytevector-ieee-double-native-ref bv 0)))
 ;; (sa-bignum-s64? x): whether a BIGNUM (the caller has asked bignum?) lies in
 ;; signed 64 bits, [-2^63, 2^63). jolt classes an exact integer by that range
 ;; (a Long inside, a BigInt past it), and the unchecked ops ask it of every
@@ -776,14 +767,17 @@
   (let ((v (make-flvector 2200)))
     (do ((k 0 (fx+ k 1))) ((fx= k 2200) v)
       (flvector-set! v k (inexact (expt 2 (- k sa-pow2-base)))))))
-(define (sa-hi32->flonum h)
-  (let* ((e (fxand (fxsrl h 20) #x7ff))
+(define-syntax sa-hi32->flonum
+  (syntax-rules ()
+    ((_ he)
+  (let* ((h he)
+         (e (fxand (fxsrl h 20) #x7ff))
          (m (fxand h #xfffff))
          (mag (cond ((fx= e #x7ff) (if (fx= m 0) +inf.0 +nan.0))
                     ((fx= e 0) (fl* (fixnum->flonum m) (flvector-ref sa-pow2 (fx- sa-pow2-base 1042))))
                     (else (fl* (fixnum->flonum (fx+ #x100000 m))
                                (flvector-ref sa-pow2 (fx+ sa-pow2-base (fx- e 1043))))))))
-    (if (fx= 0 (fxand h #x80000000)) mag (fl- mag))))
+    (if (fx= 0 (fxand h #x80000000)) mag (fl- mag))))))
 
 (define (sa-endian)
   (or (sa-endian-for-tag (sa-host-tag)) (native-endianness)))

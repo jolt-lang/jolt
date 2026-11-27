@@ -236,6 +236,7 @@
 ;;   sa-bits->flonum        UNIMPLEMENTED  Guile: bytevector-u64-set! + bytevector-ieee-double-ref.
 ;;   sa-flonum-hi32         UNIMPLEMENTED  Guile: as sa-flonum->bits, the upper u32.
 ;;   sa-flonum-lo32         UNIMPLEMENTED  Guile: as sa-flonum->bits, the lower u32.
+;;   sa-words->flonum       UNIMPLEMENTED  Guile: as sa-bits->flonum over the two u32 words.
 ;;   sa-hi32->flonum        UNIMPLEMENTED  Guile: as sa-bits->flonum over a zero lower u32.
 ;;   sa-bignum-s64?         UNIMPLEMENTED  Guile: (<= -2^63 x (- 2^63 1)).
 ;;   gensym                 UNIMPLEMENTED  Guile: (gensym) native.

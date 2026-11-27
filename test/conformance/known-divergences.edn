@@ -1934,7 +1934,21 @@
    :check {:expr "(try (Math/addExact (identity (int 2147483647)) (identity (int 1))) (catch ArithmeticException e (.getMessage e)))"
            :jvm "\"integer overflow\""
            :jolt "2147483648"}
-   :note "A call the JVM compiles against long arguments (literals, ^long locals) takes the long overload there too and agrees. Reflection over boxed Longs also picks the int overload on the JVM, truncating: (Math/addExact (identity Long/MAX_VALUE) (identity 1)) is 0 there, long overflow here."}
+   :note "A call the JVM compiles against long arguments (literals, ^long locals) takes the long overload there too and agrees. Reflection over boxed Longs takes the overload Class.getMethods lists first where two fit, as jolt does from the order it records for JDK 21: addExact(long, long), so (Math/addExact (identity Long/MAX_VALUE) (identity 1)) is long overflow on both. getMethods' order is unspecified, so another JDK build may list the int one first."}
+  ;; Math.sin and Math.cos are HotSpot intrinsics whose digits are the CPU's
+  ;; stub's, not StrictMath's: aarch64 and x86-64 each have their own (and
+  ;; x86-64's also covers tan, exp, log, log10 and pow). jolt answers
+  ;; StrictMath's fdlibm digits, the one answer the spec makes deterministic, so
+  ;; Math/sin and StrictMath/sin agree here and differ from the JVM's in the last
+  ;; digit on a few inputs in a hundred.
+  {:category :host-model
+   :behavior "(Math/sin 206.1958268488095), and Math/cos, where the JVM's intrinsic and StrictMath differ"
+   :jvm "-0.9124729837463843 (JDK 21 on aarch64; x86-64's intrinsic has its own digits)"
+   :jolt "-0.9124729837463844, StrictMath's"
+   :check {:expr "[(Math/sin 206.1958268488095) (StrictMath/sin 206.1958268488095)]"
+           :jvm "[-0.9124729837463843 -0.9124729837463844]"
+           :jolt "[-0.9124729837463844 -0.9124729837463844]"}
+   :note "Every other Math transcendental delegates to StrictMath on JDK 21 aarch64 and matches it bit for bit here (sweep of 100k inputs per method)."}
 ]
  :entries
  [;; sorted-map/sorted-set are a B+tree, not PersistentTreeMap's red-black tree,
