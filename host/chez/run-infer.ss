@@ -216,6 +216,18 @@
 ;; outer p. Inferring every init in the outer env typed it from the wrong local.
 (gate-check "a loop init sees the earlier loop binding"
        (diags "(let [p 1] (loop [p (->P 1.0 2.0) q (+ p 1)] q))" #f) 1)
+;; --- case-based narrowing (jolt-3h7.1): a type test types the local it tests
+;; in the guarded branch, and every conjunct of an and-chain does.
+(define (ret-of s)
+  (jolt-nth (infer-body U (anode (string-append "(let [x (first q) y (second q)] " s ")")) (jolt-hash-map)) 0))
+(gate-check "string? narrows the then-branch" (ret-of "(if (string? x) x \"\")") (kw "str"))
+(gate-check "keyword? narrows the then-branch" (ret-of "(if (keyword? x) x :k)") (kw "kw"))
+(gate-check "number? narrows the then-branch" (ret-of "(if (number? x) x 0)") (kw "num"))
+(gate-check "double? narrows to :double" (ret-of "(if (double? x) (* x x) 0.0)") (kw "double"))
+(gate-check "an and-chain narrows each conjunct" (ret-of "(if (and (double? x) (double? y)) (+ x y) 0.0)") (kw "double"))
+(gate-check "float? narrows nothing" (ret-of "(if (float? x) x 0.0)") (kw "any"))
+(gate-check "the else branch is not narrowed" (ret-of "(if (string? x) \"\" x)") (kw "any"))
+
 (set-record-shapes! U (jolt-hash-map))
 
 (gate-summary "infer")

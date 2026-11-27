@@ -527,5 +527,34 @@
     (jolt= (evns "(+ 1 2)" "shadow-cast-ns") (keyword #f "mine")))
 (ok "core's + still runs in an ordinary ns" (= 3 (ev "(+ 1 2)")))
 
+;; --- case-based narrowing (jolt-3h7.1): a (double? x) test proves x a flonum in
+;; the branch it guards, so the arithmetic there takes the fl ops; double? itself
+;; is the native flonum test, so a rebound var cannot feed those ops a non-flonum.
+(let ((e (emitf "u" "(fn* ([x] (if (double? x) (+ (* x x) 1.0) 0.0)))")))
+  (ok "double? test lowers to the native jolt-double?" (has? e "(if (jolt-double? x)"))
+  (ok "double?-guarded arithmetic lowers to fl*" (has? e "(#3%fl* x x)"))
+  (ok "double?-guarded arithmetic lowers to fl+" (has? e "(#3%fl+ (#3%fl* x x) 1.0)")))
+(ok "an and-chain of double? tests narrows every conjunct"
+    (has? (emitf "u" "(fn* ([x y] (if (and (double? x) (double? y)) (* x y) 0.0)))") "(#3%fl* x y)"))
+(ok "a cond arm on double? narrows"
+    (has? (emitf "u" "(fn* ([x] (cond (double? x) (* x 2.0) :else x)))") "(#3%fl* x 2.0)"))
+(ok "the else branch of a double? test stays generic"
+    (has? (emitf "u" "(fn* ([x] (if (double? x) 0.0 (* x x))))") "(jolt-n* x x)"))
+(ok "number? does not narrow to a flonum"
+    (has? (emitf "u" "(fn* ([x] (if (number? x) (* x x) 0)))") "(jolt-n* x x)"))
+(ok "float? does not narrow (a jfloat is no flonum)"
+    (not (has? (emitf "u" "(fn* ([x] (if (float? x) (* x x) 0.0)))") "#3%fl*")))
+(ok "a double? test on a different local narrows nothing here"
+    (has? (emitf "u" "(fn* ([x y] (if (double? y) (* x x) 0.0)))") "(jolt-n* x x)"))
+(let ((f (ev "(fn* ([x] (if (double? x) (* x x) (if (number? x) (* x 3) :other))))")))
+  (ok "narrowed branch computes on a flonum" (jolt= (f 1.5) 2.25))
+  (ok "a fixnum takes the generic branch" (jolt= (f 2) 6))
+  (ok "a ratio takes the generic branch" (jolt= (f (ev "1/2")) (ev "3/2")))
+  (ok "a jfloat takes the generic branch" (jolt= (f (ev "(float 2.0)")) (ev "(* (float 2.0) 3)")))
+  (ok "a non-number takes the else branch" (jolt= (f "s") (keyword #f "other"))))
+(ok "a rebound double? var does not reach the guarded fl ops"
+    (jolt= (ev "(with-redefs [double? (fn [_] true)] ((fn [x] (if (double? x) (* x x) :no)) \"s\"))")
+           (keyword #f "no")))
+
 (printf "~a/~a passed~n" (- total fails) total)
 (exit (if (zero? fails) 0 1))

@@ -22,7 +22,8 @@
   Runs in every build and at `-e`/repl, but not the seed mint (which compiles with
   the passes off), so it stays out of the self-host fixpoint and benefits open and
   closed builds alike."
-  (:require [jolt.ir :refer [map-ir-children thread-bindings]]))
+  (:require [jolt.ir :refer [map-ir-children thread-bindings]]
+            [jolt.passes.fold :refer [truthy-type-tests]]))
 
 ;; java.lang.Math members that ALWAYS return a double on the JVM and have a native
 ;; Chez flonum op. When every operand is a proven flonum, the Math call lowers to
@@ -186,6 +187,18 @@
 
 (declare an rebind-boxed boxed-operand? jvm-long-expr? rebind-jvm-long)
 
+;; The then-branch env of an `if`: a local the test proves (double? x) is a
+;; flonum there, so its arithmetic takes the fl ops (case-based narrowing; see
+;; jolt.passes.fold/truthy-type-tests, which also reads `and` chains).
+;; Only an untyped local narrows. It stays boxed: the JVM holds an Object there,
+;; so a cast over it answers what a boxed Double's does.
+(defn- then-env [test tenv]
+  (reduce-kv (fn [te nm pred]
+               (if (and (= pred "double?") (nil? (get te nm)))
+                 (rebind-boxed (assoc te nm :double) nm true)
+                 te))
+             tenv (truthy-type-tests test)))
+
 ;; A let's bindings analyzed in its scope order (jolt.ir/thread-bindings): each
 ;; name gets its init's kind and boxedness. A letfn sibling is bound with no
 ;; kind before any init is seen. Answers [tenv' bindings' facts].
@@ -212,7 +225,8 @@
       (= op :recur) [(mapv (fn [a] (nth (an a tenv) 0)) (get node :args))]
       (= op :let) (recur-kinds (get node :body) (nth (let-scope node tenv) 0))
       (= op :let-values) (recur-kinds (:body node) (apply dissoc tenv (:names node)))
-      (= op :if) (concat (recur-kinds (get node :then) tenv) (recur-kinds (get node :else) tenv))
+      (= op :if) (concat (recur-kinds (get node :then) (then-env (get node :test) tenv))
+                         (recur-kinds (get node :else) tenv))
       (= op :do) (recur-kinds (get node :ret) tenv)
       :else [])))
 
@@ -702,7 +716,7 @@
 
 (defn- an-if [node tenv]
   (let [tr (an (get node :test) tenv)
-        thn (an (get node :then) tenv)
+        thn (an (get node :then) (then-env (get node :test) tenv))
         els (an (get node :else) tenv)
         tk (nth thn 0) ek (nth els 0)]
     [(if (= tk ek) tk nil)

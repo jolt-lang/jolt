@@ -261,6 +261,11 @@
    "identity" {:call "jolt-identity" :value "jolt-identity-fn" :arity #(= % 1)}
    "nil?"     {:call "jolt-nil?"   :value "jolt-nil?-fn"   :arity #(= % 1) :bool? true :pure? true}
    "some?"    {:call "jolt-some?"  :value "jolt-some?-fn"  :arity #(= % 1) :bool? true :pure? true}
+   ;; double? is flonum? (host/chez/predicates.ss). Native, like nil?/some?, because
+   ;; the numeric pass narrows a local it tests to :double and runs unsafe fl ops
+   ;; on it in the guarded branch (jolt.passes.fold/truthy-type-tests): the test
+   ;; must be the host predicate, not whatever the var holds.
+   "double?"  {:call "jolt-double?" :arity #(= % 1) :bool? true :pure? true}
    ;; the reference inlines identical? (:inline -> Util/identical); a var call
    ;; here cost ~100ns per use in cell-less seed code (true?/false?/boolean?).
    "identical?" {:call "jolt-identical?" :value "jolt-identical?-fn" :arity #(= % 2) :bool? true :pure? true}
