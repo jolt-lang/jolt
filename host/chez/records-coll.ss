@@ -165,10 +165,12 @@
 ;; Held in a table keyed BY the descriptor rather than in a field OF it: the
 ;; descriptor's layout is image-format surface (see make-jrdesc), and a table read
 ;; costs 2 ns more than a field read (4.97 vs 2.86 ns, Chez 10.4.1) — nothing next
-;; to the 200 ns count path it saves. Weak, so a redefined type's descriptor is
-;; still collectable. A miss inserts under the mutex; reads stay lock-free, which
-;; a Chez hashtable survives (writer-vs-writer is what corrupts one).
-(define jrdesc-ifc-tbl (make-weak-eq-hashtable))
+;; to the 200 ns count path it saves. Ephemeron-keyed, so a redefined type's
+;; descriptor is still collectable even though its vector names it (slot 17): a
+;; merely weak key would be held alive by its own value. A miss inserts under
+;; the mutex; reads stay lock-free, which a Chez hashtable survives
+;; (writer-vs-writer is what corrupts one).
+(define jrdesc-ifc-tbl (make-ephemeron-eq-hashtable))
 (define jrdesc-ifc-mutex (make-mutex))
 (define (jrdesc-ifc d) (hashtable-ref jrdesc-ifc-tbl d #f))
 (define (jrdesc-ifc-set! d v) (jolt-with-mutex jrdesc-ifc-mutex (hashtable-set! jrdesc-ifc-tbl d v)))
@@ -290,25 +292,32 @@
             ;; declare a protocol method named length, which is CharSequence's).
             (let ((m (find-method-any-protocol rtag "meta"))
                   (w (find-method-any-protocol rtag "withMeta")))
-              (and (or m w) (cons m w))))))
-;; The derived vector of the descriptor asked last, as (desc . vector). Every
-;; record op opens with jrdesc-ifc-of, and a weak-table probe is most of what a
-;; plain record's count or contains? costs; a loop over one record type asks the
-;; same descriptor every time. The pair is replaced whole, never mutated, so a
-;; racing reader sees either the old pair or the new one, both consistent; the
-;; epoch is still checked on the vector, so a hit can never outlive a change.
-(define jrdesc-ifc-last (cons #f #f))
+              (and (or m w) (cons m w)))
+            ;; slot 17: the descriptor this vector was derived for, so the vector
+            ;; alone is the last-asked cache below (jrdesc-ifc-last)
+            d)))
+;; The derived vector of the descriptor asked last. Every record op opens with
+;; jrdesc-ifc-of, and a table probe is most of what a plain record's count or
+;; contains? costs; a loop over one record type asks the same descriptor every
+;; time. The vector names its own descriptor (slot 17), so switching the cache to
+;; another type is one store and no allocation: it was a fresh (desc . vector)
+;; pair, which made every op on two interleaved record types cost 23 ns more than
+;; on one (a cons and a set! per op). A vector is never mutated after it is
+;; built, so a racing reader sees one type's descriptor with that type's answers;
+;; the epoch is still checked, so a hit can never outlive a change. The initial
+;; value names no descriptor, so it never hits.
+(define jrdesc-ifc-last (let ((v (make-vector 18 #f))) (vector-set! v 0 -1) v))
 (define (jrdesc-ifc-of x)
   (let ((d (jrec-desc x))
         (l jrdesc-ifc-last))
-    (if (and (eq? (car l) d) (fx=? (vector-ref (cdr l) 0) (jrdesc-ifc-epoch)))
-        (cdr l)
+    (if (and (eq? (vector-ref l 17) d) (fx=? (vector-ref l 0) (jrdesc-ifc-epoch)))
+        l
         (let ((c (jrdesc-ifc d)))
           (if (and c (fx=? (vector-ref c 0) (jrdesc-ifc-epoch)))
-              (begin (set! jrdesc-ifc-last (cons d c)) c)
+              (begin (set! jrdesc-ifc-last c) c)
               (let ((fresh (jrdesc-derive-ifc d (jrec-record?-uncached x))))
                 (jrdesc-ifc-set! d fresh)
-                (set! jrdesc-ifc-last (cons d fresh))
+                (set! jrdesc-ifc-last fresh)
                 fresh))))))
 ;; A PLAIN record is a defrecord that declares none of the methods the generic
 ;; collection ops consult on a record — no count, containsKey, assoc, seq, valAt,
@@ -344,9 +353,9 @@
   (syntax-rules ()
     ((_ x0)
      (let* ((x x0) (l jrdesc-ifc-last))
-       (vector-ref (if (and (eq? (car l) (jrec-desc x))
-                            (fx=? (vector-ref (cdr l) 0) (fx+ jch-graph-epoch jolt-proto-epoch)))
-                       (cdr l)
+       (vector-ref (if (and (eq? (vector-ref l 17) (jrec-desc x))
+                            (fx=? (vector-ref l 0) (fx+ jch-graph-epoch jolt-proto-epoch)))
+                       l
                        (jrdesc-ifc-of x))
                    16)))))
 ;; The impl a record type declares for METHOD (any protocol), or #f. Every

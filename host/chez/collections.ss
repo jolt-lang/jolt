@@ -2093,34 +2093,66 @@
 ;; another thread is a fixnum either way, so the worst concurrent outcome is a
 ;; miss. A hash-mode map, a record, nil and every other receiver keep jolt-get's
 ;; path, so what the site answers is exactly what jolt-get answers.
-;; Slot 1 is the record half of the site, Clojure's KeywordLookupSite: the
-;; (descriptor . field-slot) a record receiver last answered k from, so a site
-;; that keeps seeing one record type reads the field with one eq? instead of
-;; jolt-get's type cascade and the field-index hashtable. Held as one pair,
-;; replaced whole, so a racing reader never pairs one type's descriptor with
-;; another's slot. Only a defrecord's slot is cached: a record's field-first
+;; Slots 1 and 2 are the record half of the site, Clojure's KeywordLookupSite.
+;; An entry is (descriptor . field-slot) for a record type that answers k from a
+;; field, or #(descriptor) for one that has no field for it (the extension map
+;; and the type's own lookup answer then, without scanning the fields again; a
+;; pair would be taken for a field's slot by Chez's open-coded hit, rt.ss
+;; jolt-kw-get-site/i, which tests pair?). Slot 1 is the first type the site
+;; saw, read by that open-coded hit; slot 2 holds up to jolt-kw-site-poly more,
+;; as an immutable vector of entries, or #t once the site has seen more types
+;; than that. Clojure's callsites do the same: a chain of up to 8 class checks,
+;; then the plain RT.get.
+;;
+;; Slot 1 used to be REPLACED on every miss, so a site that alternated between
+;; two record types re-primed on each call -- a field-index scan, a cons and a
+;; store -- and answered (:x r) in 68 ns against 4 for one type and 34 for no
+;; cache at all. Now a miss adds an entry until the site is megamorphic, where
+;; it stops caching and allocating and answers through jrec-ref. Entries are
+;; replaced whole, never mutated, so a racing reader never pairs one type's
+;; descriptor with another's slot; a racing writer can drop an entry, which is
+;; one more miss. Only a defrecord's slot is cached: a record's field-first
 ;; lookup is fixed for the life of its descriptor (a redefinition makes a new
 ;; descriptor, which misses), while a bare deftype's fields can be masked later
 ;; by a valAt it gains (records.ss jrdesc-mask-fields!).
-(define (jolt-kw-site) (make-vector 2 0))
+(define jolt-kw-site-poly 3)
+(define (jolt-kw-site) (make-vector 3 0))
+(define (jolt-kw-entries-add x e)
+  (let* ((n (vector-length x)) (v (make-vector (fx+ n 1) e)))
+    (do ((j 0 (fx+ j 1))) ((fx=? j n) v) (vector-set! v j (vector-ref x j)))))
 (define (jolt-kw-rec-get m k site d)
-  (let ((c (if (fx>? (vector-length site) 1) (vector-ref site 1) 0))
-        (desc (jrec-desc m)))
+  (let* ((desc (jrec-desc m))
+         (n (vector-length site))
+         (c (if (fx>? n 1) (vector-ref site 1) 0)))
+    ;; the hit tests are spelled out, not shared helpers: two calls were 4 ns
+    ;; on an absent-key hit
     (cond
       ((and (pair? c) (eq? (car c) desc)) (jrec-field-ref m (cdr c)))
-      ;; a key this type has no field for, remembered as #(desc) (#1713): the
-      ;; extension map and the type's own lookup answer it, without scanning
-      ;; the fields again. A pair would be taken for a field's slot by Chez's
-      ;; open-coded hit (rt.ss jolt-kw-get-site/i), which tests pair?.
       ((and (vector? c) (eq? (vector-ref c 0) desc)) (jrec-ref-slow m k d))
       (else
-        (let ((i (jrec-get-index m k)))
-          (when (and (fx>? (vector-length site) 1) (jrec-record? m)
-                     (not (eq? k jolt-deftype-kw)))
-            (vector-set! site 1 (if i (cons desc i) (vector desc))))
-          ;; a key no field holds: the record's own lookup, not the whole get
-          ;; dispatch again
-          (if i (jrec-field-ref m i) (jrec-ref m k d)))))))
+        (let ((x (if (fx>? n 2) (vector-ref site 2) 0)))
+          (let scan ((j 0))
+            (cond
+              ((and (vector? x) (fx<? j (vector-length x)))
+               (let ((e (vector-ref x j)))
+                 (cond ((pair? e) (if (eq? (car e) desc) (jrec-field-ref m (cdr e)) (scan (fx+ j 1))))
+                       ((eq? (vector-ref e 0) desc) (jrec-ref-slow m k d))
+                       (else (scan (fx+ j 1))))))
+              ;; megamorphic: the record's own lookup, nothing remembered
+              ((eq? x #t) (jrec-ref m k d))
+              (else
+               (let ((i (jrec-get-index m k)))
+                 (when (and (fx>? n 1) (jrec-record? m) (not (eq? k jolt-deftype-kw)))
+                   (let ((e (if i (cons desc i) (vector desc))))
+                     (cond ((eqv? c 0) (vector-set! site 1 e))
+                           ((fx<=? n 2))
+                           ((eqv? x 0) (vector-set! site 2 (vector e)))
+                           ((fx<? (vector-length x) jolt-kw-site-poly)
+                            (vector-set! site 2 (jolt-kw-entries-add x e)))
+                           (else (vector-set! site 2 #t)))))
+                 ;; a key no field holds: the record's own lookup, not the
+                 ;; whole get dispatch again
+                 (if i (jrec-field-ref m i) (jrec-ref m k d)))))))))))
 (define (jolt-kw-get-site* m k site d)
   (if (pmap? m)
       (let ((root (pmap-root m)))

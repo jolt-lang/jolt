@@ -1104,7 +1104,7 @@
 (define (jrec-declares? x interface)
   (and (jrec? x) (jch-isa? (jrec-tag x) interface)))
 
-(define jrdesc-ifc-tbl (make-weak-eq-hashtable))
+(define jrdesc-ifc-tbl (make-ephemeron-eq-hashtable))
 
 (define jrdesc-ifc-mutex (make-mutex))
 
@@ -1171,23 +1171,25 @@
       (hashtable-ref chez-record-dbl-tbl tag #f)
       (let ((m (find-method-any-protocol rtag "meta"))
             (w (find-method-any-protocol rtag "withMeta")))
-        (and (or m w) (cons m w))))))
+        (and (or m w) (cons m w)))
+      d)))
 
-(define jrdesc-ifc-last (cons #f #f))
+(define jrdesc-ifc-last
+  (let ((v (make-vector 18 #f))) (vector-set! v 0 -1) v))
 
 (define (jrdesc-ifc-of x)
   (let ((d (jrec-desc x)) (l jrdesc-ifc-last))
-    (if (and (eq? (car l) d)
-             (fx=? (vector-ref (cdr l) 0) (jrdesc-ifc-epoch)))
-        (cdr l)
+    (if (and (eq? (vector-ref l 17) d)
+             (fx=? (vector-ref l 0) (jrdesc-ifc-epoch)))
+        l
         (let ((c (jrdesc-ifc d)))
           (if (and c (fx=? (vector-ref c 0) (jrdesc-ifc-epoch)))
-              (begin (set! jrdesc-ifc-last (cons d c)) c)
+              (begin (set! jrdesc-ifc-last c) c)
               (let ((fresh (jrdesc-derive-ifc
                              d
                              (jrec-record?-uncached x))))
                 (jrdesc-ifc-set! d fresh)
-                (set! jrdesc-ifc-last (cons d fresh))
+                (set! jrdesc-ifc-last fresh)
                 fresh))))))
 
 (define jrec-map-method-names
@@ -1206,11 +1208,11 @@
     ((_ x0)
      (let* ((x x0) (l jrdesc-ifc-last))
        (vector-ref
-         (if (and (eq? (car l) (jrec-desc x))
+         (if (and (eq? (vector-ref l 17) (jrec-desc x))
                   (fx=?
-                    (vector-ref (cdr l) 0)
+                    (vector-ref l 0)
                     (fx+ jch-graph-epoch jolt-proto-epoch)))
-             (cdr l)
+             l
              (jrdesc-ifc-of x))
          16)))))
 
