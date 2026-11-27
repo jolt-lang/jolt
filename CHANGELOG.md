@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `defonce` and `^:jolt.reload/keep` vars survive a reload (deftype, defrecord
   and defprotocol included), `^:jolt.reload/no-reload` and `no-unload` opt a
   namespace out, and the upstream `:clj-reload/...` spellings work too. With no
-  `init`, it watches every source dir on the class path
+  `init`, it watches every source dir on the class path, `.jolt` files included
   (`JOLT_RELOAD_AUTO_INIT=false` turns that off). clj-reload's own parse, core
   and keep suites run as a smoke gate: 48 tests, all passing.
 

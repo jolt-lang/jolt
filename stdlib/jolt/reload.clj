@@ -47,7 +47,7 @@
    [java.util.concurrent.locks ReentrantLock]))
 
 ; Config :: {:dirs        [<string> ...]       - where to look for files
-;            :files       #"<regex>"           - which files to scan, defaults to #".*\.cljc?"
+;            :files       #"<regex>"           - which files to scan, defaults to #".*\.(clj|cljc|jolt)"
 ;            :no-unload   #{<symbol> ...}      - list of nses to skip unload
 ;            :no-reload   #{<symbol> ...}      - list of nses to skip reload
 ;            :reload-hook <symbol>             - if function with this name exists,
@@ -192,7 +192,7 @@
   "Options:
    
    :dirs        :: [<string> ...]  - where to look for files
-   :files       :: #\"<regex>\"    - which files to scan, defaults to #\".*\\\\.cljc?\"
+   :files       :: #\"<regex>\"    - which files to scan, defaults to #\".*\\\\.(clj|cljc|jolt)\"
    :no-reload   :: #{<symbol> ...} - list of namespaces to skip reload entirely
    :no-unload   :: #{<symbol> ...} - list of namespaces to skip unload only.
                                      These will be loaded “on top” of previous state
@@ -211,7 +211,8 @@
     (with-lock
       (binding [util/*log-fn* nil]
         (let [dirs  (vec (or (:dirs opts) (classpath-dirs)))
-              files (or (:files opts) #".*\.cljc?")
+              ;; jolt: .jolt is a source extension too, ahead of .clj on lookup
+              files (or (:files opts) #".*\.(clj|cljc|jolt)")
               now   (util/now)]
           (alter-var-root #'*config*
             (constantly
