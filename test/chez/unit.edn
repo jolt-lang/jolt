@@ -1827,7 +1827,7 @@
   ;; has), a ^StringBuilder param tag, and a constructor in target position.
   {:suite "sbdirect" :expr "(let [sb (StringBuilder.)] (.append sb \"a\") (.toString sb))" :expected "\"a\""}
   ;; append renders like the JVM's: a number, nil as \"null\", a char bare
-  {:suite "sbdirect" :expr "(let [sb (StringBuilder.)] (.append sb \"a\") (.append sb 1) (.append sb nil) (.append sb \\c) (.toString sb))" :expected "\"a1nullc\""}
+  {:suite "sbdirect" :expr "(let [sb (StringBuilder.) n (identity nil)] (.append sb \"a\") (.append sb 1) (.append sb n) (.append sb \\c) (.toString sb))" :expected "\"a1nullc\""}
   ;; append RETURNS the builder — the fluent contract (-> sb (.append a) (.append b))
   {:suite "sbdirect" :expr "(let [sb (StringBuilder.)] (.toString (.append (.append sb \"a\") \"b\")))" :expected "\"ab\""}
   {:suite "sbdirect" :expr "(let [sb (StringBuilder.)] (.append sb \"abc\") (.length sb))" :expected "3"}
@@ -1859,7 +1859,7 @@
   ;; stay indistinguishable from it, which the constructor-in-target-position row
   ;; and the vector-element row below pin by reaching a builder the analyzer
   ;; cannot prove.
-  {:suite "sbdirect" :expr "(let [sb (StringBuffer.)] (.append sb \"a\") (.append sb 1) (.append sb nil) (.append sb \\c) (.toString sb))" :expected "\"a1nullc\""}
+  {:suite "sbdirect" :expr "(let [sb (StringBuffer.) n (identity nil)] (.append sb \"a\") (.append sb 1) (.append sb n) (.append sb \\c) (.toString sb))" :expected "\"a1nullc\""}
   {:suite "sbdirect" :expr "(let [sb (StringBuffer.)] (.toString (.append (.append sb \"a\") \"b\")))" :expected "\"ab\""}
   {:suite "sbdirect" :expr "(let [sb (StringBuffer. \"abc\")] [(.length sb) (.isEmpty sb) (.charAt sb 1)])" :expected "[3 false \\b]"}
   {:suite "sbdirect" :expr "((fn [^StringBuffer b] (.append b \"x\") (.toString b)) (StringBuffer. \"p-\"))" :expected "\"p-x\""}

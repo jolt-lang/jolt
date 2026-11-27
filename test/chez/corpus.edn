@@ -4880,11 +4880,9 @@
   ;; (.m sb …) with a proven StringBuilder target (a local bound to
   ;; (StringBuilder.), or a ^StringBuilder hint) emits the accessor inline.
   {:suite "host-interop / proven StringBuilder target" :label "unhinted let-bound builder" :expected "\"ab\"" :actual "(let [sb (StringBuilder.)] (.append sb \"a\") (.append sb \"b\") (.toString sb))" :portability :common}
-  ;; nil is deliberately NOT in this chain: on the JVM (.append sb nil) is a
-  ;; reflection ambiguity (String/Object/char[]/CharSequence all match) and raises
-  ;; IllegalArgumentException, while jolt accepts it and renders "null" like
-  ;; append(Object) would. jolt is a strict superset there and the generic path
-  ;; already behaved this way, so the nil case is pinned in unit.edn instead.
+  ;; nil is deliberately NOT in this chain: (.append sb nil) fits
+  ;; String/Object/char[]/CharSequence alike and is refused as ambiguous, on the
+  ;; JVM and here; an untyped nil renders "null" (unit.edn).
   {:suite "host-interop / proven StringBuilder target" :label "append is fluent and renders numbers and chars" :expected "[\"a1c\" 3]" :actual "(let [sb (StringBuilder.)] (.append (.append (.append sb \"a\") 1) \\c) [(.toString sb) (.length sb)])" :portability :common}
   {:suite "host-interop / proven StringBuilder target" :label "^StringBuilder param hint" :expected "\"p-x\"" :actual "((fn [^StringBuilder b] (.append b \"x\") (.toString b)) (StringBuilder. \"p-\"))" :portability :common}
   {:suite "clojure.string" :label "reverse" :expected "\"cba\"" :actual "(do (require (quote [clojure.string :as s])) (s/reverse \"abc\"))" :portability :common}
