@@ -728,7 +728,7 @@ jobs:
           ./jolt-bin --version
       - name: Install the library's system deps
         run: |
-          sudo apt-get update
+          sh jolt/ci/apt-update.sh
           # liblz4/zlib/tinfo are jolt's own dynamic deps; the rest is per-library.
           sudo apt-get install -y liblz4-1 zlib1g libtinfo6 ${{ matrix.apt }}
       # jolt's DateTimeFormatter localizes month/day names through libc strftime, so
@@ -783,7 +783,7 @@ jobs:
           mv "$bin" ./jolt-bin
           ./jolt-bin --version
       - run: |
-          sudo apt-get update
+          sh jolt/ci/apt-update.sh
           sudo apt-get install -y liblz4-1 zlib1g libtinfo6 libpq5 libsqlite3-0
       - name: Test
         env:
@@ -853,7 +853,7 @@ jobs:
           ./jolt-bin --version
       - name: Install system deps
         run: |
-          sudo apt-get update
+          sh jolt/ci/apt-update.sh
           # jolt's own deps, plus every native library any example declares: the GUI
           # apps are built (not run), but jolt loads a declared :jolt/native at
           # require time, so the .so has to be present to compile them.
@@ -887,7 +887,7 @@ jobs:
           name: jolt-x86_64-linux
       - name: Install build deps
         run: |
-          sudo apt-get update
+          sh jolt/ci/apt-update.sh
           # cc + the runtime's own shared deps: the gate BUILDS each bench with
           # both compilers, so this needs the same toolchain `jolt build` does.
           sudo apt-get install -y build-essential liblz4-1 zlib1g libtinfo6
@@ -1116,7 +1116,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          sudo apt-get update
+          sh jolt/ci/apt-update.sh
           sudo apt-get install -y liblz4-1 zlib1g libtinfo6
           gh release download "$VER" --repo "${{ github.repository }}" -p "jolt-${VER}-x86_64-linux.tar.gz" --dir rel-dl
           mkdir -p unpacked-rel
