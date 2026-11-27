@@ -723,7 +723,12 @@
         (if ps
             (apply (proc-for ps) (map sig-box-arg ps args))
             (jolt-reflect-no-method name (length args)))))
-    (case-lambda ((a) (call (list a))) ((a b) (call (list a b))) (args (call args)))))
+;; fixed at the method's argument count, so the member answers its arity
+    (case argc
+      ((1) (lambda (a) (call (list a))))
+      ((2) (lambda (a b) (call (list a b))))
+      ((3) (lambda (a b c) (call (list a b c))))
+      (else (lambda args (call args))))))
 (define (register-reflect-member! cls short name argc)
   (let ((entry (string-append name "(reflect)")))
     (register-reflect-entry! cls name argc entry)

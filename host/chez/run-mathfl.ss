@@ -25,9 +25,9 @@
   (gate-check "(2) surrounding add stays fl+" (gate-sub? e "fl+") #t)
   (gate-check "(2) inner Math/sqrt is flsqrt" (gate-sub? e "flsqrt") #t))
 
-;; (3) atan2(y,x) -> (fdlibm-atan2 y x), StrictMath's digits
+;; (3) atan2(y,x) -> (jolt-fl-atan2 y x), StrictMath's digits
 (let ((e (emit-num "(def _ (fn [^double y ^double x] (Math/atan2 y x)))")))
-  (gate-check "(3) Math/atan2 -> fdlibm-atan2" (gate-sub? e "fdlibm-atan2") #t))
+  (gate-check "(3) Math/atan2 -> jolt-fl-atan2" (gate-sub? e "jolt-fl-atan2") #t))
 
 ;; (4) floor / pow
 (let ((e (emit-num "(def _ (fn [^double x] (Math/floor x)))")))
