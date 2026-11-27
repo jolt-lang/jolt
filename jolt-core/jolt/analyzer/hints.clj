@@ -595,16 +595,14 @@
 (defn- nhint-of [ctx sym]
   (let [m (form-sym-meta sym)] (when m (tag->pnkind (get m :tag)))))
 
-;; The names of a let/loop binding vector's ^double-hinted locals. On the JVM
-;; such a hint does not convert the value the local holds, but each primitive
-;; arithmetic use unboxes it (RT.doubleCast); jolt.passes.numeric casts those
-;; uses (dcast-args).
-(defn double-hinted-names [ctx bvec]
-  (loop [i 0 acc []]
-    (if (< i (count bvec))
-      (let [b (nth bvec i)]
-        (recur (+ i 2) (if (and (form-sym? b) (= :double (nhint-of ctx b))) (conj acc (form-sym-name b)) acc)))
-      acc)))
+;; Is this let/loop binding symbol ^double-hinted? On the JVM such a hint does
+;; not convert the value the local holds, but each primitive arithmetic use
+;; unboxes it (RT.doubleCast). The analyzer marks every reference that resolves
+;; to THIS binding (:dcast on the :local node), so a later unhinted rebinding of
+;; the name is not cast and a later binding's init that reads it is;
+;; jolt.passes.numeric casts the marked uses (dcast-args).
+(defn double-hinted? [ctx bsym]
+  (and (form-sym? bsym) (= :double (nhint-of ctx bsym))))
 
 ;; A primitive ARRAY hint on a param. Drives the aget/aset fast paths
 ;; (jolt.passes.numeric):

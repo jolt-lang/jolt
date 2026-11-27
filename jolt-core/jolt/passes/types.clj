@@ -551,7 +551,7 @@
         acc-t (reduce-acc-type (nth args 0) init-t et tenv env)]
     (if (get env :acc-probe?)
       [acc-t node]
-      (let [fn-r (infer-fn-seeded (nth args 0) {0 acc-t 1 et} tenv env)]
+      (let [fn-r (infer-fn-seeded (nth args 0) {0 acc-t 1 et} tenv (assoc env :caught? true))]
         [(join acc-t (ty fn-r))
          (assoc node :args (if three
                              [(nd fn-r) (nd init-r) (nd coll-r)]
@@ -568,7 +568,7 @@
   [node cn args tenv env]
   (let [coll-rs (mapv (fn [a] (infer a tenv env)) (rest args))
         et (let [ct (ty (nth coll-rs 0))] (if (vec-type? ct) (velem ct) :any))
-        fn-r (infer-fn-seeded (nth args 0) {(get (get hof-table cn) :epos) et} tenv env)
+        fn-r (infer-fn-seeded (nth args 0) {(get (get hof-table cn) :epos) et} tenv (assoc env :caught? true))
         rt (cond (= cn "mapv") (mk-vec (ty fn-r))
                  (= cn "filterv") (mk-vec et)
                  :else :any)]
@@ -767,6 +767,11 @@
         prim (when (:var? c) (str-prim-op (:cn c) (:n c) ares))]
     (if prim (assoc rt2 :prim-op prim) rt2)))
 
+;; A fn literal handed to a call may be run under a catching try the callee
+;; owns, (throws? #(count :a)), so a proven error in its body is a :warn, as it
+;; is under a lexically enclosing catching try (infer-try).
+(defn- fn-arg-env [a env] (if (= :fn (get a :op)) (assoc env :caught? true) env))
+
 (defn- infer-call
   "Everything else: type the args, collect the call (var callee) for whole-program
   inference, run the success-type check, and use the declared/estimated return type.
@@ -782,7 +787,7 @@
         ;; the callee's value type: a var's from vtypes (a fn is :truthy, a def
         ;; carries its inferred type), else the inferred type of the callee expr
         callee-t (if iscall-var (get (get env :vtypes) (var-key fnode)) (ty fr))
-        ares (mapv (fn [a] (infer a tenv env)) args)]
+        ares (mapv (fn [a] (infer a tenv (fn-arg-env a env))) args)]
     (when-not (get env :checking?) (collect-call-types! c ares env))
     ;; collect ctor-site arg types for field-type inference (wp fixpoint's final pass)
     (when (and iscall-var @(:collecting-fields? (:unit env)))
@@ -937,20 +942,28 @@
         el (if (empty? ets) :any (reduce join (first ets) (rest ets)))]
     [(cap (mk el) type-depth) (assoc node :items (mapv (fn [r] (nth r 1)) irs))]))
 
+;; An arm the test proves unreachable is never run, so nothing in it can be a
+;; proven error: it is checked against a scratch diags cell. That is what lets
+;; (let [x 5] (when (string? x) (count x))) and a macro's
+;; (if (number? ~x) (inc ~x) (count ~x)) compile.
+(defn- dead-arm-env [env] (assoc env :diags (atom [])))
+
 (defn- infer-if [node tenv env]
   (let [test (get node :test)
         tr (infer test tenv env)
         nr (if-narrow test tenv env)   ; narrow a local in the proven branch
-        thn (infer (get node :then) (nth nr 0) env)
-        els (infer (get node :else) (nth nr 1) env)
         ;; a test the predicate fold settled picks its branch now: the const-fold
         ;; after inference drops the other one, so its type must not widen the
         ;; if's. (if (seq? r) (… hash-map …) r) on a proven record is how map
         ;; destructuring starts, and joining the dead branch's map lost the
         ;; record type every field read after it needed.
         tn (nth tr 1)
-        t (if (= :const (get tn :op))
-            (if (let [v (get tn :val)] (or (nil? v) (false? v))) (nth els 0) (nth thn 0))
+        settled? (= :const (get tn :op))
+        falsey? (and settled? (let [v (get tn :val)] (or (nil? v) (false? v))))
+        thn (infer (get node :then) (nth nr 0) (if falsey? (dead-arm-env env) env))
+        els (infer (get node :else) (nth nr 1) (if (and settled? (not falsey?)) (dead-arm-env env) env))
+        t (if settled?
+            (if falsey? (nth els 0) (nth thn 0))
             (join (nth thn 0) (nth els 0)))]
     [t (assoc node :test tn :then (nth thn 1) :else (nth els 1))]))
 

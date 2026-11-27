@@ -55,7 +55,7 @@
                                          with-ret-nhint fi-tag-class fi-adapt-form
                                          parse-params strip-arglist-meta arglist-ret-nkind arglist-type-method? arglist-meta
                                          str-target-type kw-target-type sb-target-type
-                                         double-hinted-names]]
+                                         double-hinted?]]
             [jolt.analyzer.tree :refer [check-recur-tails! fn-free-names check-fn-arities]]
             [jolt.analyzer.ffi :refer [analyze-ffi-layout analyze-ffi-fn analyze-ffi-pointer-fn
                                        analyze-ffi-signature-type]]
@@ -218,6 +218,7 @@
   (-> env
       (update :locals #(reduce conj % names))
       (update :hints #(reduce dissoc % names))
+      (update :dcasts #(reduce disj (or % #{}) names))
       (update :jclasses #(reduce dissoc % names))
       (update :jlocals #(reduce dissoc % names))
       (update :jprims #(reduce dissoc % names))))
@@ -293,6 +294,7 @@
           ;; an explicit hint wins; init-proves-hint only fills in where the
           ;; programmer wrote nothing.
           (recur (+ i 2) (let [e (-> (add-locals env [nm])
+                                     (cond-> (double-hinted? ctx bsym) (update :dcasts (fnil conj #{}) nm))
                                      (add-hint nm (or (hint-of ctx bsym) (init-proves-hint init)))
                                      (add-jclass nm (or (sym-tag-class ctx bsym) (init-jclass ctx init env)))
                                      (add-jlocal nm (binding-jlocal ctx bsym init env)))]
@@ -880,9 +882,8 @@
   (let [env (if (wraps? (:here env) :let) (wrapper-env ctx form env) env)
         bvec (binding-vector items)
         [pairs env*] (analyze-bindings ctx bvec env)
-        node (let-node pairs (analyze-body ctx (drop 2 items) env* (or (:here env) :expression)))
-        dh (double-hinted-names ctx bvec)]
-    (if (seq dh) (assoc node :dhints dh) node)))
+        node (let-node pairs (analyze-body ctx (drop 2 items) env* (or (:here env) :expression)))]
+    node))
 
 (defn- analyze-loop* [ctx form items env]
   (let [hm (form-sym-meta (first items))
@@ -903,9 +904,7 @@
         ;; against THIS loop may only sit in tail position of its body.
         body-node (loop-body ctx (mapv first pairs) body-env #(analyze-body ctx (drop 2 items) % :return))]
     (check-recur-tails! body-node)
-    (let [dh (double-hinted-names ctx bvec)]
-      (cond-> {:op :loop :bindings pairs :body body-node}
-        (seq dh) (assoc :dhints dh)))))
+    {:op :loop :bindings pairs :body body-node}))
 
 ;; A recur onto a ^boolean loop local must pass something that can be a boolean;
 ;; the reference rejects a provably non-boolean argument at compile time.
@@ -1372,7 +1371,9 @@
   (let [nm (form-sym-name form) ns (form-sym-ns form)]
     (cond
       (and (nil? ns) (local? env nm))
-        (let [h (get (:hints env) nm)] (if h (assoc (local nm) :hint h) (local nm)))
+        (let [h (get (:hints env) nm)
+              n (if h (assoc (local nm) :hint h) (local nm))]
+          (if (contains? (:dcasts env) nm) (assoc n :dcast true) n))
       ns (analyze-qualified-symbol ctx form nm ns env)
       :else (analyze-global-symbol ctx form nm env))))
 

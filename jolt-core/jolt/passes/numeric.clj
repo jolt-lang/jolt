@@ -281,10 +281,7 @@
     ;; forgets that an outer one was a JVM primitive long (let-scope then
     ;; records it again when this one is)
     (cond-> (assoc tenv :boxed-locals (if boxed? (conj s nm) (disj s nm)))
-      (and j (contains? j nm)) (assoc :jvm-long-locals (disj j nm))
-      ;; nor is it an outer ^double-hinted local any more (dcast-bind)
-      (contains? (or (get tenv :dcast-locals) #{}) nm)
-      (assoc :dcast-locals (disj (get tenv :dcast-locals) nm)))))
+      (and j (contains? j nm)) (assoc :jvm-long-locals (disj j nm)))))
 
 ;; --- what the JVM compiler types as a primitive long ---------------------------
 ;; quot and rem raise "/ by zero" when the JVM compiled them to its (long, long)
@@ -633,13 +630,12 @@
 ;; proven (§6.6), each such use is wrapped in the checked (double x) cast, which
 ;; is both the JVM's answer and a proven :double the fl ops can take.
 ;;
-;; :dcast-locals in tenv is the set of names bound with the hint and not proven
-;; by their init; rebind-boxed drops a name at any rebinding.
-(defn- dcast-bind [tenv names]
-  (reduce (fn [te nm] (if (nil? (get te nm))
-                        (assoc te :dcast-locals (conj (or (get te :dcast-locals) #{}) nm))
-                        te))
-          tenv names))
+;; The analyzer marks each read of such a binding :dcast (hints.clj
+;; double-hinted?), so the mark follows the binding, not its name: a later
+;; rebinding of the name is not cast, and a later binding's init that reads it
+;; is. A use whose kind the init already proved needs no cast.
+(defn- dcast-use? [a tenv]
+  (and (= :local (get a :op)) (get a :dcast) (nil? (get tenv (get a :name)))))
 ;; The JVM inlines these to a Numbers method with a double overload, so only at
 ;; these arities does a hinted operand unbox: (+ x) and (* x) are the argument
 ;; itself, and `=` is left alone (Util.equiv(double,double) is numeric ==, which
@@ -651,10 +647,11 @@
         (contains? #{"<" ">" "<=" ">=" "==" "quot" "rem"} nm) (= n 2)
         :else false))
 (defn- dcast-args [node tenv]
-  (let [fnode (get node :fn) args (get node :args) dc (get tenv :dcast-locals)]
-    (if (and (seq dc) (= :var (get fnode :op)) (= "clojure.core" (get fnode :ns))
-             (dcast-arity? (get fnode :name) (count args)))
-      (assoc node :args (mapv (fn [a] (if (and (= :local (get a :op)) (contains? dc (get a :name)))
+  (let [fnode (get node :fn) args (get node :args)]
+    (if (and (= :var (get fnode :op)) (= "clojure.core" (get fnode :ns))
+             (dcast-arity? (get fnode :name) (count args))
+             (some (fn [a] (dcast-use? a tenv)) args))
+      (assoc node :args (mapv (fn [a] (if (dcast-use? a tenv)
                                         (coerce-node :double a "jolt-double")
                                         a))
                               args))
@@ -727,7 +724,7 @@
 
 (defn- an-let [node tenv]
   (let [res (let-scope node tenv)
-        br (an (get node :body) (dcast-bind (nth res 0) (get node :dhints)))]
+        br (an (get node :body) (nth res 0))]
     [(nth br 0) (assoc node :bindings (nth res 1) :body (nth br 1))]))
 
 ;; inits evaluate in sequence, each seeing the loop vars bound before it (as a
@@ -755,7 +752,7 @@
                    tenv (range (count names)))]
     [nil (assoc node
                 :bindings (nth inits 1)
-                :body (nth (an (get node :body) (dcast-bind te (get node :dhints))) 1))]))
+                :body (nth (an (get node :body) te) 1))]))
 
 (defn- an-if [node tenv]
   (let [tr (an (get node :test) tenv)

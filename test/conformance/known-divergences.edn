@@ -1950,6 +1950,19 @@
    :check :prose
    :why "the jolt side is the host libm's answer, which differs between macOS, glibc, musl and Windows; the JVM side differs between CPUs for the intrinsics"
    :note "Chosen for speed: an fdlibm port in Scheme made Math calls 1.3x to 20x slower. sqrt, cbrt, log10, IEEEremainder, toRadians and toDegrees match JDK 21 bit for bit."}
+  ;; double? is a native op (op_registry.clj), so a direct call compiles to the
+  ;; flonum test rather than a load of the var: the numeric pass reads it as a
+  ;; type test that narrows its operand to :double, which is what lets a
+  ;; (if (double? x) …) branch take the fl ops. Clojure's double? is a plain defn
+  ;; with no :inline, so rebinding the var reaches every caller there.
+  {:category :impl-detail
+   :behavior "(with-redefs [double? f] (double? x)), a rebinding of double? seen by a direct call"
+   :jvm "the call goes through the var, so it answers what f does"
+   :jolt "the call is compiled to the native flonum test, so it answers whether x is a double"
+   :check {:expr "(with-redefs [double? (constantly true)] (double? \"x\"))"
+           :jvm "true"
+           :jolt "false"}
+   :note "A higher-order use, (mapv double? xs), answers the same way."}
 ]
  :entries
  [;; sorted-map/sorted-set are a B+tree, not PersistentTreeMap's red-black tree,
