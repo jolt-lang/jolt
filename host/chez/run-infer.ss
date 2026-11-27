@@ -236,6 +236,34 @@
 (gate-check "a 1-arg min of a string is no checker error" (diags "(min \"s\")" #t) 0)
 (gate-check "a 2-arg min of a string still is" (diags "(min \"s\" 1)" #t) 1)
 
+;; --- diagnostic levels: :error only for a call that can never succeed ----------
+;; "e/w/l" counts of :error / :warn / :lint diagnostics check-form gives src.
+(define (lv src)
+  (let ((ds (check-form U (anode src) #f)))
+    (let loop ((i 0) (e 0) (w 0) (l 0))
+      (if (= i (jolt-count ds))
+          (format "~a/~a/~a" e w l)
+          (let ((k (jolt-get (jolt-nth ds i) (kw "level") jolt-nil)))
+            (loop (+ i 1) (if (eq? k (kw "error")) (+ e 1) e)
+                  (if (eq? k (kw "warn")) (+ w 1) w) (if (eq? k (kw "lint")) (+ l 1) l)))))))
+(gate-check "literal string to + is an error"     (lv "(+ \"s\" 1)") "1/0/0")
+(gate-check "count of a keyword is an error"      (lv "(count :a)") "1/0/0")
+(gate-check "calling a string is an error"        (lv "(\"s\" 1)") "1/0/0")
+(gate-check "error inside a never-called fn"      (lv "(fn [] (inc :k))") "1/0/0")
+(gate-check "narrowed by string? then + is an error" (lv "(fn [x] (if (string? x) (+ x 1) 0))") "1/0/0")
+(gate-check "the else branch is not narrowed"     (lv "(fn [x] (if (string? x) 0 (+ x 1)))") "0/0/0")
+(gate-check "inside a catching try it warns"      (lv "(try (count :a) (catch Exception e :x))") "0/1/0")
+(gate-check "a try without catch still errors"    (lv "(try (count :a) (finally 1))") "1/0/0")
+(gate-check "thrown? style assertion warns"       (lv "(try (+ \"s\" 1) (catch ClassCastException e true))") "0/1/0")
+(gate-check "a ^String hint only warns"           (lv "(fn [^String s] (+ s 1))") "0/1/0")
+(gate-check "min beside a maybe-NaN number warns" (lv "(fn [x] (min x \"s\"))") "0/1/0")
+(gate-check "min beside a literal number errors"  (lv "(min \"s\" 1)") "1/0/0")
+(gate-check "min beside a literal NaN warns"      (lv "(min \"s\" ##NaN)") "0/1/0")
+(gate-check "a var's value proves nothing"        (lv "(do (def v \"s\") (+ v 1))") "0/0/0")
+(gate-check "a loop local recur rebinds is no error"
+            (lv "(loop [x \"a\" i 0] (if (< i 1) (recur 1 (inc i)) (+ x 1)))") "0/0/0")
+(gate-check "a dead hint is lint only"            (lv "(fn [^short n] n)") "0/0/1")
+
 (set-record-shapes! U (jolt-hash-map))
 
 (gate-summary "infer")

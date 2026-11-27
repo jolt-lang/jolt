@@ -7,10 +7,11 @@
   IR-rewriting passes — shares the const-shape predicates (jolt.passes.fold)."
   (:require [jolt.ir :refer [reduce-ir-children map-ir-children coerce-node thread-bindings]]
             [jolt.host :refer [protocol-method-var?]]
+            [jolt.analyzer.diagnostics :refer [diagnostic-data]]
             [jolt.op-registry :as op-registry]
             [jolt.passes.fold :refer [scalar-const? kw-callee? get-callee?]]
             [jolt.passes.types.check :refer
-             [not-callable? type-name check-invoke register-user-fn!]]
+             [type-name check-invoke check-callee register-user-fn!]]
             [jolt.passes.types.lattice :refer
              [velem vec-type? mk-vec mk-set mk-struct
               join-t join type-depth cap struct-safe? field-type
@@ -630,7 +631,7 @@
 (defn- report-dead-hints! [a node env]
   (run! (fn [pr]
           (swap! (get env :diags) conj
-                 {:op :hint :pos (get node :pos)
+                 {:op :hint :level :lint :pos (get node :pos)
                   :msg (str "type hint ^" (nth pr 1) " on `" (nth pr 0)
                             "` is ignored — jolt honours " honoured-prim-tags
                             " on a binding")}))
@@ -709,10 +710,7 @@
   (when (get env :checking?)
     (let [ats (mapv (fn [r] (ty r)) ares) pos (get (:node c) :pos) cn (:cn c)]
       (when cn (check-invoke cn (:args c) ats pos env))
-      (when (not-callable? callee-t)
-        (swap! (get env :diags) conj
-               {:op :call :type (type-name callee-t) :pos pos
-                :msg (str "cannot call " (type-name callee-t) " as a function")}))
+      (check-callee (:fnode c) callee-t pos env)
       (when (and (get env :strict?) (:var? c))
         (let [k (var-key (:fnode c)) usig (get @(get env :user-sigs) k)]
           (when usig (check-user-call k usig ats pos env)))))))
@@ -785,7 +783,7 @@
         ;; carries its inferred type), else the inferred type of the callee expr
         callee-t (if iscall-var (get (get env :vtypes) (var-key fnode)) (ty fr))
         ares (mapv (fn [a] (infer a tenv env)) args)]
-    (collect-call-types! c ares env)
+    (when-not (get env :checking?) (collect-call-types! c ares env))
     ;; collect ctor-site arg types for field-type inference (wp fixpoint's final pass)
     (when (and iscall-var @(:collecting-fields? (:unit env)))
       (record-ctor-site! fnode args ares env))
@@ -965,8 +963,11 @@
 ;; a call head — so the fn it names escapes and its params can't be inferred.
 ;; Its VALUE type comes from vtypes (a fn is :truthy, a def carries its
 ;; inferred type); unknown -> :any.
+;; A checking run (check-form) records no escapes and no call types: only the
+;; whole-program fixpoint reads them, and on the compile check's long-lived unit
+;; they would only accumulate.
 (defn- infer-var-value [node env]
-  (swap! (get env :escapes) conj (var-key node))
+  (when-not (get env :checking?) (swap! (get env :escapes) conj (var-key node)))
   [(let [vt (get (get env :vtypes) (var-key node))] (if vt vt :any)) node])
 
 (defn- infer-let [node tenv env]
@@ -1036,8 +1037,11 @@
                  (mapv (fn [a] (infer-fn-arity a node self tenv env fenv))
                        (get node :arities)))]))
 
+;; Strict mode is the only reader of the user-fn registry, and the registry
+;; lives on the unit: on the always-on compile check's long-lived unit,
+;; registering every def would keep each fn body's IR for the process lifetime.
 (defn- infer-def [node tenv env]
-  (when (get env :checking?) (register-user-fn! node env))
+  (when (get env :strict?) (register-user-fn! node env))
   (let [nm (get node :name)
         ;; a defrecord emits (def map->Name (fn [m] (->Name (get m :f) ...)))
         ;; whose body is the untyped-map ctor path. Mark it so record-ctor-site!
@@ -1055,8 +1059,12 @@
               (assoc n :meta-expr (nth (infer me tenv env) 1))
               n))]))
 
+;; A body whose throw a catch clause handles is a place where throwing can be
+;; the point (thrown?, a probe), so the checker files its proven errors there as
+;; warnings (:caught?, jolt.passes.types.check levels).
 (defn- infer-try [node tenv env]
-  (let [n (assoc node :body (nth (infer (get node :body) tenv env) 1))
+  (let [benv (if (get node :catch-body) (assoc env :caught? true) env)
+        n (assoc node :body (nth (infer (get node :body) tenv benv) 1))
         n (if (get node :catch-body) (assoc n :catch-body (nth (infer (get node :catch-body) tenv env) 1)) n)
         n (if (get node :finally) (assoc n :finally (nth (infer (get node :finally) tenv env) 1)) n)]
     [:any n]))
@@ -1209,7 +1217,7 @@
             ;; per-arg type re-check would bind params positionally, meaningless
             ;; under a mismatch)
             (swap! (get env :diags) conj
-                   {:op :user-call :type :arity :pos pos
+                   {:op :user-call :type :arity :level :warn :pos pos
                     :msg (str "wrong number of args (" nargs ") passed to `"
                               (:name sig) "` (expected " npar ")")})
             ;; all-any-env is built once (was rebuilt per param), and each probe is
@@ -1232,7 +1240,7 @@
                                         (swap! memo assoc mk r) r))]
                         (when rejects
                           (swap! (get env :diags) conj
-                                 {:op :user-call :argpos i :type (type-name at) :pos pos
+                                 {:op :user-call :argpos i :type (type-name at) :level :warn :pos pos
                                   :msg (str "argument " (inc i) " to `" (:name sig)
                                             "` is " (type-name at)
                                             ", which its body provably rejects")})))))
@@ -1279,6 +1287,25 @@
      (let [env (mk-env unit true strict?)]
        (infer node {} env)
        (vec @(get env :diags))))))
+
+;; A check's :error diagnostics are a compile error. The first one is the
+;; message and names the position; the rest are listed under it, so one compile
+;; reports every call in the form that can never succeed.
+(defn- pos-str [pos]
+  (if (and pos (:line pos)) (str (:line pos) ":" (or (:column pos) "?") ": ") ""))
+
+(defn raise-check-errors!
+  "Throw the positioned :analyze/type-error for the :error-level entries of
+  `diags` (a check-form result), if there are any; else nil."
+  [diags]
+  (let [errs (filterv (fn [d] (= :error (:level d))) diags)]
+    (when (seq errs)
+      (let [d (first errs)
+            msg (apply str (:msg d)
+                       (map (fn [e] (str "\n  also at " (pos-str (:pos e)) (:msg e))) (rest errs)))]
+        (throw (ex-info msg (diagnostic-data :analyze/type-error (:pos d)
+                                             {:jolt.error/errors
+                                              (mapv (fn [e] (select-keys e [:op :argpos :type :msg :pos])) errs)})))))))
 
 (defn infer-body
   "Type `body` under tenv (local-name -> type). Returns [ret-type node' calls],

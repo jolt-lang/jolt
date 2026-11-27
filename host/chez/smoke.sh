@@ -341,22 +341,33 @@ else
 fi
 rm -rf "$diag_dir"
 
-# JOLT_CHECK surfaces the success-type checker as located warnings; off by
-# default it must stay silent.
-chk_on="$(JOLT_CHECK=1 $jolt -e '(first 42)' 2>&1 >/dev/null)"
-if printf '%s' "$chk_on" | grep -q 'warning:' && printf '%s' "$chk_on" | grep -q 'first'; then
+# The success-type check: a call that can never succeed fails the compile with a
+# located :analyze/type-error, a likely mistake that could still run is a
+# warning, and JOLT_CHECK=0 turns the check off.
+chk_err="$($jolt -e '(first 42)' 2>&1 >/dev/null)"; chk_rc=$?
+if [ "$chk_rc" != 0 ] && printf '%s' "$chk_err" | grep -q 'always throws' \
+   && printf '%s' "$chk_err" | grep -q 'first'; then
   pass=$((pass + 1))
 else
-  echo "  FAIL: JOLT_CHECK success-type warning"
-  echo "    got \`$chk_on\`"
+  echo "  FAIL: a provably-wrong call is a compile error"
+  echo "    got rc=$chk_rc \`$chk_err\`"
   fails=$((fails + 1))
 fi
-chk_off="$($jolt -e '(first 42)' 2>&1 >/dev/null)"
-if printf '%s' "$chk_off" | grep -q 'warning:'; then
-  echo "  FAIL: success-type warning leaked with JOLT_CHECK unset"
-  fails=$((fails + 1))
-else
+chk_warn="$($jolt -e '(fn [^String s] (+ s 1))' 2>&1 >/dev/null)"; chk_rc=$?
+if [ "$chk_rc" = 0 ] && printf '%s' "$chk_warn" | grep -q 'warning:.*hinted as a string'; then
   pass=$((pass + 1))
+else
+  echo "  FAIL: a hinted-only type mismatch is a warning"
+  echo "    got rc=$chk_rc \`$chk_warn\`"
+  fails=$((fails + 1))
+fi
+chk_off="$(JOLT_CHECK=0 $jolt -e '(fn [] (first 42))' 2>&1 >/dev/null)"; chk_rc=$?
+if [ "$chk_rc" = 0 ] && ! printf '%s' "$chk_off" | grep -q 'always throws'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: JOLT_CHECK=0 skips the success-type check"
+  echo "    got rc=$chk_rc \`$chk_off\`"
+  fails=$((fails + 1))
 fi
 
 # A missing dependency required in an ns form is blamed on the requiring file,
@@ -384,12 +395,15 @@ check_trace "$trace_prog" 'outer'
 trace_src_prog='(do (require (quote [jolt.fs :as fs])) (def r (str (fs/create-temp-dir))) (spit (str r "/tracesrc.clj") "(ns tracesrc)\n(declare mx)\n(defn deepest [x] (+ x mx))\n(defn middle [x] (inc (deepest x)))\n(defn outer [x] (inc (middle x)))\n") (jolt.host/set-source-roots! (vec (distinct (concat [r] (jolt.host/source-roots))))) (require (quote tracesrc)) (tracesrc/outer 1))'
 check_trace_src "$trace_src_prog" 'tracesrc/middle \(.*tracesrc\.clj:4\)' 'tracesrc/outer \(.*tracesrc\.clj:5\)'
 
+# The trace fixtures below throw through (+ x (identity :boom)): a literal
+# operand would be a compile-time :analyze/type-error, and these test the trace
+# a RUNTIME throw leaves.
 # Two namespaces defining the same short fn name used to key the source registry
 # to 'ambiguous, so the colliding frame printed a bare name instead of a location.
 # Every project hit this on -main, since jolt.main has one too. Each def now
 # registers under a per-var key, so collideb/middle resolves to its OWN file:line
 # and never to collidea/middle.
-collide_prog='(do (require (quote [jolt.fs :as fs])) (def r (str (fs/create-temp-dir))) (spit (str r "/collidea.clj") "(ns collidea)\n(defn middle [x] (inc x))\n") (spit (str r "/collideb.clj") "(ns collideb)\n(defn deepest [x] (+ x :boom))\n(defn middle [x] (inc (deepest x)))\n(defn outer [x] (inc (middle x)))\n") (jolt.host/set-source-roots! (vec (distinct (concat [r] (jolt.host/source-roots))))) (require (quote collidea)) (require (quote collideb)) (collideb/outer 1))'
+collide_prog='(do (require (quote [jolt.fs :as fs])) (def r (str (fs/create-temp-dir))) (spit (str r "/collidea.clj") "(ns collidea)\n(defn middle [x] (inc x))\n") (spit (str r "/collideb.clj") "(ns collideb)\n(defn deepest [x] (+ x (identity :boom)))\n(defn middle [x] (inc (deepest x)))\n(defn outer [x] (inc (middle x)))\n") (jolt.host/set-source-roots! (vec (distinct (concat [r] (jolt.host/source-roots))))) (require (quote collidea)) (require (quote collideb)) (collideb/outer 1))'
 check_trace_src "$collide_prog" 'collideb/middle \(.*collideb\.clj:3\)' 'collideb/outer \(.*collideb\.clj:4\)'
 # The same collision with the tail-frame history on. (Whether the TCO-erased
 # `deepest` shows depends on ring-vs-continuation, which the ring tests below
@@ -401,7 +415,7 @@ check_trace_on "$collide_prog" 'collideb/middle'
 # than a guessed location. Both fns wrap their call in (inc ...) so the frames
 # survive TCO. The ns differs by host (user under bin/jolt, jolt.main under a
 # built binary), so match the frame SHAPE: a bare line with no " (file:line)".
-ambig_prog='(do (defn amb [x] (inc (+ x :boom))) (defn wrap [x] (inc (amb x))) (def k (str (ns-name *ns*) "/amb")) (jolt.host/register-source! k "ns1" "amb" "a.clj" 10) (jolt.host/register-source! k "ns2" "amb" "b.clj" 20) (inc (wrap 1)))'
+ambig_prog='(do (defn amb [x] (inc (+ x (identity :boom)))) (defn wrap [x] (inc (amb x))) (def k (str (ns-name *ns*) "/amb")) (jolt.host/register-source! k "ns1" "amb" "a.clj" 10) (jolt.host/register-source! k "ns2" "amb" "b.clj" 20) (inc (wrap 1)))'
 ambig_err="$($jolt -e "$ambig_prog" 2>&1 >/dev/null)"
 if printf '%s' "$ambig_err" | grep -Eq '^    [A-Za-z0-9._-]+/amb$' && ! printf '%s' "$ambig_err" | grep -q 'a[.]clj' && ! printf '%s' "$ambig_err" | grep -q 'b[.]clj'; then
   pass=$((pass + 1))
@@ -418,16 +432,16 @@ check_trace_on '(defn deepest [x] (+ x 1)) (defn middle [x] (deepest x)) (defn o
 # A tail loop (a<->b) under a NON-tail caller: the loop is confined to one rib's
 # bounded inner ring, so the caller context (`driver`, `top`) is NOT flushed out —
 # the point of the ring of rings.
-check_trace_on '(declare b) (defn a [n] (if (zero? n) (+ :x 1) (b (dec n)))) (defn b [n] (a n)) (defn driver [] (inc (a 6))) (defn top [] (inc (driver))) (top)' \
+check_trace_on '(declare b) (defn a [n] (if (zero? n) (+ (identity :x) 1) (b (dec n)))) (defn b [n] (a n)) (defn driver [] (inc (a 6))) (defn top [] (inc (driver))) (top)' \
   'driver' 'top'
 # A ^long/^double return hint wraps the body in a coercion, so the hinted fn's call
 # is NOT a tail call — its own frame is still live and must appear (not be elided).
-check_trace_on '(defn g [n] (+ :x n)) (defn ^long f [n] (g n)) (f 3)' 'f' 'g'
+check_trace_on '(defn g [n] (+ (identity :x) n)) (defn ^long f [n] (g n)) (f 3)' 'f' 'g'
 # History is per top-level form: a later form's error trace shows its own frames
 # (h2/u2), not frames from an earlier, already-returned form (h1/u1).
-check_trace_on '(defn h1 [x] (inc x)) (defn u1 [] (inc (h1 5))) (u1) (defn h2 [x] (+ :x x)) (defn u2 [] (inc (h2 5))) (u2)' \
+check_trace_on '(defn h1 [x] (inc x)) (defn u1 [] (inc (h1 5))) (u1) (defn h2 [x] (+ (identity :x) x)) (defn u2 [] (inc (h2 5))) (u2)' \
   'h2' 'u2'
-err_stale="$(JOLT_TRACE=1 $jolt -e '(defn h1 [x] (inc x)) (defn u1 [] (inc (h1 5))) (u1) (defn h2 [x] (+ :x x)) (defn u2 [] (inc (h2 5))) (u2)' 2>&1 >/dev/null)"
+err_stale="$(JOLT_TRACE=1 $jolt -e '(defn h1 [x] (inc x)) (defn u1 [] (inc (h1 5))) (u1) (defn h2 [x] (+ (identity :x) x)) (defn u2 [] (inc (h2 5))) (u2)' 2>&1 >/dev/null)"
 if printf '%s' "$err_stale" | grep -q 'h1'; then
   echo "  FAIL (trace-on): stale frame h1 from an earlier form leaked into the trace"
   fails=$((fails + 1))

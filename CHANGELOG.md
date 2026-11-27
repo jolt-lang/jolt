@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A call that can never succeed is a compile error.** `(+ "s" 1)`,
+  `(count :a)`, `("s" 1)`, or `(inc x)` where a `(string? x)` test just proved
+  `x` a string, now fails to compile with `:analyze/type-error`, located at the
+  call and saying why it always throws; every such call in the form is listed.
+  Only what the form itself proves feeds it (literals, what core ops return,
+  locals a type test narrowed), never a type hint, a var's value or a caller,
+  so nothing that could run is rejected, and `make rettype` checks that every
+  rejected call throws at runtime. A likely mistake that could still be meant is
+  a warning instead (`file:line:col: warning: …`): a mismatch only a `^String`
+  hint claims, `min`/`max` beside an operand that may be NaN, or a call inside a
+  `try` that catches what it throws, as `thrown?` assertions do. The check runs
+  on every runtime-compiled form (its compile-time cost is within noise on the
+  compile-forms bench, check on vs off); `JOLT_CHECK=0` turns it off, and `JOLT_CHECK=1` adds the advice-only
+  diagnostics (type hints that do nothing) it used to print on its own.
 - **`deps.local.edn`: per-machine overrides merged over deps.edn.** A project's
   `deps.local.edn` (or the file `$JOLT_DEPS_LOCAL` names, relative to the
   project) merges over its deps.edn the way deps.edn merges over the user's,

@@ -14,7 +14,8 @@
 
 (ns rettype-check
   (:require [jolt.op-registry :as reg]
-            [jolt.passes.types.lattice :as lat]))
+            [jolt.passes.types.lattice :as lat]
+            [jolt.passes.types.check :as chk]))
 
 (def num-reps
   [0 1 -1 2 7 -7 1.5 -0.5 0.0 -0.0 ##NaN ##Inf ##-Inf 1/2 -3/4 (bigint 5)
@@ -82,8 +83,52 @@
         :when (and (contains? r :ok) (not (pred (:ok r))))]
     [claim (str ns-name "/" nm) args (:ok r)]))
 
+(defrecord Rec [a])
+
+;; --- the checker's error domains -----------------------------------------------
+;; jolt.passes.types.check fails the COMPILE of a call whose argument is proven
+;; to be in an op's error domain, so each domain has to be exact on the throwing
+;; side: every value of every rejected class, at every position and arity, must
+;; make the call throw. A rejected call that returns is a compile error on a
+;; program that runs. One representative per lattice class each rule names:
+;; not-number? is :str :kw :phm struct vec (which also covers seqs) set;
+;; not-seqable? is :num :kw; not-callable? is :num :str.
+(def not-number-reps ["s" "" :k {:a 1} (->Rec 1) [1 2] '(1) (range 3) #{1}])
+(def not-seqable-reps [0 -7 1.5 ##NaN 1/2 (bigint 5) 1.5M :k])
+(def not-callable-reps [0 1.5 1/2 "s" ""])
+;; the other arguments of a num-op call: numbers, and never NaN, which lets
+;; min/max answer without comparing (the checker warns there instead)
+(def num-fill [1 -2 2.5])
+
+(defn returned [f args]
+  (let [r (call f args)] (when (contains? r :ok) [args (:ok r)])))
+
+(defn num-domain-problems []
+  (for [op (sort reg/num-arg-ops)
+        :let [f (core-fn "clojure.core" op) spec (get reg/op-registry op)] :when f
+        n (filter (or (:arity spec) (constantly true)) [1 2 3])
+        :when (not (and (= n 1) (:arg1-identity? spec)))
+        i (range n) bad not-number-reps fill num-fill
+        :let [args (assoc (vec (repeat n fill)) i bad) r (returned f args)] :when r]
+    [:num-domain op (nth r 0) (nth r 1)]))
+
+(defn seq-domain-problems []
+  (for [op (sort chk/seq-ops) :let [f (core-fn "clojure.core" op)] :when f
+        bad not-seqable-reps
+        :let [args (if (= op "nth") [bad 0] [bad]) r (returned f args)] :when r]
+    [:seq-domain op (nth r 0) (nth r 1)]))
+
+(defn call-domain-problems []
+  (for [v not-callable-reps n [0 1 2]
+        :let [r (call (fn [] (apply v (repeat n 1))) [])] :when (contains? r :ok)]
+    [:call-domain (pr-str v) n (:ok r)]))
+
+(defn domain-problems []
+  (concat (num-domain-problems) (seq-domain-problems) (call-domain-problems)))
+
 (defn all-problems []
-  (concat (registry-problems reg/op-registry)
+  (concat (domain-problems)
+          (registry-problems reg/op-registry)
           (set-problems :vec-ret vector? "clojure.core" lat/vector-ret-fns)
           (set-problems :str-ret string? "clojure.core" lat/str-ret-fns)
           (set-problems :str-ret string? "clojure.string" lat/string-ns-ret-fns)))

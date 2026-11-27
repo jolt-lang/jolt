@@ -48,5 +48,12 @@
 (ok "+ without its arg1-identity flag fails its :num-result? claim"
     (< 0 (ev "(count (spec-problems \"+\" + (dissoc (get jolt.op-registry/op-registry \"+\") :arg1-identity?)))")))
 
+;; the error-domain checks see a call that returns: a lenient op (str) over the
+;; rejected values is caught, so a domain claim the runtime contradicts would be
+(ok "an error domain that does not throw is caught (str over non-numbers)"
+    (< 0 (ev "(count (keep (fn [b] (returned str [b 1])) not-number-reps))")))
+(ok "the NaN escape the checker warns on is real ((min ##NaN \"s\") returns)"
+    (ev "(some? (returned min [##NaN \"s\"]))"))
+
 (printf "~a/~a passed~n" (- total fails) total)
 (exit (if (zero? fails) 0 1))

@@ -7,7 +7,7 @@
   call probes (re-inference) stay in the inferencer."
   (:require [jolt.op-registry :as op-registry]
             [jolt.passes.types.lattice :refer
-             [union-type? umembers struct-type? vec-type? set-type?]]))
+             [union-type? umembers struct-type? vec-type? set-type? decl-of]]))
 
 ;; concrete non-numbers: arithmetic provably throws on these. A union is in the
 ;; error domain only when EVERY member is — if any member is an
@@ -39,7 +39,7 @@
 ;; :num-args? set.
 (def ^:private num-ops op-registry/num-arg-ops)
 ;; seq/count/index ops: argument 0 must be seqable/countable.
-(def ^:private seq-ops #{"count" "first" "rest" "next" "seq" "nth"})
+(def seq-ops #{"count" "first" "rest" "next" "seq" "nth"})
 
 (defn type-name
   "Render an inferred type for an error message."
@@ -56,33 +56,112 @@
         (= t :phm) "a map"
         :else (str t)))
 
+;; --- levels -------------------------------------------------------------------
+;; Every diagnostic carries a :level, which is what the compiler does with it:
+;;
+;;   :error  the call can never succeed. Its argument is PROVEN (a literal, a
+;;           value a proven op returned, a local a type test narrowed) to be a
+;;           type the op throws on, so wherever it is reached it throws, and the
+;;           compile fails. No hint, var root or caller assumption feeds an
+;;           :error: the check runs on a fresh unit, where every var and user
+;;           fn is :any.
+;;   :warn   a likely mistake that can still have a valid runtime reason: the
+;;           wrong type is only DECLARED (a ^String hint the value may not
+;;           honour), a NaN operand would let min/max answer without throwing,
+;;           or the call sits inside a try that catches what it throws (a
+;;           thrown? assertion, a probe for the exception).
+;;   :lint   not a mistake at all, only advice (a dead type hint), printed only
+;;           under JOLT_CHECK.
+;;
+;; Each rule's error domain is checked against the runtime by `make rettype`:
+;; every call it calls an :error has to throw on representative values.
+
+(defn- arg-desc
+  "The argument as written, for a message: a local's name or a literal, else nil."
+  [node]
+  (case (get node :op)
+    :local (str "`" (get node :name) "`")
+    :const (let [v (get node :val)]
+             (when (or (string? v) (keyword? v) (number? v) (nil? v) (boolean? v) (char? v))
+               (pr-str v)))
+    nil))
+
+(defn- arg-phrase [i node]
+  (let [d (arg-desc node)]
+    (str "argument " (inc i) (if d (str " (" d ")") ""))))
+
+;; Could this argument be ##NaN? Only a number can, and a literal says which it is.
+(defn- maybe-nan? [node t]
+  (and (not (not-number? t))
+       (not (and (= :const (get node :op)) (number? (get node :val))
+                 (== (get node :val) (get node :val))))))
+
+(defn- emit-diag! [env level m]
+  (swap! (get env :diags) conj (assoc m :level level)))
+
+;; A proven violation inside a catching try is someone testing for the throw.
+(defn- proven-level [env] (if (get env :caught?) :warn :error))
+
+(defn- num-arg-diag! [cn args arg-types i pos env]
+  (let [t (nth arg-types i) node (nth args i)
+        dt (decl-of t)]
+    (cond
+      (not-number? t)
+      (let [nan-out? (and (contains? #{"min" "max"} cn)
+                          (some (fn [j] (and (not= j i) (maybe-nan? (nth args j) (nth arg-types j))))
+                                (range (count args))))]
+        (emit-diag! env (if nan-out? :warn (proven-level env))
+                    {:op cn :argpos i :type (type-name t) :pos pos
+                     :msg (str "`" cn "` requires a number, but " (arg-phrase i node)
+                               " is " (type-name t)
+                               (if nan-out?
+                                 ", so this throws unless another argument is NaN"
+                                 ", so this call always throws"))}))
+      (and dt (not-number? dt))
+      (emit-diag! env :warn
+                  {:op cn :argpos i :type (type-name dt) :pos pos
+                   :msg (str "`" cn "` requires a number, but " (arg-phrase i node)
+                             " is hinted as " (type-name dt)
+                             "; if the hint is right this call always throws")})
+      :else nil)))
+
 (defn check-invoke
-  "If node is a core-op call whose argument type is provably in the error domain,
-  conj a diagnostic into env's diags cell. arg-types is the vector of inferred
-  argument types; pos is the call form's source offset, carried into each
-  diagnostic."
+  "If node is a core-op call whose argument type is in the op's error domain,
+  conj a leveled diagnostic (see levels above) into env's diags cell. arg-types
+  is the vector of inferred argument types; pos is the call form's source
+  offset, carried into each diagnostic."
   [cn args arg-types pos env]
   (cond
     (and (contains? num-ops cn)
          (not (and (= 1 (count args)) (contains? op-registry/arg1-identity-ops cn))))
-    (reduce (fn [_ i]
-              (let [t (nth arg-types i)]
-                (when (not-number? t)
-                  (swap! (get env :diags) conj
-                         {:op cn :argpos i :type (type-name t) :pos pos
-                          :msg (str "`" cn "` requires a number, but argument "
-                                    (inc i) " is " (type-name t))})))
-              nil)
-            nil (range (count args)))
+    (run! (fn [i] (num-arg-diag! cn args arg-types i pos env)) (range (count args)))
     (and (contains? seq-ops cn) (> (count args) 0))
-    (let [t (nth arg-types 0)]
-      (when (not-seqable? t)
-        (swap! (get env :diags) conj
-               {:op cn :argpos 0 :type (type-name t) :pos pos
-                :msg (str "`" cn "` requires "
-                          (if (= cn "count") "a countable collection" "a seqable")
-                          ", but argument 1 is " (type-name t))})))
+    (let [t (nth arg-types 0) dt (decl-of t)
+          need (if (= cn "count") "a countable collection" "a seqable")]
+      (cond
+        (not-seqable? t)
+        (emit-diag! env (proven-level env)
+                    {:op cn :argpos 0 :type (type-name t) :pos pos
+                     :msg (str "`" cn "` requires " need ", but " (arg-phrase 0 (nth args 0))
+                               " is " (type-name t) ", so this call always throws")})
+        (and dt (not-seqable? dt))
+        (emit-diag! env :warn
+                    {:op cn :argpos 0 :type (type-name dt) :pos pos
+                     :msg (str "`" cn "` requires " need ", but " (arg-phrase 0 (nth args 0))
+                               " is hinted as " (type-name dt)
+                               "; if the hint is right this call always throws")})
+        :else nil))
     :else nil))
+
+(defn check-callee
+  "Calling a value proven not to be a function: :error (or :warn when caught)."
+  [callee-node callee-t pos env]
+  (when (not-callable? callee-t)
+    (emit-diag! env (proven-level env)
+                {:op :call :type (type-name callee-t) :pos pos
+                 :msg (str "cannot call " (type-name callee-t)
+                           (let [d (arg-desc callee-node)] (if d (str " " d) ""))
+                           " as a function, so this call always throws")})))
 
 (defn register-user-fn!
   "Record a (def name (fn [params] body)) — single fixed arity, not redefinable —
