@@ -737,6 +737,15 @@ jobs:
       - name: Generate the fr_FR locale (time)
         if: matrix.repo == 'time'
         run: sudo locale-gen fr_FR.UTF-8 && sudo update-locale
+      # The suites resolve Maven deps into ~/.m2; fetched fresh on every run they
+      # hit repo1.maven.org's rate limit (HTTP 429), which failed this job on the
+      # v0.8.31 tag. Cached, keyed on the deps files checked out here.
+      - name: Maven repository cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.m2/repository
+          key: m2-${{ runner.os }}-${{ github.job }}-${{ matrix.repo }}-${{ hashFiles('**/deps.edn') }}
+          restore-keys: m2-${{ runner.os }}-${{ github.job }}-${{ matrix.repo }}-
       - name: Test
         run: jolt/ci/fleet-smoke.sh lib ./jolt-bin
 
@@ -785,6 +794,15 @@ jobs:
       - run: |
           sh jolt/ci/apt-update.sh
           sudo apt-get install -y liblz4-1 zlib1g libtinfo6 libpq5 libsqlite3-0
+      # The suites resolve Maven deps into ~/.m2; fetched fresh on every run they
+      # hit repo1.maven.org's rate limit (HTTP 429), which failed this job on the
+      # v0.8.31 tag. Cached, keyed on the deps files checked out here.
+      - name: Maven repository cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.m2/repository
+          key: m2-${{ runner.os }}-${{ github.job }}-${{ hashFiles('**/deps.edn') }}
+          restore-keys: m2-${{ runner.os }}-${{ github.job }}-
       - name: Test
         env:
           JOLT_TEST_PG_URI: postgres://postgres:postgres@127.0.0.1:5432/jolt_test
@@ -859,6 +877,15 @@ jobs:
           # require time, so the .so has to be present to compile them.
           sudo apt-get install -y liblz4-1 zlib1g libtinfo6 build-essential \
             libssl3 libsqlite3-0 libgtk-4-1 libgl1
+      # The suites resolve Maven deps into ~/.m2; fetched fresh on every run they
+      # hit repo1.maven.org's rate limit (HTTP 429), which failed this job on the
+      # v0.8.31 tag. Cached, keyed on the deps files checked out here.
+      - name: Maven repository cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.m2/repository
+          key: m2-${{ runner.os }}-${{ github.job }}-${{ hashFiles('**/deps.edn') }}
+          restore-keys: m2-${{ runner.os }}-${{ github.job }}-
       - name: Build every example, run the test tasks
         run: jolt/ci/examples-smoke.sh examples ./jolt-bin
 
