@@ -25,10 +25,6 @@ LZ4
   Copyright (c) 2011-2020, Yann Collet
   BSD 2-Clause license: licenses/BSD-2-lz4.txt
 
-fdlibm (host/chez/java/fdlibm.ss)
-  Copyright (C) 1993 by Sun Microsystems, Inc.
-  freely distributable with its notice: licenses/fdlibm.txt
-
 irregex (vendor/irregex)
   https://github.com/ashinn/irregex
   Copyright (c) 2005-2024 Alex Shinn

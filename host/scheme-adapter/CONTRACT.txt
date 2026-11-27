@@ -493,13 +493,10 @@ scheme-version
 # sa-hi32->flonum the double with those upper bits and zero lower ones: fdlibm's
 # cbrt works on the high word. sa-flonum-lo32 is the lower 32 bits: with the high
 # word, number-print.ss reads a double's significand without a bignum.
-# sa-words->flonum builds a double from its high and low words (fdlibm's
-# __HI(x, h), java/fdlibm.ss).
 sa-flonum->bits
 sa-bits->flonum
 sa-flonum-hi32
 sa-flonum-lo32
-sa-words->flonum
 sa-hi32->flonum
 # sa-bignum-s64? (added for the unchecked ops): whether a bignum (the caller
 # has already asked bignum?) lies in signed 64 bits, [-2^63, 2^63) — a Long in

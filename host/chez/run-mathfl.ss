@@ -25,15 +25,15 @@
   (gate-check "(2) surrounding add stays fl+" (gate-sub? e "fl+") #t)
   (gate-check "(2) inner Math/sqrt is flsqrt" (gate-sub? e "flsqrt") #t))
 
-;; (3) atan2(y,x) -> (jolt-fl-atan2 y x), StrictMath's digits
+;; (3) atan2(y,x) -> (flatan y x)
 (let ((e (emit-num "(def _ (fn [^double y ^double x] (Math/atan2 y x)))")))
-  (gate-check "(3) Math/atan2 -> jolt-fl-atan2" (gate-sub? e "jolt-fl-atan2") #t))
+  (gate-check "(3) Math/atan2 -> flatan" (gate-sub? e "flatan") #t))
 
 ;; (4) floor / pow
 (let ((e (emit-num "(def _ (fn [^double x] (Math/floor x)))")))
   (gate-check "(4) Math/floor -> flfloor" (gate-sub? e "flfloor") #t))
 (let ((e (emit-num "(def _ (fn [^double b] (Math/pow b 2)))")))
-  ;; jolt-fl-pow is fdlibm's pow, Java's special cases included
+  ;; jolt-fl-pow is flexpt behind Java's two special cases C's pow lacks
   (gate-check "(4) Math/pow (int literal coerced) -> jolt-fl-pow" (gate-sub? e "jolt-fl-pow") #t))
 
 ;; (5) untyped arg -> NOT specialized (stays host-static-call)
