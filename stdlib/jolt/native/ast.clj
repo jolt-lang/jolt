@@ -216,7 +216,8 @@
   (when (and (symbol? f) (not (contains? env f)))
     (when-let [v (resolve f)]
       (when-let [h (:jolt.native/helper (meta v))]
-        (assoc h :sym (symbol (str (:ns (meta v))) (str (:name (meta v)))))))))
+        (assoc h :sym (symbol (str (:ns (meta v))) (str (:name (meta v))))
+                 :line (:line (meta v)))))))
 
 (defn extern-of
   "The C function (jolt.native/defextern) a call head names, or nil."
@@ -285,7 +286,8 @@
                               :candidate (= :loan (first-or-nil t))})
                    (:params h) ptypes)
           env (into {} (map (fn [p] [(:name p) p]) ps))
-          analyze-in (fn [forms] (binding [*ns* (the-ns (:ns h))] (analyze-body env forms false form)))
+          analyze-in (fn [forms] (binding [*ns* (the-ns (:ns h)) *line* (:line h)]
+                                         (analyze-body env forms false form)))
           variants (when (:variants h)
                      (mapv (fn [v] (assoc v :body (analyze-in (:body v)))) (:variants h)))
           body (if variants

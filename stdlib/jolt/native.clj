@@ -115,7 +115,8 @@
   default); other values, and a binary jolt build made (which has no JIT), run
   the region as written. The answers are the same either way."
   [params & body]
-  (let [{:keys [sym src region]} (compile-region params body)
+  (let [{:keys [sym src region]} (binding [ast/*line* (:line (meta &form))]
+                                   (compile-region params body))
         plain (mapv #(with-meta (:name %) nil) (:params region))
         ;; (jolt.native/__region sym src [param-kinds] result-kind [args] raise! mode)
         ;; the analyzer derives the Chez foreign types from the kinds
