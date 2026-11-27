@@ -347,7 +347,7 @@
   {"[D" "double" "[F" "float" "[J" "long" "[I" "int" "[S" "short" "[B" "byte"
    "[C" "char" "[Z" "boolean"})
 
-;; any keyword: :unknown, a recur, or a loop local's :loop-long
+;; any keyword: :unknown or a recur
 (defn- some-unknown? [ts] (some keyword? ts))
 ;; A ^tag: a primitive's name, a class jolt resolves, or :unknown.
 (defn- tag-jtype [ctx tag]
@@ -442,28 +442,15 @@
   (let [m (form-sym-meta bsym) tag (when m (get m :tag))]
     (if tag (tag-jtype ctx tag) {:init init :env env :memo (volatile! nil)})))
 (defn add-jlocal [env nm j] (assoc env :jlocals (assoc (:jlocals env) nm j)))
-;; A loop local the JVM types a primitive is boxed instead, a Number, when a
-;; recur passes it something else, which jolt does not check for. A long one
-;; is :loop-long: either way a valueOf no overload fits reflects on its runtime
-;; class, while a double one may resolve Float/valueOf, so it is :unknown.
-(defn loop-jlocals [env names]
-  (reduce (fn [e nm]
-            (let [j (get (:jlocals e) nm)]
-              (if (some? j) (add-jlocal e nm (assoc (if (map? j) j {:tag j}) :loop? true)) e)))
-          env names))
 (defn- local-jtype [ctx nm env]
   (let [j (get (:jlocals env) nm)
         t (cond (string? j) j
                 (keyword? j) j
-                (:tag j) (:tag j)
+                (:tag j) (do (when-let [s (:seen j)] (vreset! s true)) (:tag j))
                 (map? j) (let [v (:memo j)]
                            (or @v (vreset! v (let [t (jvm-type ctx (:init j) (:env j))]
-                                              (if (nil? t) :object t))))))
-        t (if (= t :object) nil t)]
-    (cond (not (:loop? j)) t
-          (#{"long" "int"} t) :loop-long
-          (or (jvm-prims t) (keyword? t)) :unknown
-          :else t)))
+                                              (if (nil? t) :object t))))))]
+    (if (= t :object) nil t)))
 (defn jvm-type [ctx node env]
   (if (:jtag node)
     :unknown
@@ -487,8 +474,8 @@
       (:vector :set :map :quote :bigdec :host-new) (node-jclass ctx node env)
       :unknown)))
 ;; The classes a static call no overload fits reflects on, a primitive as its
-;; box, an Object as one and a long loop local as a Number, or nil when an
-;; argument's type is :unknown.
+;; box and an Object or a null as an Object, or nil when an argument's type is
+;; :unknown.
 (def ^:private jvm-boxes
   {"long" "java.lang.Long" "double" "java.lang.Double" "int" "java.lang.Integer"
    "float" "java.lang.Float" "char" "java.lang.Character" "boolean" "java.lang.Boolean"
@@ -496,8 +483,49 @@
 (defn- reflect-arg-classes [ctx args env]
   (let [ts (mapv #(or (node-jclass ctx % env) (jvm-type ctx % env)) args)]
     (when-not (some #(#{:unknown :recur} %) ts)
-      (mapv #(cond (nil? %) "java.lang.Object" (= % :loop-long) "java.lang.Number"
-                   (jvm-prims %) (get jvm-boxes %) :else %) ts))))
+      (mapv #(cond (or (nil? %) (= % "null")) "java.lang.Object" (jvm-prims %) (get jvm-boxes %)
+                   :else %) ts))))
+
+;; --- loop locals the JVM types a primitive ------------------------------------
+;; LetExpr compiles a loop whose local starts as a primitive long or double (an
+;; int or float init widened) with that local primitive, and, when a recur
+;; passes it something that is not (an Object, a double for a long), compiles
+;; the loop again with it boxed, a Number, until no recur mismatches. jolt does
+;; the same for the typing above: ANALYZE (the body under an env) runs with the
+;; locals primitive, and again with the mismatched ones Numbers, only when the
+;; body asked a local's type. note-recur! records each recur's argument types.
+(def ^:private loop-prims {"long" "long" "int" "long" "double" "double" "float" "double"})
+(def ^:private recur-fits
+  {"long" #{"long" "int" "short" "char" "byte"} "double" #{"double" "float"}})
+(defn note-recur! [ctx env args]
+  (let [[target cell] (:jloop env)]
+    (when (and cell (= target (:recur env)))
+      (vswap! cell conj (fn [] (mapv #(jvm-type ctx % env) args))))))
+(defn loop-body [ctx names env analyze]
+  (let [cands (keep-indexed
+               (fn [i nm]
+                 (when (map? (get (:jlocals env) nm))
+                   (when-let [p (loop-prims (local-jtype ctx nm env))] [i nm p])))
+               names)]
+    (if (empty? cands)
+      (analyze env)
+      (loop [boxed {}]
+        (let [seen (volatile! false) recurs (volatile! [])
+              e (reduce (fn [e [_ nm p]] (add-jlocal e nm (or (get boxed nm) {:tag p :seen seen})))
+                        (assoc env :jloop [(:recur env) recurs]) cands)
+              node (analyze e)
+              m (if @seen
+                  (reduce (fn [m ts]
+                            (reduce (fn [m [i nm p]]
+                                      (let [t (nth ts i)]
+                                        (cond (contains? m nm) m
+                                              (keyword? t) (assoc m nm :unknown)
+                                              (contains? (recur-fits p) t) m
+                                              :else (assoc m nm "java.lang.Number"))))
+                                    m cands))
+                          boxed (map #(%) @recurs))
+                  boxed)]
+          (if (= m boxed) node (recur m)))))))
 
 ;; The resolved record ctor-key ("ns/->Name") for a ^Type param hint, or nil.
 ;; Unlike hint-of (which collapses any record hint to the coarse :struct guard-

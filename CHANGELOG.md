@@ -222,9 +222,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now types arguments as the JVM compiler does, so a call the JVM resolves
   statically still works: clojure.core arithmetic by the `Numbers` overload it
   inlines to (`(Float/valueOf (* x 2.0))` is a double), primitive casts, a
-  `^double` or `^long` arglist, `^double` parameters and tags, and let locals,
-  `if` and `case` built from them. An argument it cannot type that way (a
-  static jolt has no signature for, such as `Math/abs`) keeps the lenient call.
+  `^double` or `^long` arglist, `^double` parameters and tags, `Math` methods,
+  the boxed numbers' parsers, and let locals, `if` and `case` built from them.
+  A loop local that starts as a primitive long or double stays one unless a
+  recur passes it something else, as the JVM boxes it then.
+- `java.lang.Math` methods with overloads (`abs`, `max`, `min`, `round`,
+  `signum`, `ulp`, `nextUp`, `nextDown`, `nextAfter`, `scalb`, `getExponent`,
+  `copySign`) and `Integer/valueOf` pick by the argument's class as the JVM
+  does: `(Math/round 2)` and `(Math/abs "2")` throw "No matching method"
+  instead of answering, while a call over typed doubles or longs keeps its
+  native path. The single-overload ones (`sqrt`, `sin`, ...) cast their
+  argument as `RT.doubleCast` does, with the JDK's ClassCastException and
+  NullPointerException, and `Integer/parseInt`, `Long/parseLong`,
+  `Double/parseDouble` and `Float/parseFloat` refuse a non-String the same way.
 - Negative integer constants past the fixnum range keep their value in a `jolt
   build` binary: `-1152921504606846977` printed as `-17293822569102704639N`
   there (and right under `jolt -M`), as did every negative bignum except

@@ -50,7 +50,7 @@
             [jolt.analyzer.hints :refer [jvm-boolean-prim? jvm-non-boolean-class hint-of
                                          init-proves-hint add-hint tag->nkind ahint-of
                                          sym-tag-class init-jclass add-jclass
-                                         binding-jlocal add-jlocal loop-jlocals
+                                         binding-jlocal add-jlocal loop-body note-recur!
                                          host-call-arg-casts static-invoke host-call-target-class
                                          with-ret-nhint fi-tag-class fi-adapt-form
                                          parse-params strip-arglist-meta arglist-ret-nkind arglist-type-method? arglist-meta
@@ -892,13 +892,12 @@
         bvec (binding-vector items)
         rname (gen-name "loop")
         [pairs env*] (analyze-bindings ctx bvec env)
-        env* (loop-jlocals env* (mapv first pairs))
         body-env (assoc (with-recur env* rname (quot (count bvec) 2)
                                     (mapv (fn [[nm _]] (get (:jprims env*) nm)) pairs))
                         :recur-locals (mapv first pairs))
         ;; The other recur-target root (see analyze-arity): a recur
         ;; against THIS loop may only sit in tail position of its body.
-        body-node (analyze-body ctx (drop 2 items) body-env :return)]
+        body-node (loop-body ctx (mapv first pairs) body-env #(analyze-body ctx (drop 2 items) % :return))]
     (check-recur-tails! body-node)
     {:op :loop :bindings pairs :body body-node}))
 
@@ -941,7 +940,7 @@
     ;; this recur was written. nil for a macro-built recur with no
     ;; reader metadata, which falls back to the enclosing form.
     (let [args (mapv #(analyze ctx % env) (rest items))
-          _ (check-recur-prims! env args)
+          _ (do (check-recur-prims! env args) (note-recur! ctx env args))
           node {:op :recur :args args}
           p (form-position form)]
       (if p (assoc node :pos p) node))))

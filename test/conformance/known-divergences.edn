@@ -1058,6 +1058,17 @@
            :jvm "[\"BigInt\" 3N]"
            :jolt "[\"Long\" 3]"}
    :note "Same one-exact-integer model as (class 1N); (unchecked-add 9223372036854775808N 1) is 9223372036854775809N on both."}
+;; The same collapse at the Reflector: a BigInt inside the long range is the
+;; fixnum a Long is, so an untyped Long/valueOf takes it as valueOf(long) where
+;; the JVM's Reflector finds no overload for a BigInt.
+  {:category :integer-box-model
+   :behavior "((fn [x] (Long/valueOf x)) 2N)"
+   :jvm "throws IllegalArgumentException (No matching method valueOf found taking 1 args)"
+   :jolt "2: 2N is the fixnum 2"
+   :check {:expr "(try ((fn [x] (Long/valueOf x)) 2N) (catch IllegalArgumentException e (ex-message e)))"
+           :jvm "\"No matching method valueOf found taking 1 args\""
+           :jolt "2"}
+   :note "Same one-exact-integer model as (class 1N). A BigInt past the long range is refused on both."}
   ;; The same collapse under *print-dup*: print-dup writes a Number as its
   ;; constructor unless it is a Long (or a BigInt, which prints with its N), and
   ;; an int, a short, a byte, a small BigInteger and a small BigInt are all the
