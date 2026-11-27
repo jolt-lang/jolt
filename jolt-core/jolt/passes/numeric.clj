@@ -393,7 +393,9 @@
 (defn- math-invoke
   "A java.lang.Math call lowered to a native flonum or fixnum op, or nil."
   [fnode node1 ars n]
-  (when (and (= :host-static (get fnode :op)) (= "Math" (get fnode :class)))
+  (when (and (= :host-static (get fnode :op)) (= "Math" (get fnode :class))
+             ;; an int overload with its own member (abs(int) wraps at 32 bits)
+             (nil? (get fnode :entry)))
     (or (math-fl-invoke node1 (get math-fl-ops (get fnode :member)) ars n)
         (math-lng-invoke node1 (get math-lng-ops (get fnode :member)) ars n))))
 

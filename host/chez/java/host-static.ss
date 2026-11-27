@@ -300,6 +300,7 @@
     ("Short" "parseShort" 1 2)
     ("Short" "toString" 1)
     ("Short" "valueOf" 1 2)
+    ("StrictMath" "random" 0)
     ("String" "format" varargs)
     ("String" "join" varargs)
     ("Symbol" "create" 1 2)

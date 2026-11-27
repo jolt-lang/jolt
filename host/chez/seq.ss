@@ -1765,18 +1765,22 @@
 (define (jolt-floor-quotient a b)
   (when (eqv? b 0) (jolt-l-div0-throw))
   (let ((q (quotient a b)))
-    (if (and (not (eqv? 0 (remainder a b)))
-             (if (negative? b) (positive? a) (negative? a)))
-        (- q 1)
-        q)))
+    (cond ((and (not (eqv? 0 (remainder a b)))
+                (if (negative? b) (positive? a) (negative? a)))
+           (- q 1))
+          ((eqv? q 9223372036854775808) -9223372036854775808)     ; Long.MIN_VALUE / -1 wraps
+          (else q))))
 ;; Math.abs. Deliberately the generic `abs`, not fxabs: a :long is only promised
 ;; to be within the 64-bit range, not Chez's 61-bit fixnum range (jolt-l-checked
 ;; accepts the wider one), and fxabs additionally raises on the most-negative
 ;; fixnum. The win here is against host-static-call's string-keyed method lookup,
 ;; beside which fixnum-vs-generic abs is noise. Named (and jolt- prefixed) so the
 ;; emitted head cannot be shadowed by a user local.
+;; Math.abs(long) wraps: Long.MIN_VALUE, the one long whose absolute value is
+;; not a long, is its own.
 (define-syntax jolt-l-abs
-  (syntax-rules () ((_ a) (abs a))))
+  (syntax-rules () ((_ a) (let ((r (abs a)))
+                            (if (eqv? r 9223372036854775808) -9223372036854775808 r)))))
 ;; Math.pow over proven doubles. Java's pow is not C's: a NaN exponent is NaN
 ;; even for a base of 1.0, and so is a base of magnitude 1.0 to an infinite
 ;; power, where flexpt (C's pow) answers 1.0. Every other special case agrees.
