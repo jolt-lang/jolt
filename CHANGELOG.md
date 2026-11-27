@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.31] - 2026-11-27
+
+`jolt.native` regions now always run as native code: outside a `jolt build`
+binary they are compiled in process by a vendored MIR C compiler, and they can
+specialize on runtime values, pick a body by the running CPU, be built from
+data at runtime (`native-fn`), and read binary record layouts. Projects get
+`deps.local.edn` for per-machine overrides and `jolt.configure` to find native
+libraries on the machine. Common host operations and number printing are
+several times faster. The rest is JVM parity: `Throwable` suppression, the JVM's
+`ClassCastException` wording for resolved and reflective calls, argument types
+and overload choice as the JVM compiler and Reflector work them out, the JDK 21
+`Math` methods jolt lacked, a streaming Base64 decoder, `Arrays/compare` and
+`mismatch`, `java.util.StringJoiner`, `PrintWriter` over a stream or a file,
+`FileChannel.force`, and promesa's scheduler running.
+
 ### Added
 
 - **The rest of JDK 21's `java.lang.Math`, and `StrictMath`.** `fma` (one
@@ -235,7 +250,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Long/MIN_VALUE` wrap instead of answering a BigInt.
 
 - `(.append sb (byte 97))` is refused as ambiguous between `append(int)` and
-  `append(long)`, as the JVM compiler refuses it, and `System/currentTimeMillis`
+  `append(long)`, as the JVM compiler refuses it, and so is `(.append sb nil)`
+  with a literal nil ("More than one matching method found: append"); an
+  untyped nil still appends "null". `System/currentTimeMillis`
   and `System/nanoTime` are primitive longs, so `(Math/round (System/currentTimeMillis))`
   finds no overload, as on the JVM.
 
@@ -367,11 +384,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `:invalid-arity` and `(c-div 7 2)` does. A wrapper's raw binding gets the
   same extra parameter.
 
+- A local jar's embedded POM keeps each dependency's `<exclusions>`, as the
+  effective-POM path does, so a locally built jar no longer pulls in a
+  transitive dependency its POM excludes (#1903).
+- Protocols extended to `short[]`, `float[]` and `boolean[]` dispatch on those
+  array classes instead of falling through to `Object[]`, so hasch finds its
+  short and float array hash coercions (#1900).
+- `FileChannel.force` exists: it fsyncs the open descriptor (retrying `EINTR`),
+  uses `FlushFileBuffers` on Windows, and throws `ClosedChannelException` on a
+  closed channel. Konserve's durable writes call it (#1902).
+- `deliver` invokes a callable that is not a promise, as Clojure's
+  `(deliver p v)` is `(p v)`, so Datahike's transaction result accepts a
+  delivered report (#1905).
+
 ### Internal
 
 - The metrics workflow runs the latest jolt-metrics and gates on its lint
   findings as well (`ci/metrics-allow.edn` lists the ones that stay), and a
   pull request's report opens with what changed since main's.
+- Every public `jolt.ffi` var has a docstring, so `doc` and editor hover answer
+  for all of them; a test fails on a new one without.
+- The native gate checks that the JIT prelude declares every C library function
+  a region's C calls, which an undeclared `memset` faulted on Apple arm64.
 
 ## [0.8.30] - 2026-11-24
 
