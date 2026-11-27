@@ -185,7 +185,7 @@
 ;; A non-numeric result (a comparison) doesn't propagate a numeric kind.
 (defn- propagate [spec] (if (= spec :bool) nil spec))
 
-(declare an rebind-boxed boxed-operand? jvm-long-expr? rebind-jvm-long dcast-bind)
+(declare an rebind-boxed boxed-operand? jvm-long-expr? rebind-jvm-long)
 
 ;; The then-branch env of an `if`: a local the test proves (double? x) is a
 ;; flonum there, so its arithmetic takes the fl ops (case-based narrowing; see
