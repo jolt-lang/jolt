@@ -224,3 +224,31 @@
                    :let [ds (disj (walk #{} lib) lib)]
                    :when (seq ds)]
                [(str lib) (into #{} (map str) ds)]))))
+
+;; The dependencies a pom.xml's text declares, as a deps map the expansion walks
+;; like any other: each with its literal version and exclusions, minus what Maven
+;; does not pass on (optional, test/provided/system scope) and Clojure itself.
+;; One with no literal version is skipped.
+(defn pom-xml-deps [xml]
+  (let [grab (fn [tag block] (second (re-find (re-pattern (str "<" tag ">(.*?)</" tag ">")) block)))]
+    (into {}
+      (for [[_ block] (re-seq #"(?s)<dependency>(.*?)</dependency>" xml)
+            :let [excluded (re-seq #"(?s)<exclusion>(.*?)</exclusion>" block)
+                  exclusions (set (for [[_ entry] excluded
+                                        :let [g (grab "groupId" entry) a (grab "artifactId" entry)]
+                                        :when (and g a)]
+                                    (symbol g a)))
+                  block (str/replace block #"(?s)<exclusions>.*?</exclusions>" "")
+                  g (grab "groupId" block) a (grab "artifactId" block)
+                  v (grab "version" block) scope (grab "scope" block)
+                  optional (grab "optional" block)]
+            ;; Maven does not inherit optional deps or test/provided/system
+            ;; scope transitively — so a cljc lib's optional ClojureScript
+            ;; toolchain (clojurescript, closure-compiler) stays out.
+            :when (and g a v
+                       (not (#{"test" "provided" "system"} scope))
+                       (not= "true" optional)
+                       (not (and (= g "org.clojure") (= a "clojure")))
+                       (re-matches #"[0-9A-Za-z.\-]+" v))]
+        [(symbol g a) (cond-> {:mvn/version v}
+                        (seq exclusions) (assoc :exclusions exclusions))]))))
