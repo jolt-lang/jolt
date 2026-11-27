@@ -1565,9 +1565,6 @@
 ;; ...and a literal's reader positions, which only chez's runtime specializer
 ;; reads (#1861)
 (define (image-register-fn-pos! . _) #f)
-;; specialize.ss is chez's too; compile-eval.ss, which gambit shares, installs
-;; its compile half here, where nothing calls it
-(define spec-compile-hook #f)
 ;; chez's def-var! records the var name of a code value (a multimethod, a reify)
 ;; so a state image can write it as a reference. Gambit has no image, so the
 ;; registration is a no-op and nothing is ever a named code value.
