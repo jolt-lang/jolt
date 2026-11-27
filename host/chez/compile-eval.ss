@@ -455,8 +455,11 @@
 ;;
 ;;   :error  a call that can never succeed — the form does not compile; it
 ;;           raises :analyze/type-error at the call (raise-check-errors!)
-;;   :warn   a likely mistake that could still be meant — printed to stderr as
-;;           file:line:col: warning: …, and the form compiles
+;;   :warn   a likely mistake that could still be meant — the form compiles.
+;;           `jolt build` prints these (file:line:col: warning: …) from its emit
+;;           walk, which sees every app form on every build; at the REPL, in
+;;           jolt run and in -e they would only be noise, so there they print
+;;           only when JOLT_CHECK is set
 ;;   :lint   advice (a dead type hint) — printed only when JOLT_CHECK is set
 ;;
 ;; JOLT_CHECK=0 (or off/false/no) skips the check entirely: an escape hatch, not
@@ -498,28 +501,44 @@
 (define diag-kw-level (keyword #f "level"))
 (define diag-kw-error (keyword #f "error"))
 (define diag-kw-lint (keyword #f "lint"))
-(define (jolt-print-diags! diags)
+;; #t for the whole of a `jolt build` (build-binary). Its load phase compiles
+;; through jolt-check-node! but prints nothing (a namespace the AOT cache
+;; supplies is not compiled at all, so warnings there would come and go); the
+;; emit walk (ei-emit-ns-records) checks every app form and prints them, once each.
+(define jolt-check-in-build (make-parameter #f))
+(define jolt-check-printed (make-hashtable string-hash string=?))
+
+(define (jolt-print-diags! diags warn?)
   (let ((port (current-error-port)))
     (let loop ((s (jolt-seq diags)))
       (unless (jolt-nil? s)
         (let* ((d (seq-first s))
                (level (jolt-get d diag-kw-level jolt-nil)))
-          (unless (or (eq? level diag-kw-error)
-                      (and (eq? level diag-kw-lint) (not jolt-check-lint?)))
-            (let ((loc (jolt-diag-loc-string (jolt-get d diag-kw-pos jolt-nil)))
-                  (msg (jolt-get d diag-kw-msg jolt-nil)))
-              (when loc (display loc port) (display ": " port))
-              (display "warning: " port)
-              (unless (jolt-nil? msg) (display (jolt-str-render-one msg) port))
-              (newline port))))
+          (when (if (eq? level diag-kw-lint) jolt-check-lint?
+                    (and warn? (not (eq? level diag-kw-error))))
+            (let* ((loc (jolt-diag-loc-string (jolt-get d diag-kw-pos jolt-nil)))
+                   (msg (jolt-get d diag-kw-msg jolt-nil))
+                   (line (string-append (if loc (string-append loc ": ") "") "warning: "
+                                        (if (jolt-nil? msg) "" (jolt-str-render-one msg)))))
+              (unless (hashtable-contains? jolt-check-printed line)
+                (when (jolt-check-in-build) (hashtable-set! jolt-check-printed line #t))
+                (display line port)
+                (newline port)))))
         (loop (jolt-seq (seq-more s)))))))
-(define (jolt-check-node! node)
+(define (jolt-check-run! node warn?)
   (unless jolt-check-off?
     (let ((diags (guard (_ (#t #f)) (jolt-check-form node))))
       (when (and diags (not (jolt-nil? (jolt-seq diags))))
-        (jolt-print-diags! diags)
+        (jolt-print-diags! diags warn?)
         ;; outside the guard: the verdict is the one thing allowed to fail a compile
         (jolt-check-raise-fn diags)))))
+;; the runtime compile path: warnings only under JOLT_CHECK, and never in a
+;; build's load phase (the emit walk reports those)
+(define (jolt-check-node! node)
+  (jolt-check-run! node (and jolt-check-lint? (not (jolt-check-in-build)))))
+;; a build's emit walk: every app form, warnings always
+(define (jolt-check-build-node! node)
+  (when (jolt-check-in-build) (jolt-check-run! node #t)))
 
 ;; Already-read FORM -> Scheme source string (analyze -> emit on Chez).
 ;; `ns` is the compile namespace unqualified symbols resolve against. No require

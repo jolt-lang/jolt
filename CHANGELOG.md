@@ -19,10 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rejected call throws at runtime. A likely mistake that could still be meant is
   a warning instead (`file:line:col: warning: …`): a mismatch only a `^String`
   hint claims, `min`/`max` beside an operand that may be NaN, or a call inside a
-  `try` that catches what it throws, as `thrown?` assertions do. The check runs
-  on every runtime-compiled form (its compile-time cost is within noise on the
-  compile-forms bench, check on vs off); `JOLT_CHECK=0` turns it off, and `JOLT_CHECK=1` adds the advice-only
-  diagnostics (type hints that do nothing) it used to print on its own.
+  `try` that catches what it throws, as `thrown?` assertions do. `jolt build`
+  prints the warnings, once each, on every build; the REPL, `jolt run` and `-e`
+  keep quiet about them unless `JOLT_CHECK=1`, which also adds the advice-only
+  diagnostics (type hints that do nothing) it used to print on its own. Errors
+  apply everywhere. The check's compile-time cost is within noise on the
+  compile-forms bench, check on vs off; `JOLT_CHECK=0` turns it off.
 - **`deps.local.edn`: per-machine overrides merged over deps.edn.** A project's
   `deps.local.edn` (or the file `$JOLT_DEPS_LOCAL` names, relative to the
   project) merges over its deps.edn the way deps.edn merges over the user's,
@@ -231,6 +233,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`unchecked-add`, `unchecked-subtract` and `unchecked-multiply` take exactly
+  two arguments**, as on the JVM, where each is a single `[x y]` arity:
+  `(unchecked-add 1)`, `(unchecked-multiply)` and `(apply unchecked-add [1 2 3])`
+  raise `ArityException` instead of answering. Under `*unchecked-math*`,
+  `(+ a b c)` becomes nested pairs, as clojure.core's inliner expands it, and
+  `(+ a)`, `(+)` and `(*)` stay the ordinary fns.
 - **A `^double` let or loop local unboxes at each arithmetic use, as on the JVM.**
   `(let [^double x (first [2])] (* x x))` is `4.0` (it was `4`), over `1/3` it
   is `1.0`, and over a string it throws `ClassCastException`; `str`, `class`

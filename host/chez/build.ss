@@ -2904,6 +2904,9 @@
                     (and drop-compiler? (not bld-nt?))))))
 
 (define (build-binary entry-ns out-path mode natives embed-dirs ext-roots direct-link? tree-shake? allow-dynamic library? includes)
+  (parameterize ((jolt-check-in-build #t))
+    (build-binary* entry-ns out-path mode natives embed-dirs ext-roots direct-link? tree-shake? allow-dynamic library? includes)))
+(define (build-binary* entry-ns out-path mode natives embed-dirs ext-roots direct-link? tree-shake? allow-dynamic library? includes)
   (ei-profile-init!)
   (bld-check-includes! includes)
   (let ((out-path (bld-output-path out-path library?)))

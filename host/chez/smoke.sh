@@ -342,8 +342,7 @@ fi
 rm -rf "$diag_dir"
 
 # The success-type check: a call that can never succeed fails the compile with a
-# located :analyze/type-error, a likely mistake that could still run is a
-# warning, and JOLT_CHECK=0 turns the check off.
+# located :analyze/type-error, and JOLT_CHECK=0 turns the check off.
 chk_err="$($jolt -e '(first 42)' 2>&1 >/dev/null)"; chk_rc=$?
 if [ "$chk_rc" != 0 ] && printf '%s' "$chk_err" | grep -q 'always throws' \
    && printf '%s' "$chk_err" | grep -q 'first'; then
@@ -353,11 +352,21 @@ else
   echo "    got rc=$chk_rc \`$chk_err\`"
   fails=$((fails + 1))
 fi
+# A warning (a likely mistake that could still be meant) is jolt build's to
+# print; at -e, the REPL and jolt run it would be noise, so only JOLT_CHECK shows it.
 chk_warn="$($jolt -e '(fn [^String s] (+ s 1))' 2>&1 >/dev/null)"; chk_rc=$?
+if [ "$chk_rc" = 0 ] && ! printf '%s' "$chk_warn" | grep -q 'warning:'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: a warning stays quiet outside jolt build"
+  echo "    got rc=$chk_rc \`$chk_warn\`"
+  fails=$((fails + 1))
+fi
+chk_warn="$(JOLT_CHECK=1 $jolt -e '(fn [^String s] (+ s 1))' 2>&1 >/dev/null)"; chk_rc=$?
 if [ "$chk_rc" = 0 ] && printf '%s' "$chk_warn" | grep -q 'warning:.*hinted as a string'; then
   pass=$((pass + 1))
 else
-  echo "  FAIL: a hinted-only type mismatch is a warning"
+  echo "  FAIL: JOLT_CHECK=1 shows a hinted-only type mismatch as a warning"
   echo "    got rc=$chk_rc \`$chk_warn\`"
   fails=$((fails + 1))
 fi
