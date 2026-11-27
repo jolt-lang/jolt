@@ -87,6 +87,7 @@
   ;; the static reference gives
   {:suite "reflect-member-model" :expr "(.get (.getField Long \"MAX_VALUE\") nil)" :expected "9223372036854775807"}
   {:suite "reflect-member-model" :expr "(sort (map (fn [f] (.getName f)) (.getDeclaredFields Long)))" :expected "(\"MAX_VALUE\" \"MIN_VALUE\" \"TYPE\")"}
+  {:suite "reflect-member-model" :expr "(let [a clojure.lang.RT/EMPTY_ARRAY] [(alength a) (= (class a) (class (object-array 0))) (identical? a (.get (.getField clojure.lang.RT \"EMPTY_ARRAY\") nil))])" :expected "[0 true true]"}
   {:suite "reflect-member-model" :expr "(identical? (.get (.getField clojure.lang.RT \"REQUIRE_LOCK\") clojure.lang.RT) clojure.lang.RT/REQUIRE_LOCK)" :expected "true"}
   {:suite "reflect-member-model" :expr "(try (.getField Long \"NOPE\") (catch NoSuchFieldException _ :nsf))" :expected ":nsf"}
   ;; a shim-backed class reports the methods its tag registers
