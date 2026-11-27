@@ -14,9 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on each miss, so a site that saw two types in turn ran about 5 times slower
   than a single-type site, and slower than no cache at all. A site now keeps
   its first type plus up to three more, then stops caching, as Clojure's
-  keyword callsites do: alternating two types went from 68 to 13 ns per
-  lookup. Every record operation (`count`, `meta`, `=`, absent-key `get`, …)
-  on interleaved types also stops allocating to swap its per-type cache.
+  keyword callsites do: alternating two types went from 68 to 12 ns per
+  lookup.
 
 ## [0.8.31] - 2026-11-27
 
