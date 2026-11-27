@@ -424,7 +424,13 @@
     (let [grab (fn [tag block] (second (re-find (re-pattern (str "<" tag ">(.*?)</" tag ">")) block)))]
       (into {}
         (for [[_ block] (re-seq #"(?s)<dependency>(.*?)</dependency>" xml)
-              :let [g (grab "groupId" block) a (grab "artifactId" block)
+              :let [excluded (re-seq #"(?s)<exclusion>(.*?)</exclusion>" block)
+                    exclusions (set (for [[_ entry] excluded
+                                          :let [g (grab "groupId" entry) a (grab "artifactId" entry)]
+                                          :when (and g a)]
+                                      (symbol g a)))
+                    block (str/replace block #"(?s)<exclusions>.*?</exclusions>" "")
+                    g (grab "groupId" block) a (grab "artifactId" block)
                     v (grab "version" block) scope (grab "scope" block)
                     optional (grab "optional" block)]
               ;; Maven does not inherit optional deps or test/provided/system
@@ -435,7 +441,8 @@
                          (not= "true" optional)
                          (not (and (= g "org.clojure") (= a "clojure")))
                          (re-matches #"[0-9A-Za-z.\-]+" v))]
-          [(symbol g a) {:mvn/version v}])))))
+          [(symbol g a) (cond-> {:mvn/version v}
+                          (seq exclusions) (assoc :exclusions exclusions))])))))
 
 (defn- jar-root?
   "Is `root` a jar rather than a directory? The loader reads a .jar/.zip root
