@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Runtime specialization of hot protocol calls (#1861).** Under `jolt run`,
+  a protocol call on a record counts its calls and samples which method it
+  reaches. Once a call site in a deftype or `extend` method has seen one type
+  for a while, the method is recompiled from its source with the callee's body
+  inlined behind a guard, and the inlined body reads and writes the callee's
+  fields with no type check. The guard falls back to the ordinary call when
+  the type, the method or the protocol var is redefined. tools.reader's
+  indexing reader reads a char in about two thirds of the time, and the #1713
+  benchmarks (tools.reader `read-string`, rewrite-clj `parse-string`) run
+  10-15% faster. `JOLT_SPECIALIZE=0` turns it off; `JOLT_SPEC_DEBUG=1` reports
+  each recompile.
+
 - **`java.util.StringJoiner`.** `add`, `toString`, `length`, `setEmptyValue`
   and `merge`, with the JDK's answers for nil parts, empty values and merging.
   `add` and `length` are O(1) and `toString` copies each part once, so a

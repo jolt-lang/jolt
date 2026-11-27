@@ -1048,3 +1048,191 @@
           (if (eof-object? form)
               last
               (loop (eval form))))))))
+
+;; --- runtime specialization of hot protocol sites (#1861) -------------------
+;; The compile half of specialize.ss: recompile a sampled owner -- a top-level
+;; fn literal, by its fn registry name -- from its registered source, with each
+;; site whose samples agree inlining the impl they saw. The source is read,
+;; analyzed and run through the passes as the spine compiles any form, in the
+;; literal's own namespace, so its sites number as the loaded code's did
+;; (jolt.passes.inline number-psites); jolt.passes.inline specialize-sites
+;; copies the impls in, and the result is emitted and evaluated like any other
+;; form, outside any AOT capture: the recompile is this process's, never cached.
+(define spec-specialize-sites (var-deref "jolt.passes.inline" "specialize-sites"))
+(define spec-kw-fn (keyword #f "fn"))
+(define spec-kw-ns (keyword #f "ns"))
+(define spec-kw-desc (keyword #f "desc"))
+(define spec-kw-k (keyword #f "k"))
+(define spec-kw-fields (keyword #f "fields"))
+(define spec-kw-dbl (keyword #f "dbl"))
+(define spec-kw-fqn (keyword #f "fqn"))
+
+;; The name a backtrace gives a method the specializer recompiled or inlined:
+;; ns/Type.method, at the line its source starts, registered (source-registry.ss
+;; jolt-register-source!) under PROCNAME -- the frame of the method itself, or of
+;; its recompile -- and by that fqn, which is what an inlined copy's stamps name
+;; (jolt.passes.inline spec-splice). The fqn, or #f for a literal no dispatch
+;; vector holds under one name.
+(define (spec-frame-name! owner procname)
+  (let ((reg (hashtable-ref fn-form-tbl owner #f))
+        (targets (spec-install-targets owner)))
+    (and reg (pair? targets)
+         (let* ((t (car targets))
+                (tag (car t))
+                (simple (let loop ((i (fx- (string-length tag) 1)))
+                          (cond ((fx< i 0) tag)
+                                ((char=? (string-ref tag i) #\.) (substring tag (fx+ i 1) (string-length tag)))
+                                (else (loop (fx- i 1))))))
+                (nm (string-append simple "." (caddr t)))
+                (ns (vector-ref reg 1))
+                (pos (fn-pos-lookup owner))
+                (file (if pos (car pos) #f))
+                ;; the first list the reader positioned: the outer ones are the
+                ;; deftype macro's own
+                (line (or (and pos (let ((t (cdr pos)))
+                                     (let loop ((i 0))
+                                       (cond ((fx= i (vector-length t)) #f)
+                                             ((fx> (car (vector-ref t i)) 0) (car (vector-ref t i)))
+                                             (else (loop (fx+ i 1)))))))
+                          0)))
+           (jolt-register-source! owner ns nm (or file jolt-nil) line)
+           (unless (string=? procname owner)
+             (jolt-register-source! procname ns nm (or file jolt-nil) line))
+           (string-append ns "/" nm)))))
+
+;; The sampled type's field keys in slot order, and which are ^double -- the
+;; layout an inlined body's field reads and writes are checked against, once,
+;; here: past the guard the receiver is of exactly this type, so a read or write
+;; the layout puts where the body puts it needs no test (backend_scheme
+;; emit-specialized-then). The ^double flags only for the type's current
+;; descriptor, whose registration they are; nil leaves every write checked.
+(define (spec-desc-fields d) (apply jolt-vector (vector->list (jrdesc-fkeys d))))
+(define (spec-desc-dbl d)
+  (let* ((tag (jrdesc-tag d))
+         (flags (and (eq? (hashtable-ref chez-tag-desc tag #f) d)
+                     (hashtable-ref chez-record-dbl-tbl tag #f))))
+    (if (and (vector? flags) (fx= (vector-length flags) (vector-length (jrdesc-fkeys d))))
+        (apply jolt-vector (vector->list flags))
+        jolt-nil)))
+
+;; FORM rebuilt with each list form's reader position from POS ((file . table),
+;; fn-form-registry.ss fn-pos-lookup), by the walk that recorded them (fnsrc.clj
+;; fnsrc-pos-table): list forms in prefix order, through lists and vectors. FORM
+;; unchanged when the walk and the table disagree.
+(define (spec-form-with-pos form pos)
+  (let ((file (car pos)) (table (cdr pos)) (i 0))
+    (call/cc
+      (lambda (k)
+        (let ((r (let walk ((x form))
+                   (cond
+                     ((hc-list? x)
+                      (when (fx>= i (vector-length table)) (k form))
+                      (let* ((lc (vector-ref table i))
+                             (_ (set! i (fx+ i 1)))
+                             (kids (map walk (seq->list x))))
+                        (if (null? kids)
+                            x
+                            (let ((l (apply jolt-list kids)) (m (jolt-meta x)))
+                              (if (fx> (car lc) 0)
+                                  (jolt-with-meta l
+                                    (let ((m (if (pmap? m) m (jolt-hash-map))))
+                                      (let ((m (jolt-assoc1 (jolt-assoc1 m hc-kw-line (car lc)) hc-kw-column (cdr lc))))
+                                        (if file (jolt-assoc1 m hc-kw-file file) m))))
+                                  (if (pmap? m) (jolt-with-meta l m) l))))))
+                     ((hc-vec? x)
+                      (let ((v (apply jolt-vector (map walk (seq->list x)))) (m (jolt-meta x)))
+                        (if (pmap? m) (jolt-with-meta v m) v)))
+                     (else x)))))
+          (if (fx= i (vector-length table)) r form))))))
+
+;; registration vector -> its analyzed, numbered IR. Keyed on the vector, which
+;; a re-registration (the form loaded again) replaces.
+(define spec-ir-cache (make-weak-eq-hashtable))
+(define (spec-analyze form ns)
+  (let* ((ctx (make-analyze-ctx ns))
+         (node (parameterize ((hc-compiling-to-run #t)) (jolt-ce-analyze ctx form))))
+    (parameterize ((hc-form-guarded #t))
+      (jolt-ce-run-passes node ctx (jolt-ce-current-unit)))))
+;; The owner's registration and IR, or #f: it must close over nothing, since
+;; the source is all the recompile has.
+(define (spec-owner-reg name)
+  (let ((reg (image-fn-form-lookup name)))
+    (and reg
+         (let ((fr (vector-ref reg 2)))
+           (or (null? fr) (jolt-nil? fr) (fx= 0 (jolt-count fr))))
+         reg)))
+(define (spec-owner-ir name reg)
+  (or (hashtable-ref spec-ir-cache reg #f)
+      (let* ((pos (fn-pos-lookup name))
+             (form (if pos (spec-form-with-pos (vector-ref reg 0) pos) (vector-ref reg 0)))
+             (ir (spec-analyze form (vector-ref reg 1))))
+        (hashtable-set! spec-ir-cache reg ir)
+        ir)))
+
+;; The (impl . desc) a path's samples agree on: its newest few, up to the
+;; number that trips a site.
+(define (spec-path-sample prof path)
+  (let ((l (hashtable-ref prof path '())))
+    (and (pair? l) (spec-agreed l (fxmin (length l) spec-samples-to-trip)))))
+;; A path no sample of the owner names may be a site inside an inlined body:
+;; "2/0" is site 0 of the impl inlined at site 2, whose own code may have
+;; sampled it as "0".
+(define (spec-inherited via path)
+  (let loop ((i (fx- (string-length path) 1)))
+    (cond
+      ((fx< i 0) #f)
+      ((char=? (string-ref path i) #\/)
+       (let ((y (hashtable-ref via (substring path 0 i) #f)))
+         (if y
+             (spec-path-sample (spec-owner-profile (spec-owner-of y))
+                               (substring path (fx+ i 1) (string-length path)))
+             (loop (fx- i 1)))))
+      (else (loop (fx- i 1))))))
+
+(define (spec-make-lookup o spliced)
+  (let ((via (make-hashtable string-hash string=?)))
+    (lambda (path nargs)
+      (let* ((s0 (or (spec-path-sample (spec-owner-profile o) path) (spec-inherited via path)))
+             (s (and s0 (cons (spec-current-impl (car s0)) (cdr s0))))
+             (y (and s (spec-impl-owner (car s))))
+             (reg (and y (spec-owner-reg y)))
+             (ir (and reg (spec-owner-ir y reg))))
+        (if (not ir)
+            jolt-nil
+            (begin
+              (hashtable-set! via path y)
+              (hashtable-set! spliced path s)
+              (jolt-hash-map spec-kw-fqn (or (spec-frame-name! y y) jolt-nil)
+                             spec-kw-fn ir spec-kw-ns (vector-ref reg 1)
+                             spec-kw-desc (spec-const-id! (cdr s))
+                             spec-kw-k (spec-const-id! (car s))
+                             spec-kw-fields (spec-desc-fields (cdr s))
+                             spec-kw-dbl (spec-desc-dbl (cdr s)))))))))
+
+;; Each recompile's literals are named under a def of their own
+;; (jfn$<ns>/jolt$spec<N>$<i>), never off the namespace's counter: a namespace
+;; loaded from the AOT cache never advanced that counter in this process, so a
+;; literal named off it took the registry name of one already loaded, and the
+;; next lookup of that name found this source instead of its own.
+(define spec-compile-count 0)
+(define (spec-compile-owner owner o)
+  (let ((reg (spec-owner-reg owner)))
+    (if (not reg)
+        (begin (spec-log "~a: no closed registered source" owner) #f)
+        (let* ((spliced (make-hashtable string-hash string=?))
+               (sir (spec-specialize-sites (spec-owner-ir owner reg) owner (spec-make-lookup o spliced))))
+          (if (fx= 0 (hashtable-size spliced))
+              (begin (spec-log "~a: no sampled impl has source to inline" owner) #f)
+              (let ((p (parameterize ((hc-form-guarded #t) (jolt-aot-capture #f))
+                         (let ((scm (begin
+                                      (set! spec-compile-count (fx+ spec-compile-count 1))
+                                      (jolt-ce-emit sir (string-append "jolt$spec"
+                                                                       (number->string spec-compile-count))))))
+                           (when (equal? (getenv "JOLT_SPEC_DEBUG") "2")
+                             (fprintf (current-error-port) "spec: ~a =>\n~a\n" owner scm))
+                           (eval (read (open-input-string scm)) (interaction-environment))))))
+                (and (procedure? p)
+                     (let ((cn (sa-procedure-code-name p)))
+                       (when cn (spec-frame-name! owner cn))
+                       (cons p spliced)))))))))
+(set! spec-compile-hook spec-compile-owner)

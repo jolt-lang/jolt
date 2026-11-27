@@ -1324,3 +1324,113 @@
       ;; (b) drop a non-escaping foldable-struct let binding, after children
       (= op :let) (elim-let-structs (map-ir-children scalar-replace node))
       :else (map-ir-children scalar-replace node))))
+
+;; ---------------------------------------------------------------------------
+;; Runtime specialization of hot protocol call sites (#1861). `jolt run`
+;; numbers each protocol call site in a top-level fn literal (number-psites);
+;; the back end makes such a site count its record-receiver calls and sample the
+;; impl they reach (backend_scheme psite-ticked, specialize.ss). Once a site is
+;; hot and has seen one impl, the specializer recompiles the literal from its
+;; registered source, and specialize-sites puts a copy of that impl's body at the
+;; site behind a :proto-guard -- the var still holds the protocol fn, the
+;; receiver is of the type the site saw, its dispatch vector still holds that
+;; impl -- with the call the site made as the fallback. Every test is the one
+;; the site's own dispatch makes, so a redefinition of the type, the method or
+;; the var takes the call. The impl's own sites, copied in, are numbered under
+;; the site's path ("2/0"), so a later recompile can inline through them too.
+;; ---------------------------------------------------------------------------
+
+(defn- psite-key
+  "[proto method] for a call a protocol site dispatches through its receiver's
+  dispatch vector, else nil. Not under :extend-via-metadata, whose site always
+  calls the protocol fn."
+  [node ctx]
+  (when (and (= :invoke (get node :op)) (= :var (get (get node :fn) :op)) (seq (get node :args)))
+    (let [f (get node :fn)
+          pk (protocol-call-key ctx (get f :ns) (get f :name) (count (get node :args)))]
+      (when (and (some? pk) (not (nth pk 2 nil))) pk))))
+
+(defn number-psites
+  "Number the protocol call sites of each top-level fn literal in node, in walk
+  order, as :psite \"0\", \"1\", .... A def's own fn init is skipped: nothing
+  can replace the procedure its define names. The numbering is a function of
+  the IR alone, so the specializer's recompile of the same source numbers the
+  same sites the same way."
+  [node ctx]
+  (letfn [(inner [n c]
+            (let [n (map-ir-children (fn [x] (inner x c)) n)]
+              (if (psite-key n ctx)
+                (let [i @c] (swap! c inc) (assoc n :psite (str i)))
+                n)))
+          (top [n]
+            (cond
+              (= :fn (get n :op)) (inner n (atom 0))
+              (and (= :def (get n :op)) (= :fn (get (get n :init) :op))) n
+              :else (map-ir-children top n)))]
+    (top node)))
+
+(defn- prefix-psites [node prefix]
+  (let [n (map-ir-children (fn [c] (prefix-psites c prefix)) node)]
+    (if (get n :psite) (assoc n :psite (str prefix "/" (get n :psite))) n)))
+
+;; How big an impl body a hot site takes. A hot site has earned more than the
+;; guarded splice's budget, and the copy replaces a whole dispatch.
+(def ^:private spec-budget 400)
+(def ^:private spec-depth 4)
+
+(declare spec-walk)
+
+(defn- spec-splice
+  "The site node under a guard, with HIT's impl body in the taken arm. HIT is
+  {:fn <the impl's analyzed fn literal> :ns :desc :k}. node when no arity of
+  the impl takes the call's arguments or its body cannot be copied."
+  [node hit depth lookup]
+  (let [args (get node :args)
+        pk (psite-key node nil)
+        a (first (filter (fn [a] (and (nil? (get a :rest)) (= (count args) (count (get a :params)))))
+                         (get (get hit :fn) :arities)))
+        body (get a :body)]
+    (if (not (and pk a (<= (body-size body) spec-budget) (recur-bound? body false)))
+      node
+      (let [locals (mapv (fn [_] (fresh "sa")) args)
+            fv (fresh "pf")
+            f (get node :fn)
+            env (reduce (fn [e pl] (assoc e (nth pl 0) {:op :local :name (nth pl 1)}))
+                        {} (map vector (get a :params) locals))
+            ;; the copy names the method it came from, called at the site's
+            ;; line, as a guarded splice names its fn (stamp-inline)
+            fqn (get hit :fqn)
+            at (let [p (get node :pos)] (when (map? p) (get p :line)))
+            body (if (and fqn at) (stamp-inline body fqn at (get node :inline-chain)) body)
+            rbody (spec-walk (prefix-psites (subst body env (get hit :ns)) (get node :psite))
+                             (inc depth) lookup)
+            test {:op :proto-guard :fn {:op :local :name fv} :recv {:op :local :name (first locals)}
+                  :ns (get f :ns) :name (get f :name) :proto (nth pk 0) :method (nth pk 1)
+                  :desc (get hit :desc) :k (get hit :k)
+                  ;; the sampled type's layout, for the receiver's field
+                  ;; reads and writes in the copied body
+                  :fields (get hit :fields) :dbl (get hit :dbl)}
+            fallback (assoc node
+                            :fn {:op :local :name fv}
+                            :proto-via {:ns (get f :ns) :name (get f :name)}
+                            :args (mapv (fn [l] {:op :local :name l}) locals))]
+        ;; the var's fn is read first, then the arguments, as the call reads them
+        {:op :let
+         :bindings (into [[fv (assoc f :fn-read true)]] (map vector locals args))
+         :body {:op :if :test test :then rbody :else fallback}}))))
+
+(defn- spec-walk [node depth lookup]
+  (let [n (map-ir-children (fn [c] (spec-walk c depth lookup)) node)
+        p (get n :psite)]
+    (if (and p (< depth spec-depth) (= :invoke (get n :op)) (= :var (get (get n :fn) :op)))
+      (let [hit (lookup p (count (get n :args)))]
+        (if hit (spec-splice n hit depth lookup) n))
+      n)))
+
+(defn specialize-sites
+  "node (a top-level fn literal, numbered) with each site LOOKUP answers for
+  inlined behind its guard. (lookup path nargs) is nil or the impl to inline
+  (see spec-splice). OWNER is the registry name the recompiled literal's sites
+  keep reporting to (backend lambda.clj psite-owner-for)."
+  [node owner lookup]
+  (assoc (spec-walk node 0 lookup) :psite-owner owner))

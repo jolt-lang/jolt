@@ -116,7 +116,7 @@ JOLT-TARGETS-NEEDING-DEPS := \
   aotcachepathsmoke aotcachesourcepathsmoke aotcachestarfilesmoke compilepathsmoke contagion corpus cts dcerefs depssmoke depsunit devboot \
   readscaling vecscaling pipescaling chunkscaling printscaling pmoverhead complexity ioscaling hotscaling applyscaling zipmemory lazyscaling \
   devbootsmoke devirt directlink linkedrace mintgate ffi fibers fiberspoll fieldjoin fieldnum fieldread flarr fnform poolshape coreproc grenadine \
-  gateboot gatebootsmoke gosm hasheq httpsfetch infer inferscaling inline inline-body guardedinline irvalidate statlayout \
+  gateboot gatebootsmoke gosm hasheq httpsfetch infer inferscaling inline inline-body guardedinline specialize specializeratio irvalidate statlayout \
   jolt jolt-debug jolt-release joltsmoke libconformance libperf mandelbrot-num mathfl mvnhttp defmetacells staticsite gcpolicy stacklimit lazyretain \
   deadhost recordshadow emittedheads mirrordrift mirrordrift-regen regexdfacheck regexdfacheck-regen regexdfa regexanchor regexanchorprims regexanchorcheck regexsyntax regexbacktrack \
   hostarity enummodel enumregistrymodel cowpublishmodel doseqperf failfastmodel imagecoverage lazyshims narrow narrowhash numeric numwp oparity s64wrap toplevelinline pic protoret printperf remint sbperf sci selfhost shakelocal \
@@ -182,7 +182,7 @@ CI-GATES := submodules values flonumprint recordinline corpus nsaudit unit docum
   hasheq narrowhash \
   protoret accfix pic narrow directlink linkedrace mintgate directcall defmetacells staticsite arraymap hamt recfast recfold arraybacking largebytesgc largefxgc unitcontext numeric oparity s64wrap toplevelinline mathfl flonumdisp flarr \
   fnform poolshape coreproc traceemit traceeval tracecompilecost degradedbacktrace \
-  inline inline-body guardedinline dcerefs shakelocal manifestcheck readmecheck portcheck mirrordrift regexdfacheck regexdfa regexanchor regexanchorprims regexanchorcheck regexreplace regexsyntax regexbacktrack deadhost recordshadow emittedheads adaptercheck hostprops normalizecheck hostregistry hostarity enummodel imagecoverage lazyshims foreignhandles dispatchalloc hostsite regexmatcher winpath winplatform winparity statlayout lockcheck mmepochcheck parkcheck shelloutcheck errnocheck irvalidate seeddefs devbootsmoke \
+  inline inline-body guardedinline specialize specializeratio dcerefs shakelocal manifestcheck readmecheck portcheck mirrordrift regexdfacheck regexdfa regexanchor regexanchorprims regexanchorcheck regexreplace regexsyntax regexbacktrack deadhost recordshadow emittedheads adaptercheck hostprops normalizecheck hostregistry hostarity enummodel imagecoverage lazyshims foreignhandles dispatchalloc hostsite regexmatcher winpath winplatform winparity statlayout lockcheck mmepochcheck parkcheck shelloutcheck errnocheck irvalidate seeddefs devbootsmoke \
   gatebootsmoke aotcachesmoke aotworkersmoke aotcachepathsmoke aotcachesourcepathsmoke aotcachestarfilesmoke aotfingerprint vfaslceiling vfaslstrings vfaslbignums buildscaling buildnatives buildsegments compilepathsmoke makefilesmoke versionsmoke attributioncheck noticecheck \
   systemstreams closedstdout stderrsplit filelock deleteonclose userdirpaths mimetypes utf8decode \
   certify gambitcheck gambitkernel gambitgencheck gambitseedcheck gambitboot gambiteval gambitunbound gambitvars gambitstatics gambittwins gambitprofile grenadinecheck fibers fiberspoll gosm asynctimer ticks interruptnest monitorescape windescape threadsafety maskedacquire ioerrno cas flow native nativesan nativebuild
@@ -278,7 +278,7 @@ bionic-ci:
 # the whole boot peaks at ~14GB on the 16GB runner (main and branches alike,
 # measured 2026-11-24), so a neighbour's binary build landing on that peak ran
 # the runner out of memory and GitHub reported it lost, with no log.
-QUIET-GATES := fastpathratio stdlibratio pmoverhead gambitunbound
+QUIET-GATES := fastpathratio stdlibratio specializeratio pmoverhead gambitunbound
 # Runs the QUIET-GATES of $(1) one at a time. -j1 takes the sub-make off the
 # jobserver, so nothing else this make started is running beside them.
 define run-quiet
@@ -1287,6 +1287,19 @@ inline-body:
 # callee was redefined all take the call; ^:dynamic and protocol methods stay calls.
 guardedinline:
 	@$(CHEZ) --script host/chez/run-guarded-inline.ss
+
+# Runtime specialization of hot protocol sites (#1861): a monomorphic chain of
+# deftype reads is recompiled with the inner methods inlined behind a guard,
+# answers as before, takes its inlined arm, and takes the call again after a
+# redefined type, a redefined method or a with-redefs of the protocol fn.
+specialize:
+	@$(CHEZ) --script host/chez/run-specialize.ss
+
+# ...and its payoff, as a ratio in one process: tools.reader's indexing reader
+# (vendor/tools.reader) specialized against a verbatim copy run unspecialized.
+# Untraced, as `jolt run` must be to specialize. A QUIET-GATE.
+specializeratio: testbin
+	@JOLT_TRACE=0 JOLT_NO_USER_DEPS=1 target/release/jolt -Sdeps '{:paths ["vendor/tools.reader/src/main/clojure"]}' run test/specialize_ratio_test.clj
 
 # DCE reference collection (dce.ss): an app form's refs must union an IR walk
 # (:var/:the-var nodes) with a text scan of the emitted Scheme, so a macro-spliced

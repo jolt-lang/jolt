@@ -83,6 +83,41 @@
                               #f
                               cls))))
   jolt-nil)
+;; The reader positions of a top-level literal's list forms, which its
+;; registered text reads back without: name -> (file . table), the table the
+;; back end's "line:column ..." (fnsrc.clj fnsrc-pos-table) as UTF-8 bytes until
+;; first asked for, a vector of (line . column) after. Only the runtime
+;; specializer asks (compile-eval.ss), to recompile a literal with the lines a
+;; backtrace reports.
+(define fn-pos-tbl (make-hashtable string-hash string=?))
+(define (image-register-fn-pos! name file table)
+  (jolt-with-mutex fn-form-tbl-mu (hashtable-set! fn-pos-tbl name (cons file table)))
+  jolt-nil)
+(define (fn-pos-parse s)
+  (let ((p (open-input-string s)))
+    (let loop ((acc '()))
+      (let ((tok (let read-tok ((cs '()))
+                   (let ((c (read-char p)))
+                     (cond ((eof-object? c) (if (null? cs) #f (list->string (reverse cs))))
+                           ((char=? c #\space) (if (null? cs) (read-tok '()) (list->string (reverse cs))))
+                           (else (read-tok (cons c cs))))))))
+        (if (not tok)
+            (list->vector (reverse acc))
+            (let* ((k (let find ((i 0)) (if (char=? (string-ref tok i) #\:) i (find (fx+ i 1)))))
+                   (l (string->number (substring tok 0 k)))
+                   (c (string->number (substring tok (fx+ k 1) (string-length tok)))))
+              (loop (cons (cons l c) acc))))))))
+;; (file . #((line . column) ...)) or #f
+(define (fn-pos-lookup name)
+  (let ((e (hashtable-ref fn-pos-tbl name #f)))
+    (and e
+         (begin
+           (when (bytevector? (cdr e))
+             (jolt-with-mutex fn-form-tbl-mu
+               (when (bytevector? (cdr e))
+                 (set-cdr! e (guard (x (#t #f)) (fn-pos-parse (utf8->string (cdr e))))))))
+           (and (vector? (cdr e)) e)))))
+
 ;; A literal whose form could not be registered (a macro spliced a live value
 ;; into it) still has its class -- kept apart, so the image writer never meets a
 ;; registration with no form.

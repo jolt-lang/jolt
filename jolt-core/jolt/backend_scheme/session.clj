@@ -251,6 +251,19 @@
 ;; emit-deftype-slot-read). Only set for an arity no binder in which shadows the
 ;; param, so the name means the receiver everywhere the body reaches.
 (def ^:dynamic *self-recs* {})
+;; The hot-site specializer's OWNER (#1861): the registry name of the
+;; top-level fn literal whose protocol call sites are being emitted. A site
+;; carrying a :psite path (jolt.passes.specialize) under an owner counts its
+;; record-receiver calls and samples what they call (specialize.ss), keyed by
+;; [owner path], and the specializer recompiles the owner from its registered
+;; source. nil outside any fn; :none inside one no specialization can replace
+;; (a def's own init, a closure, a literal nested in either).
+(def ^:dynamic *psite-owner* nil)
+;; Locals a specialized site's guard proved to be a record of one exact type
+;; (jolt.passes.specialize, backend emit-specialized-then): munged name ->
+;; {:fields [field keys in slot order] :dbl [^double flags] or nil}. A field read
+;; or write the layout puts where the deftype macro put it is a bare slot access.
+(def ^:dynamic *proven-recs* {})
 ;; When set (in the :def emit path), the def's direct named init is emitted with
 ;; a qualified letrec binding (ns/name) so Chez reports a unique per-var frame
 ;; name — no collisions across namespaces — and that name is what the source

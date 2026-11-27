@@ -50,7 +50,7 @@
             [jolt.backend-scheme.ffi :as ffi :refer [emit-ffi-node]]
             [jolt.backend-scheme.interop :refer [host-call-emit cast-call]]
             [jolt.backend-scheme.lambda
-             :refer [emit-fn emit-nhint-coerce]]
+             :refer [emit-fn emit-nhint-coerce self-receiver]]
             [jolt.backend-scheme.fused :refer [emit-fused-invoke]]))
 
 ;; op-registry and its derived accessor tables live in jolt.op-registry — the
@@ -539,6 +539,19 @@
 ;; a var: a local bound to a fn literal is a lambda cp0 can see, and a
 ;; wrong-count call to it -- which must compile, and raise when it runs -- would
 ;; be refused at compile time ("possible incorrect argument count").
+;; A protocol site the specializer may recompile (#1861): the call a record
+;; receiver's own impl takes counts itself, and every so often samples the impl
+;; and the receiver's descriptor (specialize.ss jolt-psite-tick!). Only on a site
+;; jolt.passes.specialize numbered, inside an owner (session *psite-owner*); the
+;; counter box is the site's own, made as the owner's form loads.
+(defn- psite-ticked [c f d call]
+  (let [owner session/*psite-owner*
+        path (:psite (:node c))]
+    (if (and (string? owner) path)
+      (let [b (hoist-const-per-site (str "(jolt-psite-make " (chez-str-lit owner) " " (chez-str-lit path) ")"))]
+        (str "(begin (jolt-psite-tick! " b " " f " " d ") " call ")"))
+      call)))
+
 ;; A call to a protocol method fn through its var, dispatched at the call site
 ;; (#1713): while the var still holds the protocol fn it held when this code
 ;; loaded, a record receiver's own impl is read from its type's dispatch vector
@@ -587,7 +600,7 @@
         (str "(let* ((" vf " " vf-src ")" binds ")"
              " (if (eq? " vf " " shim ")"
              " (let* ((" d " (jrec-pic-desc/i " (first ts) ")) (" f " (and " d " (jrdesc-vtable-ref " d " " id "))))"
-             " (if " f " " (with-site (:node c) (kept (emit-call tail? f ts (:tl c) (:ich c))))
+             " (if " f " " (psite-ticked c f d (with-site (:node c) (kept (emit-call tail? f ts (:tl c) (:ich c)))))
              " " (kept (emit-call tail? vf ts (:tl c) (:ich c))) "))"
              (slow shim) "))"))
       :else (str "(let* ((" vf " " vf-src ")" binds ")" (slow nil) ")"))))
@@ -600,6 +613,11 @@
                  "jolt-invoke")
         fsrc (emit (:fnode c))
         chez? (not= :gambit (session/target))
+        ;; a specializer's fallback call (jolt.passes.specialize): the protocol
+        ;; fn already read off its var into a local, called as the site would
+        ;; have called it
+        via (let [v (:proto-via (:node c))]
+              (when (and v chez? *const-pool* (var-cache?) (not (seed-mint?))) v))
         ;; the protocol call site keys on the callee's var cell as emitted, so
         ;; a call whose arguments are bound to temporaries first (any argument
         ;; that is not a plain local or constant) is still recognized; the
@@ -613,11 +631,17 @@
         pk (and chez? (= :var (:op (:fnode c))) (seq args) (var-cache?) (not (seed-mint?))
                 (or pooled? (nil? *const-pool*))
                 (let [pk (protocol-call-key nil (:ns (:fnode c)) (:name (:fnode c)) n)]
-                  (when-not (nil? pk) pk)))]
+                  (when-not (nil? pk) pk)))
+        via-pk (when (and via (seq args))
+                 (let [pk (protocol-call-key nil (:ns via) (:name via) n)]
+                   (when-not (nil? pk) pk)))]
     (ordered-call (cons (:fnode c) (:arg-nodes c)) (cons fsrc args)
                   (fn [operands]
                     (let [cell (and chez? (second (re-find var-cell-deref-re (first operands))))]
                       (cond
+                        via-pk
+                        (emit-proto-site-call (assoc c :fnode {:op :var :ns (:ns via) :name (:name via)})
+                                              (first operands) operands callee via-pk true)
                         pk
                         (emit-proto-site-call c (if cell (str "(jolt-var-fn " cell ")") (first operands))
                                               operands callee pk pooled?)
@@ -837,10 +861,32 @@
   [(:val (nth arg-nodes 2)) (:val (nth arg-nodes 3))])
 
 (declare emit-deftype-slot-read*)
+;; [i n] when the slot access's receiver is a local a specialized site proved
+;; (session *proven-recs*) and its type's layout puts the field at the place the
+;; access names; for a write, also not ^double (a set! coerces one). Else nil.
+(defn- proven-slot [arg-nodes write?]
+  (let [o0 (first arg-nodes)
+        pr (when (and (= :local (:op o0)) (not= :gambit (session/target)))
+             (get session/*proven-recs* (munge-name (:name o0))))]
+    (when pr
+      (let [[i n] (deftype-slot-place arg-nodes)
+            k (:val (second arg-nodes))
+            fields (:fields pr)
+            dbl (:dbl pr)]
+        (when (and (= n (count fields)) (< -1 i n) (= k (nth fields i))
+                   (or (not write?) (and (some? dbl) (= n (count dbl)) (not (nth dbl i)))))
+          [i n])))))
+
 (defn- emit-deftype-slot-read [arg-nodes order-args]
   (let [o0 (first arg-nodes)
+        proven (proven-slot arg-nodes false)
         flag (when (= :local (:op o0)) (get session/*self-recs* (munge-name (:name o0))))]
-    (if flag
+    (cond
+      proven
+      (let [[i n] proven]
+        (order-args
+         (fn [as] (str (if (<= n 8) "(jrec-slot/u " "(jrec*-slot/u ") (first as) " " i ")"))))
+      flag
       ;; the arity checked its receiver once (lambda.clj self-receiver)
       (let [[i n] (deftype-slot-place arg-nodes)]
         (order-args
@@ -849,7 +895,7 @@
                 (if (<= n 8) (str " (jrec-slot/u " (first as) " " i ")")
                     (str " (jrec*-slot/u " (first as) " " i ")"))
                 " (jrec-field " (first as) " " (second as) "))"))))
-      (emit-deftype-slot-read* arg-nodes order-args))))
+      :else (emit-deftype-slot-read* arg-nodes order-args))))
 
 (defn- emit-deftype-slot-read* [arg-nodes order-args]
   (let [site (hoist-const-per-site "(jrec-field-site-make)")
@@ -867,7 +913,17 @@
               :else (str " (vector-ref (jrec*-vals " o ") " i ")"))
             " (jrec-own-slot-miss " site " " o " " (second as) " " i " " n ")))")))))
 
+(declare emit-deftype-slot-write*)
 (defn- emit-deftype-slot-write [arg-nodes order-args]
+  (if-let [[i n] (proven-slot arg-nodes true)]
+    (let [v (fresh-label "_v$")]
+      (order-args
+       (fn [as]
+         (str "(let ((" v " " (nth as 4) ")) "
+              (if (<= n 8) "(jrec-slot-set!/u " "(jrec*-slot-set!/u ") (first as) " " i " " v ") " v ")"))))
+    (emit-deftype-slot-write* arg-nodes order-args)))
+
+(defn- emit-deftype-slot-write* [arg-nodes order-args]
   (let [site (hoist-const-per-site "(jrec-field-site-make)")
         [i n] (deftype-slot-place arg-nodes)
         o (fresh-label "_o$")
@@ -1241,6 +1297,7 @@
      (and (= :const (:op node)) (boolean? (:val node))) true
      ;; a guarded splice's test is an eq? (hoist-inline-guard)
      (= :inline-guard (:op node)) true
+     (= :proto-guard (:op node)) true
      ;; the declared-^Record guard emits an (and ...) of jrec-desc-is? tests
      (and (= :invoke (:op node)) (some? (:rec-guard node))) true
      (= :invoke (:op node))
@@ -1512,6 +1569,18 @@
     :set-var (str "(jolt-set-var! " (emit (:the-var node)) " " (emit (:val node)) ")")
     ;; does the var still hold the fn a spliced body was compiled from (passes/inline.clj)
     :inline-guard (hoist-inline-guard (emit (:fn node)) (:ns node) (:name node) (:token node))
+    ;; a specialized protocol site's test (jolt.passes.specialize): the var
+    ;; still holds the protocol fn, the receiver is of the type the site saw,
+    ;; and that type's dispatch vector still holds the impl whose body follows.
+    ;; DESC and the impl are the specializer's (specialize.ss jolt-spec-const).
+    :proto-guard (let [d (fresh-label "_sd$")
+                       shim (hoist-const (str "(protocol-fn-of " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")"))
+                       id (hoist-const (str "(intern-pm-key " (chez-str-lit (:proto node)) " " (chez-str-lit (:method node)) ")"))
+                       desc (hoist-const (str "(jolt-spec-const " (:desc node) ")"))
+                       k (hoist-const (str "(jolt-spec-const " (:k node) ")"))]
+                   (str "(let ((" d " (jrec-pic-desc/i " (emit (:recv node)) ")))"
+                        " (and (eq? " (emit (:fn node)) " " shim ") (eq? " d " " desc ")"
+                        " (eq? (jrdesc-vtable-ref " d " " id ") " k ")))"))
     ;; (set! (.-field obj) val) -> mutate the deftype instance field in place.
     ;; Inside a def the site keeps the resolved slot (records.ss jolt-set-own-field!).
     :set-field (let [kw (hoist-const (str "(keyword #f " (chez-str-lit (:field node)) ")"))]
@@ -1555,13 +1624,37 @@
 
 ;; if: the test is non-tail; then/else inherit the if's tail position.
 ;; do: non-last statements are non-tail; the ret inherits the do's tail position.
+;; The body a specialized protocol site inlined (jolt.passes.inline
+;; specialize-sites), under its guard. The guard proved the receiver -- the
+;; site's argument local -- a record of the sampled type, whose layout it
+;; carries: the body's reads and writes of the receiver's fields are bare slot
+;; accesses wherever that layout agrees with the place the deftype macro wrote
+;; (proven-slot). With no layout, the receiver is checked once as a deftype
+;; method checks it (lambda.clj self-receiver).
+(defn- emit-specialized-then [test then]
+  (let [recv (:recv test)
+        self (when-not (:fields test) (self-receiver {:params [(:name recv)] :body then}))]
+    (cond
+      (:fields test)
+      (binding [session/*proven-recs* (assoc session/*proven-recs* (munge-name (:name recv))
+                                             {:fields (:fields test) :dbl (:dbl test)})]
+        (emit then))
+      self
+      (str "(let (" (nth self 2) ") "
+           (binding [session/*self-recs* (assoc session/*self-recs* (nth self 0) (nth self 1))] (emit then))
+           ")")
+      :else (emit then))))
+
 (defn- emit-if-or-do [node]
   (if (= :if (:op node))
     (let [test (:test node)
           t (binding [*tail?* false]
               (if (returns-scheme-bool? test) (emit test)
                   (str "(jolt-truthy? " (emit test) ")")))]
-      (str "(if " t " " (emit (:then node)) " " (emit (:else node)) ")"))
+      (str "(if " t " " (if (= :proto-guard (:op test))
+                            (emit-specialized-then test (:then node))
+                            (emit (:then node)))
+           " " (emit (:else node)) ")"))
     (str "(begin " (binding [*tail?* false] (str/join " " (mapv emit (:statements node))))
          (if (empty? (:statements node)) "" " ") (emit (:ret node)) ")")))
 
@@ -1685,7 +1778,7 @@
     ;; late-bound var: read the cell's current root at use time. A value-position
     ;; ref to a clojure.core fn the RT provides lowers to the RT procedure.
     :var (emit-var-node node)
-    (:the-var :set-var :set-field :defmacro :inline-guard) (emit-var-form node)
+    (:the-var :set-var :set-field :defmacro :inline-guard :proto-guard) (emit-var-form node)
     (:host :host-static :host-new) (emit-host-node node)
     (:if :do) (emit-if-or-do node)
     :invoke (emit-invoke-maybe-clone node)
