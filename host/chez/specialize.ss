@@ -47,9 +47,9 @@
 (define-syntax jolt-psite-tick!
   (syntax-rules ()
     ((_ b0 f d)
-     (let* ((b b0) (n (#3%fx- (#3%unbox b) 1)))
-       (#3%set-box! b n)
-       (when (#3%fx= 0 (#3%fxand n 1023)) (jolt-psite-sample! b f d))))))
+     (let* ((b b0) (n (sa-ufx- (unbox b) 1)))
+       (set-box! b n)
+       (when (sa-ufx=? 0 (sa-ufxand n 1023)) (jolt-psite-sample! b f d))))))
 
 ;; box -> (owner . path). Weak: a box lives as long as the code holding it.
 ;; Under a lock of its own, never held across anything else: code loading on
@@ -140,7 +140,7 @@
               s))))
 
 (define (jolt-psite-sample! b f d)
-  (when (and spec-on (not spec-busy) (mutex-acquire spec-mu #f))
+  (when (and spec-on (not spec-busy) (jolt-lock! spec-mu #f))
     (dynamic-wind
       void
       (lambda ()
@@ -163,7 +163,7 @@
                             void
                             (lambda () (spec-run! owner o))
                             (lambda () (set! spec-busy #f)))))))))))))
-      (lambda () (mutex-release spec-mu)))))
+      (lambda () (jolt-unlock! spec-mu)))))
 
 ;; Where the owner's procedure is installed: each (tag proto method) whose
 ;; registered impl is the owner's literal.
