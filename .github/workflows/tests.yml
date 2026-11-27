@@ -38,6 +38,17 @@ jobs:
       - name: Set up Chez, Gambit and the certify oracle
         uses: ./.github/actions/setup-chez
 
+      # The gates resolve real Maven deps (sci, tools.reader, the library
+      # suites) into ~/.m2. Fetching them fresh on every shard of every run hit
+      # repo1.maven.org's rate limit (HTTP 429) and failed scifunctional, so the
+      # repository is cached, keyed on the deps files that decide its contents.
+      - name: Maven repository cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.m2/repository
+          key: m2-${{ runner.os }}-${{ hashFiles('**/deps.edn', 'test/conformance/libs/manifest.edn') }}
+          restore-keys: m2-${{ runner.os }}-
+
       - name: Gate (shard ${{ matrix.shard }}/4)
         # `make test` = the self-host byte-fixpoint (the rebuilt seed must equal
         # the checked-in seed byte-for-byte — holds cross-platform on the pinned

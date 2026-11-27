@@ -431,7 +431,8 @@
                               (jolt-cv-wake! (jolt-promise-cv p))
                               #t)))))
         (if won p jolt-nil))
-      (jolt-throw (jolt-ex-info "deliver requires a promise" (jolt-hash-map)))))
+      ;; clojure.core/deliver invokes the supplied value with one argument.
+      (jolt-invoke p v)))
 
 ;; A delivered promise answers without the wait, as a settled future does
 ;; (jolt-future-settled?, above).
@@ -4396,8 +4397,16 @@
 ;; staying in getQueue until its delay runs out. Held beside the pool rather
 ;; than in its state vector, keyed by that vector, which every task carries.
 (define stpe-remove-on-cancel (make-weak-eq-hashtable))
+;; A Chez hashtable is not safe to touch from two threads at once, and pools are
+;; made, configured and cancelled on many: every access goes through this mutex,
+;; as task-runners' do.
+(define stpe-remove-on-cancel-mu (make-mutex))
 (define (stpe-remove-on-cancel? pool-st)
-  (and (hashtable-ref stpe-remove-on-cancel pool-st #f) #t))
+  (jolt-with-mutex stpe-remove-on-cancel-mu
+    (and (hashtable-ref stpe-remove-on-cancel pool-st #f) #t)))
+(define (stpe-remove-on-cancel-set! pool-st v)
+  (jolt-with-mutex stpe-remove-on-cancel-mu
+    (hashtable-set! stpe-remove-on-cancel pool-st v)))
 (define (stpe-drop-cancelled! sf)
   (let ((pool-st (vector-ref (jhost-state sf) 9)))
     (when (and (vector? pool-st) (stpe-remove-on-cancel? pool-st))
@@ -4411,7 +4420,7 @@
             (jolt-cv-wake! (vector-ref pool-st 3))))))))
 (derive-host-methods! "scheduled-executor" "executor-service"
   (list (cons "setRemoveOnCancelPolicy" (lambda (self v)
-          (hashtable-set! stpe-remove-on-cancel (jhost-state self) (jolt-truthy? v))
+          (stpe-remove-on-cancel-set! (jhost-state self) (jolt-truthy? v))
           jolt-nil))
         (cons "getRemoveOnCancelPolicy" (lambda (self)
           (stpe-remove-on-cancel? (jhost-state self))))
