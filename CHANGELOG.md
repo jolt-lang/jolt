@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.31] - 2026-11-27
+
+`jolt.native` regions now always run as native code: outside a `jolt build`
+binary they are compiled in process by a vendored MIR C compiler, and they can
+specialize on runtime values, pick a body by the running CPU, be built from
+data at runtime (`native-fn`), and read binary record layouts. Projects get
+`deps.local.edn` for per-machine overrides and `jolt.configure` to find native
+libraries on the machine. Common host operations and number printing are
+several times faster. The rest is JVM parity: `Throwable` suppression, the JVM's
+`ClassCastException` wording for resolved and reflective calls, a streaming
+Base64 decoder, `Arrays/compare` and `mismatch`, `java.util.StringJoiner`,
+`PrintWriter` over a stream or a file, and promesa's scheduler running.
+
 ### Added
 
 - **`java.util.StringJoiner`.** `add`, `toString`, `length`, `setEmptyValue`
@@ -330,6 +343,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The metrics workflow runs the latest jolt-metrics and gates on its lint
   findings as well (`ci/metrics-allow.edn` lists the ones that stay), and a
   pull request's report opens with what changed since main's.
+- Every public `jolt.ffi` var has a docstring, so `doc` and editor hover answer
+  for all of them; a test fails on a new one without.
+- The native gate checks that the JIT prelude declares every C library function
+  a region's C calls, which an undeclared `memset` faulted on Apple arm64.
 
 ## [0.8.30] - 2026-11-24
 
