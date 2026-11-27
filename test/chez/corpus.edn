@@ -4783,6 +4783,7 @@
   {:suite "state / volatiles & delays" :label "realized? before" :expected "false" :actual "(let [d (delay 5)] (realized? d))" :portability :common}
   {:suite "state / volatiles & delays" :label "realized? after" :expected "true" :actual "(let [d (delay 5)] (force d) (realized? d))" :portability :common}
   {:suite "state / promises" :label "promise deliver" :expected "5" :actual "(let [p (promise)] (deliver p 5) @p)" :portability :common}
+  {:suite "state / promises" :label "deliver invokes a custom promise" :expected "[:accepted 42]" :actual "(let [p (promise) wrapper (reify clojure.lang.IFn (invoke [_ x] (deliver p x) :accepted))] [(deliver wrapper 42) @p])" :portability :jvm}
   {:suite "state / promises" :label "promise undelivered" :expected "nil" :actual "(let [p (promise)] @p)" :portability :common}
   {:suite "state / agents (synchronous shim)" :label "agent deref" :expected "0" :actual "(deref (agent 0))" :portability :common}
   {:suite "state / agents (synchronous shim)" :label "agent with opts" :expected "0" :actual "(deref (agent 0 :error-mode :continue))" :portability :common}
