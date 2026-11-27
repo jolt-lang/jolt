@@ -145,7 +145,9 @@
 ;; generic one there too.
 (%eval-fn (define (jolt-l-abs a) (abs a)))
 (%eval-fn (define (jolt-fl-pow a b)
-            (if (or (nan? b) (and (infinite? b) (fl= (flabs a) 1.0))) +nan.0 (flexpt a b))))
+            (cond ((fl= b 2.0) (fl* a a))
+                  ((or (nan? b) (and (infinite? b) (fl= (flabs a) 1.0))) +nan.0)
+                  (else (flexpt a b)))))
 (%eval-fn (define (jolt-floor-quotient a b)
             (when (eqv? b 0) (jolt-l-div0-throw))
             (let ((q (quotient a b)))

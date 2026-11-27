@@ -283,11 +283,13 @@
 ;; Math.pow, and clojure.math/pow which is it: Java's special cases, not C's. A
 ;; NaN exponent is NaN even over a base of 1.0, and a base of magnitude 1.0 to an
 ;; infinite power is NaN, where expt (C's pow) answers 1.0 for both. The proven-
-;; double lowering, jolt-fl-pow in seq.ss, makes the same two checks.
+;; double lowering, jolt-fl-pow in seq.ss, makes the same two checks, and the
+;; same squaring: a double to the power 2.0 is a*a, as HotSpot answers, where
+;; the host pow can land an ulp away.
 (define (jolt-math-pow a b)
-  (if (or (nan? b) (and (infinite? b) (= (abs a) 1.0)))
-      +nan.0
-      (real-or-nan (expt a b))))
+  (cond ((and (flonum? a) (flonum? b) (fl= b 2.0)) (fl* a a))
+        ((or (nan? b) (and (infinite? b) (= (abs a) 1.0))) +nan.0)
+        (else (real-or-nan (expt a b)))))
 ;; the clojure.math fns implemented above take their numbers as given; these
 ;; take any jolt number first, as the m1/m2 wrappers do (a Float is the double
 ;; it widens to, which is what clojure.math's ^double parameters receive)

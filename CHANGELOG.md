@@ -164,6 +164,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- `jolt.infix`'s `infix`/`$=` give an expression over locals a branch for
+  when every one of those locals is a double: the same prefix form with the
+  locals rebound through `double`, so it compiles to flonum ops instead of
+  generic arithmetic, about 5x faster on a trig-and-power expression. Any other
+  input takes the expansion as before, so longs, ratios and bigints answer as
+  they did.
 - A native region's fast copy drops the bounds check on an index bounded by a
   long parameter (`(< i m)`, guarded once at entry by `m` against the array's
   length), by another array parameter's length, or by a length minus a
@@ -209,6 +215,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `Math/pow` (and `clojure.math/pow`) of a double to the power 2 is the
+  multiply `x*x`, as on the JVM. It went through the host's `pow`, which glibc
+  rounds to within an ulp, so `(Math/pow -135965.65000000002 2)` answered
+  `1.848665797992251E10` where the JVM answers `1.8486657979922504E10`.
 - Negative integer constants past the fixnum range keep their value in a `jolt
   build` binary: `-1152921504606846977` printed as `-17293822569102704639N`
   there (and right under `jolt -M`), as did every negative bignum except
