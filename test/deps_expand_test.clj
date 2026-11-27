@@ -715,6 +715,22 @@
     (finally (jolt.host/setenv! "JOLT_DEPS_LOCAL" "")))
   (jolt.host/delete-tree! root))
 
+(let [pom (java.io.File/createTempFile "jolt-local-pom" ".xml")]
+  (try
+    (spit pom "<project><dependencies>
+      <dependency><groupId>lib</groupId><artifactId>one</artifactId><version>1</version>
+        <exclusions>
+          <exclusion><groupId>old</groupId><artifactId>runner</artifactId></exclusion>
+          <exclusion><groupId>test</groupId><artifactId>tools</artifactId></exclusion>
+        </exclusions></dependency>
+      <dependency><groupId>lib</groupId><artifactId>two</artifactId><version>2</version></dependency>
+      </dependencies></project>")
+    (is= "fallback POM keeps exclusions scoped to the declaring dependency"
+         '{lib/one {:mvn/version "1" :exclusions #{old/runner test/tools}}
+           lib/two {:mvn/version "2"}}
+         (#'jolt.deps/raw-pom-deps-from (.getPath pom)))
+    (finally (.delete pom))))
+
 (println (str "deps-expand: " (- @checks @failures) "/" @checks " passed"))
 (when (pos? @failures)
   (System/exit 1))

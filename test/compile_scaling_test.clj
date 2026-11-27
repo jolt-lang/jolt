@@ -143,6 +143,26 @@
         p (body n-quoted (fn [i] (str "(clojure.core/list " i " " i ")")))]
     (paired #(compile! p) #(compile! q) 1)))
 
+;; --- nested static calls ---------------------------------------------------
+;; A static call's arguments are typed for overload resolution (hints.clj
+;; jvm-type), each from its own arguments' types. Typing one asked for its
+;; argument's type two or three ways, unmemoized, so nested calls cost
+;; exponential time in their depth: (Math/max (+ x 17) (Math/max (+ x 16) ...))
+;; took a second more at depth 12 and minutes at 18. Twice the depth is at most
+;; twice the work when typing is linear (1.7 measured); the exponential read
+;; 121 at these small depths, which keep a regressed run to seconds.
+(def ^:private nest-depth 3)
+(def ^:private max-nested 4.0)
+
+(defn- nested [d]
+  (str "(clojure.core/fn [x] "
+       (reduce (fn [acc i] (str "(Math/max (+ x " i ") (Math/sqrt " acc "))")) "x" (range d))
+       ")"))
+
+(defn- nested-ratio []
+  (let [a (nested nest-depth) b (nested (* 2 nest-depth))]
+    (paired #(compile! a) #(compile! b) 2)))
+
 ;; A ratio over the ceiling is measured once more before it counts, which costs
 ;; no POWER: a real regression is over it on both measurements, while a burst
 ;; long enough to spoil every round of one rarely spoils the next. There is no
@@ -163,7 +183,8 @@
   (let [ok (reduce (fn [acc [label f mx]] (and (check label f mx) acc))
                    true
                    [["shape 1 body/4" shape-ratio max-shape]
-                    ["quoted/plain" quoted-ratio max-quoted]])]
+                    ["quoted/plain" quoted-ratio max-quoted]
+                    ["nested statics 2x/1x" nested-ratio max-nested]])]
     (println (if ok "compile-scaling: passed" "compile-scaling: FAILED"))
     (System/exit (if ok 0 1))))
 
