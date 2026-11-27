@@ -4562,12 +4562,16 @@
 (define fj-common-pool-cell #f)
 (define fj-common-pool-mu (make-mutex))
 (define (fj-common-parallelism) (max 1 (- (jolt-available-processors) 1)))
+;; Built outside the lock (making a pool can park, which a held lock must not
+;; see) and installed under it only if no other thread got there first. A pool
+;; that loses that race has no workers yet, since they start with the first task,
+;; so dropping it costs nothing.
 (define (fj-common-pool)
-  (jolt-with-mutex fj-common-pool-mu
-    (or fj-common-pool-cell
-        (begin (set! fj-common-pool-cell
-                     (make-forkjoin-pool (fj-common-parallelism) #f fj-default-keep-alive-ms))
-               fj-common-pool-cell))))
+  (or (jolt-with-mutex fj-common-pool-mu fj-common-pool-cell)
+      (let ((p (make-forkjoin-pool (fj-common-parallelism) #f fj-default-keep-alive-ms)))
+        (jolt-with-mutex fj-common-pool-mu
+          (unless fj-common-pool-cell (set! fj-common-pool-cell p))
+          fj-common-pool-cell))))
 (define (fj-common? self) (and fj-common-pool-cell (eq? self fj-common-pool-cell)))
 ;; Its own table rather than the ThreadPoolExecutor's (ForkJoinPool is not one,
 ;; so derive-host-methods! refuses, and alias-host-methods! would share the
@@ -4605,11 +4609,13 @@
               ((n factory handler async? core max-n min-run saturate keep unit)
                (make-forkjoin-pool n (if (jolt-nil? factory) #f factory) (tu->ms keep unit))))))
           '("ForkJoinPool" "java.util.concurrent.ForkJoinPool"))
-(for-each (lambda (nm) (register-class-statics! nm
-            (list (cons "commonPool" (lambda () (fj-common-pool)))
-                  (cons "getCommonPoolParallelism" (lambda () (fj-common-parallelism)))
-                  (cons "defaultForkJoinWorkerThreadFactory" fj-default-factory))))
-          '("ForkJoinPool" "java.util.concurrent.ForkJoinPool"))
+;; one list for both spellings: they share a member table, and registering a
+;; fresh lambda under each reads as one member registered twice.
+(let ((statics (list (cons "commonPool" (lambda () (fj-common-pool)))
+                     (cons "getCommonPoolParallelism" (lambda () (fj-common-parallelism)))
+                     (cons "defaultForkJoinWorkerThreadFactory" fj-default-factory))))
+  (for-each (lambda (nm) (register-class-statics! nm statics))
+            '("ForkJoinPool" "java.util.concurrent.ForkJoinPool")))
 ;; ScheduledThreadPoolExecutor ctor: (corePoolSize [factory] [handler]) — at least
 ;; one worker, as every pool here (a pool with no worker runs nothing; the JVM's
 ;; ensurePrestart starts one on demand for core 0).
