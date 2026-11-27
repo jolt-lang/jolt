@@ -149,11 +149,21 @@
 ;; and column after a read mark where that form's text ends, so a form's text —
 ;; with the whitespace and comments before it, as captureString has it — is the
 ;; slice of the source from the previous mark to this one.
+;; The reader counts a line break the way LineNumberingPushbackReader does:
+;; \n, \r\n, and a lone \r each end a line.
 (defn- line-starts [^String s]
-  (loop [i 0 acc (transient [0])]
-    (if-some [j (str/index-of s "\n" i)]
-      (recur (inc j) (conj! acc (inc j)))
-      (persistent! acc))))
+  (let [n (count s)]
+    (loop [i 0 acc (transient [0])]
+      (if (< i n)
+        (let [c (.charAt s i)]
+          (cond
+            (= c \newline) (recur (inc i) (conj! acc (inc i)))
+            (= c \return)  (let [j (if (and (< (inc i) n) (= \newline (.charAt s (inc i))))
+                                     (+ i 2)
+                                     (inc i))]
+                             (recur j (conj! acc j)))
+            :else          (recur (inc i) acc)))
+        (persistent! acc)))))
 
 (defn patch-file [^String content patch-fn]
   (let [rdr     (util/string-reader content)
@@ -180,7 +190,7 @@
             (let [[_ ws] (re-matches #"(?s)(\s*).*" text)
                   _      (.append patched ws)
                   text   (subs text (count ws))
-                  lines  (str/split-lines text)
+                  lines  (str/split text #"\r\n|\r|\n")
                   text'' (if (= 1 (count lines))
                            (if (<= (count text) (count text'))
                              text'

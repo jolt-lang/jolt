@@ -146,15 +146,27 @@
     (when (find-ns ns)
       (jolt.host/mark-loaded! ns))))
 
+;; jolt: a binary jolt build made is the uberjar case: its sources are compiled
+;; in, and its source roots are the project's relative paths resolved against
+;; whatever directory it runs in, so scanning them would read some other tree.
+;; The build's launcher defines jolt-app-init! (build.ss), which nothing else
+;; does, so a top-level probe for it answers "am I a built binary".
+(defn built-binary? []
+  (try (jolt.host/scheme-proc "jolt-app-init!") true
+    (catch Exception _ false)))
+
 ;; jolt: there is no class loader chain to walk; the loader's source roots are
 ;; the class path (deps.edn :paths, then each dependency's). jolt's own install
 ;; roots are on it too, as relative paths that only exist inside a jolt checkout.
+;; A built binary has no class path dirs, as an uberjar has none upstream.
 (defn classpath-dirs []
-  (->> (jolt.host/source-roots)
-    (map io/as-file)
-    (filter directory?)
-    (distinct)
-    (mapv file-path)))
+  (if (built-binary?)
+    []
+    (->> (jolt.host/source-roots)
+      (map io/as-file)
+      (filter directory?)
+      (distinct)
+      (mapv file-path))))
 
 (comment
   (classpath-dirs))

@@ -1381,7 +1381,14 @@
            (let ((mapns (if auto?
                             (if (string=? nstok "")
                                 (let ((r (rdr-resolver)))
-                                  (if r (rdr-resolver-current-ns r) (chez-current-ns)))
+                                  (if r
+                                      ;; LispReader reads currentNS().name, so a
+                                      ;; resolver answering nil is an NPE there
+                                      (or (rdr-resolver-current-ns r)
+                                          (rdr-error-class s i2 "java.lang.NullPointerException"
+                                                           (keyword "read" "invalid-syntax")
+                                                           "Cannot read field \"name\" because the return value of \"clojure.lang.LispReader$Resolver.currentNS()\" is null"))
+                                      (chez-current-ns)))
                                 (let ((a (let ((r (rdr-resolver)))
                                            (if r (rdr-resolver-alias r nstok)
                                                (chez-resolve-alias (chez-current-ns) nstok)))))
@@ -1774,13 +1781,18 @@
         (let-values (((ns name) (rdr-sym-parts tok)))
           (if auto?
               (let* ((r (rdr-resolver))
-                     (cur (if r (rdr-resolver-current-ns r) (chez-current-ns)))
                      (rns (if (string? ns)
-                              (let ((a (if r (rdr-resolver-alias r ns) (chez-resolve-alias cur ns))))
+                              (let ((a (if r (rdr-resolver-alias r ns)
+                                           (chez-resolve-alias (chez-current-ns) ns))))
                                 (cond (a a)
                                       ((rdr-scan-mode) ns)
                                       (else (rdr-invalid-token s start (string-append "::" tok)))))
-                              cur)))
+                              ;; a resolver answering nil for currentNS leaves
+                              ;; ::k unresolvable, as LispReader has it
+                              (if r
+                                  (or (rdr-resolver-current-ns r)
+                                      (rdr-invalid-token s start (string-append "::" tok)))
+                                  (chez-current-ns)))))
                 (values (keyword rns name) j))
               (values (keyword ns name) j)))))))
 
@@ -2025,6 +2037,13 @@
 ;; a tagged FORM (lenient — clojure.edn raises instead).
 (define (rdr-construct-tag tag inner)
   (cond
+    ;; *suppress-read*: LispReader's CtorReader answers a TaggedLiteral for
+    ;; every #tag without consulting a reader, #inst and #uuid included. The
+    ;; regex and bigdec tags are the reader's own internal forms, not #tags.
+    ((and (not (rdr-edn-mode)) (rdr-suppress-read?)
+          (let ((nm (keyword-t-name tag)))
+            (and (fx>? (string-length nm) 0) (char=? (string-ref nm 0) #\#))))
+     (jolt-tagged-literal (rdr-tag->symbol tag) inner))
     ((eq? tag (keyword #f "#inst"))
      (when (string? inner) (rdr-validate-inst! inner))
      (jolt-inst-from-string inner))

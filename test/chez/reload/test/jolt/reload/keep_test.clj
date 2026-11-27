@@ -66,7 +66,29 @@
            (defonce just-var
              (Object.))"
           {'(defonce *atom) "(def *atom 777)"
-           '(defonce just-var) "(def just-var 888)"}))))
+           '(defonce just-var) "(def just-var 888)"})))
+
+  ;; jolt: the reader counts a lone \r as a line break, as \n and \r\n
+  ;; (as upstream, the text after the last form is dropped)
+  (is (= "(ns a)\n(def s \"a\rb\")\n(def x 2)\n(defn f [] x)"
+        (keep/patch-file
+          "(ns a)\n(def s \"a\rb\")\n(def x 1)\n(defn f [] x)\n"
+          {'(def x) "(def x 2)"})))
+
+  (is (= "(ns a)\r(def x 2)\r(defn f [] x)"
+        (keep/patch-file
+          "(ns a)\r(def x 1)\r(defn f [] x)\r"
+          {'(def x) "(def x 2)"})))
+
+  (is (= "(ns a)\r\n; c\rd\r\n(def x 2)\r\n(defn f [] x)"
+        (keep/patch-file
+          "(ns a)\r\n; c\rd\r\n(def x 1)\r\n(defn f [] x)"
+          {'(def x) "(def x 2)"})))
+
+  (is (= "(def x 9)\n    \r(def y 2)"
+        (keep/patch-file
+          "(defonce x\r  1)\r(def y 2)"
+          {'(defonce x) "(def x 9)"}))))
 
 (defn meta= [a b]
   (if tu/bb?
