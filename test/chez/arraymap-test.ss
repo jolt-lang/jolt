@@ -314,6 +314,70 @@
               (/ (round (/ scan 100000.0)) 10.0) (/ (round (/ cached 100000.0)) 10.0)
               (/ (round (* 100.0 (ratio both))) 100.0) kw-site-ceiling)
       (< (ratio both) kw-site-ceiling)))
+;; The record half of a site is polymorphic (collections.ss jolt-kw-rec-get):
+;; slot 1 keeps the first type it saw, slot 2 up to jolt-kw-site-poly more, and
+;; past that the site is megamorphic (#t) and answers through jrec-ref. It used
+;; to replace slot 1 on every miss, so two interleaved types re-primed per call.
+(evv "(defrecord KwP1 [x y]) (defrecord KwP2 [y x]) (defrecord KwP3 [z x]) (defrecord KwP4 [x]) (defrecord KwP5 [w x]) (defrecord KwP6 [q])")
+(define (kwp name . args) (apply jolt-invoke (var-deref "user" name) args))
+(define kwp-recs
+  (list (kwp "->KwP1" 1 0) (kwp "->KwP2" 0 2) (kwp "->KwP3" 0 3) (kwp "->KwP4" 4) (kwp "->KwP5" 0 5)))
+(define kwp-x (keyword #f "x"))
+(ok "a site over interleaved record types answers each type's own field, every call"
+    (let ((site (jolt-kw-site)))
+      (let loop ((round 0) (good #t))
+        (if (fx=? round 4) good
+            (loop (fx+ round 1)
+                  (and good (equal? (map (lambda (r) (jolt-kw-get-site r kwp-x site)) kwp-recs) '(1 2 3 4 5))))))))
+(ok "two types stay cached: the first in slot 1, the second in slot 2, no re-priming"
+    (let ((site (jolt-kw-site)) (a (car kwp-recs)) (b (cadr kwp-recs)))
+      (jolt-kw-get-site a kwp-x site) (jolt-kw-get-site b kwp-x site)
+      (let ((s1 (vector-ref site 1)) (s2 (vector-ref site 2)))
+        (jolt-kw-get-site a kwp-x site) (jolt-kw-get-site b kwp-x site)
+        (and (pair? s1) (eq? (car s1) (jrec-desc a))
+             (vector? s2) (fx=? (vector-length s2) 1)
+             (eq? (vector-ref site 1) s1) (eq? (vector-ref site 2) s2)))))
+(ok "past jolt-kw-site-poly extra types the site goes megamorphic and still answers"
+    (let ((site (jolt-kw-site)))
+      (for-each (lambda (r) (jolt-kw-get-site r kwp-x site)) kwp-recs)
+      (and (eq? (vector-ref site 2) #t)
+           (equal? (map (lambda (r) (jolt-kw-get-site r kwp-x site)) kwp-recs) '(1 2 3 4 5)))))
+(ok "an absent key is cached per type too, and keeps its default and extension map"
+    (let ((site (jolt-kw-site)) (p6 (kwp "->KwP6" 9)))
+      (let ((p6x (jolt-assoc p6 kwp-x 60)))
+        (let loop ((i 0) (good #t))
+          (if (fx=? i 3) good
+              (loop (fx+ i 1)
+                    (and good
+                         (eqv? (jolt-kw-get-site (car kwp-recs) kwp-x site 'none) 1)
+                         (eq? (jolt-kw-get-site p6 kwp-x site 'none) 'none)
+                         (eqv? (jolt-kw-get-site p6x kwp-x site 'none) 60)
+                         (jolt-nil? (jolt-kw-get-site p6 kwp-x site)))))))))
+(is "compiled (:x r) and (get r :x d) over mixed records, maps and nil"
+    "(let [f (fn [m] (:x m)) g (fn [m] (get m :x :d))
+           xs [(->KwP1 1 0) (->KwP2 0 2) {:x 3} (->KwP3 0 4) nil (->KwP4 5) (->KwP5 0 6) (->KwP6 0) (->KwP1 7 0)]]
+       [(mapv f xs) (mapv g xs) (mapv f xs)])"
+    "[[1 2 3 4 nil 5 6 nil 7] [1 2 3 4 :d 5 6 :d 7] [1 2 3 4 nil 5 6 nil 7]]")
+;; and the point of it: a site alternating two record types is within a small
+;; factor of a site that sees one (it was ~4x: every call re-primed). Same
+;; best-of-seven thread-clock harness as the map ratio above.
+(define kw-poly-ceiling 2.0)
+(ok "a site alternating two record types costs about what a one-type site does"
+    (let* ((a (car kwp-recs)) (b (cadr kwp-recs))
+           (n 2000000)
+           (thread-ns (lambda () (let ((t (current-time 'time-thread))) (+ (* 1000000000 (time-second t)) (time-nanosecond t)))))
+           (time-it (lambda (f) (let ((t0 (thread-ns))) (do ((i 0 (fx+ i 1))) ((fx= i n)) (f i)) (- (thread-ns) t0))))
+           (mono (let ((site (jolt-kw-site))) (lambda (i) (jolt-kw-get-site (if (fxeven? i) a a) kwp-x site))))
+           (poly (let ((site (jolt-kw-site))) (lambda (i) (jolt-kw-get-site (if (fxeven? i) a b) kwp-x site))))
+           (best (let loop ((i 0) (bm #f) (bp #f))
+                   (if (fx=? i 7) (cons bm bp)
+                       (let* ((x (time-it mono)) (y (time-it poly)))
+                         (loop (fx+ i 1) (if bm (min bm x) x) (if bp (min bp y) y))))))
+           (r (/ (cdr best) (max 1 (car best)))))
+      (printf "  kw poly site: one type ~a ms, two types ~a ms (ratio ~a, ceiling ~a)\n"
+              (/ (round (/ (car best) 100000.0)) 10.0) (/ (round (/ (cdr best) 100000.0)) 10.0)
+              (/ (round (* 100.0 r)) 100.0) kw-poly-ceiling)
+      (< r kw-poly-ceiling)))
 
 ;; --- set difference over shared hash tries ------------------------------------
 (is "aligned subtraction keeps the left sequence, count, hash and metadata"

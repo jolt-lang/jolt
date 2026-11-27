@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Keyword lookups on mixed record types no longer re-cache on every call.**
+  A `(:k r)` or `(get r :k)` site remembered one record type and replaced it
+  on each miss, so a site that saw two types in turn ran about 5 times slower
+  than a single-type site, and slower than no cache at all. A site now keeps
+  its first type plus up to three more, then stops caching, as Clojure's
+  keyword callsites do: alternating two types went from 68 to 12 ns per
+  lookup.
+- **`(class x)` is about twice as fast.** Each call hashed the class name to
+  find its `Class` object; it is now found by the identity of the name string
+  the type already holds. A `java.io.File`, an `ArrayList` or a `Long` went
+  from ~112 to ~58 ns, and a mix of scalars, collections and host objects
+  from 147 to 63 ns.
+
 ## [0.8.31] - 2026-11-27
 
 `jolt.native` regions now always run as native code: outside a `jolt build`
