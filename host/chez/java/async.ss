@@ -22,7 +22,14 @@
 ;; (reuses ms->duration). Requires a threaded Chez build.
 
 ;; --- buffers ----------------------------------------------------------------
-(define-record-type async-buffer (fields n kind) (nongenerative async-buffer-v1))
+;; Keep the FIFO on an explicit buffer: the caller may retain it and observe
+;; its occupancy after handing it to chan. The length is one fixnum read,
+;; including when an xform counts its own buffer under the channel mutex.
+(define-record-type (async-buffer %make-async-buffer async-buffer?)
+  (fields n kind items mu) (nongenerative async-buffer-v2))
+(define (make-async-buffer n kind)
+  (%make-async-buffer n kind (ac-qnew) (make-mutex)))
+(register-count-arm! async-buffer? (lambda (b) (vector-ref (async-buffer-items b) 2)))
 (define (jolt-async-buffer n)          (make-async-buffer n 'fixed))
 (define (jolt-async-dropping-buffer n) (make-async-buffer n 'dropping))
 (define (jolt-async-sliding-buffer n)  (make-async-buffer n 'sliding))
@@ -477,7 +484,10 @@
       (apply jolt-invoke xrf ch v))))
 
 (define (ac-make cap kind xrf) (make-async-chan (make-mutex) (jolt-make-cv) (ac-qnew) cap kind #f xrf 0 #f '() '() 0))
-(define (ac-make/exh cap kind exh) (make-async-chan (make-mutex) (jolt-make-cv) (ac-qnew) cap kind #f #f 0 exh '() '() 0))
+(define (ac-make/exh cap kind exh buf)
+  (make-async-chan (if (async-buffer? buf) (async-buffer-mu buf) (make-mutex))
+                   (jolt-make-cv) (if (async-buffer? buf) (async-buffer-items buf) (ac-qnew))
+                   cap kind #f #f 0 exh '() '() 0))
 
 ;; (chan) | (chan n) | (chan buf) | (chan n|buf xform) | (chan n|buf xform exh)
 (define (jolt-async-chan . args)
@@ -488,7 +498,7 @@
                   (cond ((async-buffer? buf) (values (async-buffer-n buf) (async-buffer-kind buf)))
                         ((and (number? buf) (> buf 0)) (values buf 'fixed))
                         (else (values 0 'unbuffered)))))
-      (let ((ch (ac-make/exh cap kind (if (jolt-nil? exh) #f exh))))
+      (let ((ch (ac-make/exh cap kind (if (jolt-nil? exh) #f exh) buf)))
         (unless (jolt-nil? xform)
           (async-chan-xrf-set! ch (jolt-invoke xform (ac-make-add-rf ch))))
         ch))))
