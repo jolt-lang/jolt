@@ -1553,8 +1553,8 @@
 ;; is in some containers), and "?" answers when HOME is unset or empty too. So
 ;; HOME set to some other directory does not move user.home, as on the JVM, and
 ;; an unset HOME no longer leaves it "" (which made ~/x expand to a relative x).
-;; Windows keeps HOME: the JVM reads the profile folder there, which no passwd
-;; entry describes. Android reads HOME first: bionic has no passwd database, and
+;; Windows has no passwd entry: the JVM reads the profile folder there, and so
+;; does sys-win-profile-dir below. Android reads HOME first: bionic has no passwd database, and
 ;; its getpwuid makes up "/" or "/data" for an app's uid, so under Termux the
 ;; JVM rule would answer /data instead of the app's home. Bionic is told apart
 ;; by __system_property_get, which no other libc exports.
@@ -1610,10 +1610,56 @@
                           (and (not (= 0 np))
                                (let ((n (sys-c-string-at np)))
                                  (and (fx>? (string-length n) 0) n)))))))))))
+;; user.home on Windows: the profile directory, asked of Windows as the JVM asks
+;; it (java_props_md.c, SHGetKnownFolderPath with FOLDERID_Profile), so neither
+;; HOME nor USERPROFILE moves it. HOME is usually unset in a desktop shell, which
+;; made user.home "" and fs/expand-home relative; MSYS2's bash sets it to its own
+;; home, which is not the profile. OpenJDK 21 on Windows 11 answers the profile
+;; with HOME unset, with HOME and with USERPROFILE pointing elsewhere.
+;;
+;; Asked once, at the first user.home, as the passwd entry is: the profile does
+;; not change while the process runs. Two first callers may both ask, which is
+;; harmless -- they get the same answer. #f when Windows cannot say, and then
+;; user.home falls back to HOME, as before.
+(define sys-folderid-profile   ; {5E6C858F-0E22-4760-9AFE-EA3317B67173}
+  (bytevector #x8F #x85 #x6C #x5E #x22 #x0E #x60 #x47
+              #x9A #xFE #xEA #x33 #x17 #xB6 #x71 #x73))
+(define (sys-wide-string-at addr)
+  (let loop ((i 0))
+    (if (fx=? 0 (sa-foreign-ref 'unsigned-16 addr (fx* 2 i)))
+        (let ((bv (make-bytevector (fx* 2 i))))
+          (do ((j 0 (fx+ j 1))) ((fx=? j (fx* 2 i)))
+            (bytevector-u8-set! bv j (sa-foreign-ref 'unsigned-8 addr j)))
+          (utf16->string bv (endianness little)))
+        (loop (fx+ i 1)))))
+(define (sys-win-profile-read)
+  (guard (e (#t #f))
+    (sa-load-shared-object "shell32.dll")
+    (sa-load-shared-object "ole32.dll")
+    (and (sa-foreign-entry? "SHGetKnownFolderPath")
+         (sa-foreign-entry? "CoTaskMemFree")
+         (let ((get  (sa-foreign-procedure-runtime "SHGetKnownFolderPath"
+                                                   '(u8* unsigned-32 uptr u8*) 'int #f))
+               (free (sa-foreign-procedure-runtime "CoTaskMemFree" '(uptr) 'void #f))
+               (word (sa-foreign-sizeof 'void*))
+               (out  (make-bytevector 8 0)))
+           (let* ((hr (get sys-folderid-profile 0 0 out))
+                  (p  (bytevector-uint-ref out 0 (native-endianness) word)))
+             ;; the buffer is the caller's to free whether the call succeeded or not
+             (and (not (= 0 p))
+                  (let ((d (and (= 0 hr) (sys-wide-string-at p))))
+                    (free p)
+                    (and d (fx>? (string-length d) 0) d))))))))
+(define sys-win-profile-cache (box 'unset))
+(define (sys-win-profile-dir)
+  (let ((v (unbox sys-win-profile-cache)))
+    (if (eq? v 'unset)
+        (let ((d (sys-win-profile-read))) (set-box! sys-win-profile-cache d) d)
+        v)))
 (define sys-bionic? (and (jolt-foreign-proc-safe "__system_property_get" '(string u8*) 'int) #t))
 (define (sys-user-home)
   (let ((home (let ((h (getenv "HOME"))) (and h (fx>? (string-length h) 0) h))))
-    (cond ((eq? (sa-os-family) 'windows) (or home ""))
+    (cond ((eq? (sa-os-family) 'windows) (or (sys-win-profile-dir) home ""))
           ((and sys-bionic? home) home)
           (else
            (let ((d (sys-passwd-home)))

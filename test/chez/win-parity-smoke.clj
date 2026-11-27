@@ -337,6 +337,17 @@
   (java.nio.file.Files/delete dst)
   (java.nio.file.Files/delete d))
 
+;; --- user.home is the profile folder, as the JVM reports it --------------------
+;; The JVM asks Windows for the profile directory and reads neither HOME nor
+;; USERPROFILE. jolt answered HOME, so a desktop shell (no HOME) got "" and
+;; MSYS2's bash got its own C:\msys64\home\<name>. .NET's UserProfile folder is
+;; the same known folder, asked through a different door.
+(when windows?
+  (let [want (str/trim (:out (sh/sh "powershell" "-NoProfile" "-Command"
+                                    "[Environment]::GetFolderPath('UserProfile')")))]
+    (check "user.home is the profile folder" (System/getProperty "user.home") want)
+    (check "fs/home is the profile folder" (str (fs/home)) want)))
+
 ;; --- the tree the loader and the checks above used deletes cleanly -------------
 (let [src (under "src")]
   (fs/create-dirs src)
