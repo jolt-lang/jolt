@@ -431,7 +431,8 @@
                               (jolt-cv-wake! (jolt-promise-cv p))
                               #t)))))
         (if won p jolt-nil))
-      (jolt-throw (jolt-ex-info "deliver requires a promise" (jolt-hash-map)))))
+      ;; clojure.core/deliver invokes the supplied value with one argument.
+      (jolt-invoke p v)))
 
 ;; A delivered promise answers without the wait, as a settled future does
 ;; (jolt-future-settled?, above).

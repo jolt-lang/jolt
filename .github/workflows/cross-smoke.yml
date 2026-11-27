@@ -28,7 +28,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt-get update
+          sh ci/apt-update.sh
           sudo apt-get install -y build-essential git liblz4-dev zlib1g-dev \
             libncurses-dev uuid-dev gcc-aarch64-linux-gnu qemu-user-static
 

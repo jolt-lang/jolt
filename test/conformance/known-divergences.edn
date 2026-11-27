@@ -498,19 +498,6 @@
            :jvm "throws IllegalArgumentException"
            :jolt "200"}
    :note "jolt models one integer type, so a byte-typed overload cannot be told from an int-typed one. Verified against Clojure 1.12.5."}
-  ;; A static call whose argument jolt cannot type reaches the shim, which takes
-  ;; any number: the JVM compiler may have typed that argument a primitive jolt
-  ;; does not (the double an arithmetic call returns), and then it resolves.
-  ;; With every argument's class known the call takes the Reflector's member
-  ;; and refuses as the JVM does ((Float/valueOf (Double/valueOf "1"))).
-  {:category :permissive
-   :behavior "((fn [x] (Double/valueOf x)) 2)"
-   :jvm "throws IllegalArgumentException (the Reflector finds no valueOf taking a Long)"
-   :jolt "2.0"
-   :check {:expr "((fn [x] (Double/valueOf x)) 2)"
-           :jvm "throws IllegalArgumentException"
-           :jolt "2.0"}
-   :note "jolt types fewer primitive expressions than the JVM compiler, so an untyped argument cannot be told from a primitive one. Verified against Clojure 1.12.5 on JDK 21."}
   ;; A bignum-literal operand (9223372036854775807 = Long/MAX_VALUE, past jolt's
   ;; 2^60-1 fixnum ceiling) BLOCKS :long specialization, so the loop var stays
   ;; generic and jolt computes the EXACT bignum sum — where the JVM keeps `i` a
@@ -1071,6 +1058,17 @@
            :jvm "[\"BigInt\" 3N]"
            :jolt "[\"Long\" 3]"}
    :note "Same one-exact-integer model as (class 1N); (unchecked-add 9223372036854775808N 1) is 9223372036854775809N on both."}
+;; The same collapse at the Reflector: a BigInt inside the long range is the
+;; fixnum a Long is, so an untyped Long/valueOf takes it as valueOf(long) where
+;; the JVM's Reflector finds no overload for a BigInt.
+  {:category :integer-box-model
+   :behavior "((fn [x] (Long/valueOf x)) 2N)"
+   :jvm "throws IllegalArgumentException (No matching method valueOf found taking 1 args)"
+   :jolt "2: 2N is the fixnum 2"
+   :check {:expr "(try ((fn [x] (Long/valueOf x)) 2N) (catch IllegalArgumentException e (ex-message e)))"
+           :jvm "\"No matching method valueOf found taking 1 args\""
+           :jolt "2"}
+   :note "Same one-exact-integer model as (class 1N). A BigInt past the long range is refused on both."}
   ;; The same collapse under *print-dup*: print-dup writes a Number as its
   ;; constructor unless it is a Long (or a BigInt, which prints with its N), and
   ;; an int, a short, a byte, a small BigInteger and a small BigInt are all the
@@ -1936,7 +1934,31 @@
    :check {:expr "(try (Math/addExact (identity (int 2147483647)) (identity (int 1))) (catch ArithmeticException e (.getMessage e)))"
            :jvm "\"integer overflow\""
            :jolt "2147483648"}
-   :note "A call the JVM compiles against long arguments (literals, ^long locals) takes the long overload there too and agrees. Reflection over boxed Longs also picks the int overload on the JVM, truncating: (Math/addExact (identity Long/MAX_VALUE) (identity 1)) is 0 there, long overflow here."}
+   :note "A call the JVM compiles against long arguments (literals, ^long locals) takes the long overload there too and agrees. Reflection over boxed Longs takes the overload Class.getMethods lists first where two fit, as jolt does from the order it records for JDK 21: addExact(long, long), so (Math/addExact (identity Long/MAX_VALUE) (identity 1)) is long overflow on both. getMethods' order is unspecified, so another JDK build may list the int one first."}
+  ;; A BigInt inside the long range is the same fixnum as a long here, so Math's
+  ;; long overloads take it; the JVM's Reflector finds no overload for a BigInt.
+  {:category :integer-box-model
+   :behavior "(Math/abs 2N)"
+   :jvm "IllegalArgumentException \"No matching method abs found taking 1 args\""
+   :jolt "2"
+   :check {:expr "(try (Math/abs 2N) (catch IllegalArgumentException e :iae))"
+           :jvm ":iae"
+           :jolt "2"}
+   :note "A BigInt past the long range is a bignum and is refused as on the JVM."}
+  ;; jolt computes java.lang.Math's transcendentals with the platform's libm (a
+  ;; Chez flonum op or the C call behind it), not fdlibm. JDK 21's StrictMath is
+  ;; fdlibm, and its Math is fdlibm too except where HotSpot substitutes a
+  ;; per-CPU intrinsic (sin, cos on aarch64; sin, cos, tan, exp, log, log10, pow
+  ;; on x86-64). The libm's last digit differs from both on a few inputs in a
+  ;; thousand, and which inputs depends on the platform's libm, so no one
+  ;; expression has a fixed answer on every host.
+  {:category :numeric-model
+   :behavior "the last digit of Math/StrictMath sin, cos, tan, asin, acos, atan, atan2, sinh, cosh, tanh, exp, expm1, log, log1p, pow and hypot (and clojure.math's, which are the same)"
+   :jvm "StrictMath's fdlibm digits, or the HotSpot intrinsic's for Math where there is one, e.g. (Math/sinh 2.0) is 3.626860407847019"
+   :jolt "the platform libm's digits, e.g. (Math/sinh 2.0) is 3.6268604078470186 with macOS's libm"
+   :check :prose
+   :why "the jolt side is the host libm's answer, which differs between macOS, glibc, musl and Windows; the JVM side differs between CPUs for the intrinsics"
+   :note "Chosen for speed: an fdlibm port in Scheme made Math calls 1.3x to 20x slower. sqrt, cbrt, log10, IEEEremainder, toRadians and toDegrees match JDK 21 bit for bit."}
 ]
  :entries
  [;; sorted-map/sorted-set are a B+tree, not PersistentTreeMap's red-black tree,

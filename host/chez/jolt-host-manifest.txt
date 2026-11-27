@@ -217,6 +217,7 @@ maximum-memory-bytes
 method-overload-entry
 method-param-classes
 method-return-class
+method-sig-registered?
 mkdirs!
 monitor-enter
 monitor-exit

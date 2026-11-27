@@ -762,9 +762,10 @@ gcpolicy: testbin
 	 full=$$(JOLT_NO_USER_DEPS=1 $$j -e '(print (.maxMemory (Runtime/getRuntime)))'); \
 	 tenth=$$(JOLT_NO_USER_DEPS=1 JOLT_MAX_RAM_PERCENTAGE=10 $$j -e '(print (.maxMemory (Runtime/getRuntime)))'); \
 	 [ $$((tenth * 25 / 10)) -le $$((full + 1)) ] && [ $$((tenth * 25 / 10)) -ge $$((full - 4)) ] || { echo "FAIL gcpolicy: JOLT_MAX_RAM_PERCENTAGE=10 gave $$tenth against $$full at the default 25"; exit 1; }; \
-	 out=$$(JOLT_NO_USER_DEPS=1 JOLT_GC_LOG=1 JOLT_MAX_HEAP=256m $$j run $$t ceiling 2>&1); \
+	 errf=$$(mktemp); \
+	 out=$$(JOLT_NO_USER_DEPS=1 JOLT_GC_LOG=1 JOLT_MAX_HEAP=256m $$j run $$t ceiling 2>"$$errf"); \
 	 set -- $$(printf '%s\n' "$$out" | sed -n 's/^peak //p'); pk=$$1; mx=$$3; \
-	 after=$$(printf '%s\n' "$$out" | sed -n 's/^gc: .* total \([0-9]*\)MB .*/\1/p' | sort -n | tail -1); \
+	 after=$$(sed -n 's/^gc: .* total \([0-9]*\)MB .*/\1/p' "$$errf" | sort -n | tail -1); rm -f "$$errf"; \
 	 echo "gcpolicy: JOLT_MAX_HEAP=256m with ~100MB held -> total after collections $${after}MB, peak $$((pk / 1048576))MB, max $$((mx / 1048576))MB"; \
 	 [ -n "$$after" ] && [ $$((after * 1048576 * 10)) -le $$((mx * 11)) ] || { echo "FAIL gcpolicy: a collection left the total heap at $${after}MB, more than 10% over JOLT_MAX_HEAP=256m: the ceiling bounds the TOTAL heap, as -Xmx does, within the collector's working room"; exit 1; }; \
 	 [ -n "$$pk" ] && [ $$((pk * 10)) -le $$((mx * 11)) ] || { echo "FAIL gcpolicy: the total heap peaked at $$pk during collections, more than 10% over JOLT_MAX_HEAP=256m (v0.8.12 peaked 23% over)"; exit 1; }; \
@@ -780,7 +781,7 @@ gcpolicy: testbin
 	 st=$$(JOLT_NO_USER_DEPS=1 $$j run $$t startup 2>&1 | sed -n 's/^trip //p'); \
 	 echo "gcpolicy: a sub-millisecond first reading then cheap collections -> nursery $$st"; \
 	 [ "$$st" = "$$floor" ] || { echo "FAIL gcpolicy: one collection right after startup grew the nursery to $${st:-?} (the share must weigh collections by their time, and wait for five)"; exit 1; }; \
-	 set -- $$(JOLT_NO_USER_DEPS=1 JOLT_GC_TRIP_BYTES=16m JOLT_GC_LOG=1 $$j run $$t walk 2>&1 | sed -n 's/^gc: .* heap \([0-9]*\)MB .*/\1/p' | sort -n | sed -n '1p;$$p'); \
+	 set -- $$(JOLT_NO_USER_DEPS=1 JOLT_GC_TRIP_BYTES=16m JOLT_GC_LOG=1 $$j run $$t walk 2>&1 >/dev/null | sed -n 's/^gc: .* heap \([0-9]*\)MB .*/\1/p' | sort -n | sed -n '1p;$$p'); \
 	 echo "gcpolicy: a lazy-seq walk's heap after each collection ranged $${1:-?}MB..$${2:-?}MB"; \
 	 [ -n "$${2:-}" ] && [ $$(($$2 - $$1)) -le 4 ] || { echo "FAIL gcpolicy: the heap after a lazy-seq walk's collections climbed from $${1:-?}MB to $${2:-?}MB: a dead promoted cell is rooting the cells realized after it (nepotism; see sa-collect-young!)"; exit 1; }; \
 	 oh=$$(JOLT_NO_USER_DEPS=1 JOLT_MAX_HEAP=1g JOLT_GC_TIME_LIMIT=0 JOLT_GC_HEAP_FREE_LIMIT=100 $$j run $$t churn 2>&1) || true; \

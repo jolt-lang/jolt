@@ -20,6 +20,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`JOLT_RELOAD_AUTO_INIT=false` turns that off). clj-reload's own parse, core
   and keep suites run as a smoke gate: 48 tests, all passing.
 
+### Fixed
+
+- **The reader honors `*reader-resolver*` and `*suppress-read*`.** With a
+  `clojure.lang.LispReader$Resolver` bound, `::k`, `::alias/k`, `#::{}` and
+  `#::alias{}` ask it for their namespace, as on the JVM, so a tool can read
+  source whose aliases were never loaded; an alias it answers nil for is an
+  invalid token. Under `*suppress-read*` a record literal reads as a
+  `TaggedLiteral` instead of being refused when `*read-eval*` is false.
+
+## [0.8.31] - 2026-11-27
+
+`jolt.native` regions now always run as native code: outside a `jolt build`
+binary they are compiled in process by a vendored MIR C compiler, and they can
+specialize on runtime values, pick a body by the running CPU, be built from
+data at runtime (`native-fn`), and read binary record layouts. Projects get
+`deps.local.edn` for per-machine overrides and `jolt.configure` to find native
+libraries on the machine. Common host operations and number printing are
+several times faster. The rest is JVM parity: `Throwable` suppression, the JVM's
+`ClassCastException` wording for resolved and reflective calls, argument types
+and overload choice as the JVM compiler and Reflector work them out, the JDK 21
+`Math` methods jolt lacked, a streaming Base64 decoder, `Arrays/compare` and
+`mismatch`, `java.util.StringJoiner`, `PrintWriter` over a stream or a file,
+`FileChannel.force`, and promesa's scheduler running.
+
+### Added
+
+- **The rest of JDK 21's `java.lang.Math`, and `StrictMath`.** `fma` (one
+  rounding, float and double), `clamp` (all four overloads and their
+  `IllegalArgumentException`s), `ceilDiv`, `ceilMod`, `divideExact`,
+  `floorDivExact`, `ceilDivExact`, `absExact`, `toIntExact`, `multiplyFull`,
+  `multiplyHigh`, `unsignedMultiplyHigh` and `TAU`. `StrictMath` answers the
+  same set with the same digits.
+
 - **`java.util.StringJoiner`.** `add`, `toString`, `length`, `setEmptyValue`
   and `merge`, with the JDK's answers for nil parts, empty values and merging.
   `add` and `length` are O(1) and `toString` copies each part once, so a
@@ -227,13 +260,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **The reader honors `*reader-resolver*` and `*suppress-read*`.** With a
-  `clojure.lang.LispReader$Resolver` bound, `::k`, `::alias/k`, `#::{}` and
-  `#::alias{}` ask it for their namespace, as on the JVM, so a tool can read
-  source whose aliases were never loaded; an alias it answers nil for is an
-  invalid token. Under `*suppress-read*` a record literal reads as a
-  `TaggedLiteral` instead of being refused when `*read-eval*` is false.
+- `Math/toRadians` and `Math/toDegrees` multiply by one rounded constant, as
+  the JDK does, instead of rounding twice through pi and 180.
 
+- An untyped `Math` call picks its overload as the Reflector does: Floats
+  widen to Doubles when no float overload fits (`(Math/nextAfter x y)` over two
+  Floats is a Double), a tie goes to the overload `getMethods` lists first, and
+  an int pick takes the Long's `intValue`. A call resolved to an int overload
+  wraps or overflows at 32 bits (`(Math/abs (int -2147483648))`,
+  `(Math/addExact (int a) (int b))`), and `Math/abs` and `Math/floorDiv` of
+  `Long/MIN_VALUE` wrap instead of answering a BigInt.
+
+- `(.append sb (byte 97))` is refused as ambiguous between `append(int)` and
+  `append(long)`, as the JVM compiler refuses it, and so is `(.append sb nil)`
+  with a literal nil ("More than one matching method found: append"); an
+  untyped nil still appends "null". `System/currentTimeMillis`
+  and `System/nanoTime` are primitive longs, so `(Math/round (System/currentTimeMillis))`
+  finds no overload, as on the JVM.
+
+- `Long/valueOf`, `Double/valueOf` and `Float/valueOf` of an untyped argument
+  refuse what the JVM's Reflector refuses: `((fn [x] (Double/valueOf x)) 2)`
+  throws `IllegalArgumentException` instead of answering `2.0`. The analyzer
+  now types arguments as the JVM compiler does, so a call the JVM resolves
+  statically still works: clojure.core arithmetic by the `Numbers` overload it
+  inlines to (`(Float/valueOf (* x 2.0))` is a double), primitive casts, a
+  `^double` or `^long` arglist, `^double` parameters and tags, `Math` methods,
+  the boxed numbers' parsers, and let locals, `if` and `case` built from them.
+  A loop local that starts as a primitive long or double stays one unless a
+  recur passes it something else, as the JVM boxes it then.
+- `java.lang.Math` methods with overloads (`abs`, `max`, `min`, `round`,
+  `signum`, `ulp`, `nextUp`, `nextDown`, `nextAfter`, `scalb`, `getExponent`,
+  `copySign`) and `Integer/valueOf` pick by the argument's class as the JVM
+  does: `(Math/round 2)` and `(Math/abs "2")` throw "No matching method"
+  instead of answering, while a call over typed doubles or longs keeps its
+  native path. The single-overload ones (`sqrt`, `sin`, ...) cast their
+  argument as `RT.doubleCast` does, with the JDK's ClassCastException and
+  NullPointerException, and `Integer/parseInt`, `Long/parseLong`,
+  `Double/parseDouble` and `Float/parseFloat` refuse a non-String the same way.
 - Negative integer constants past the fixnum range keep their value in a `jolt
   build` binary: `-1152921504606846977` printed as `-17293822569102704639N`
   there (and right under `jolt -M`), as did every negative bignum except
@@ -343,11 +406,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `:invalid-arity` and `(c-div 7 2)` does. A wrapper's raw binding gets the
   same extra parameter.
 
+- A local jar's embedded POM keeps each dependency's `<exclusions>`, as the
+  effective-POM path does, so a locally built jar no longer pulls in a
+  transitive dependency its POM excludes (#1903).
+- Protocols extended to `short[]`, `float[]` and `boolean[]` dispatch on those
+  array classes instead of falling through to `Object[]`, so hasch finds its
+  short and float array hash coercions (#1900).
+- `FileChannel.force` exists: it fsyncs the open descriptor (retrying `EINTR`),
+  uses `FlushFileBuffers` on Windows, and throws `ClosedChannelException` on a
+  closed channel. Konserve's durable writes call it (#1902).
+- `deliver` invokes a callable that is not a promise, as Clojure's
+  `(deliver p v)` is `(p v)`, so Datahike's transaction result accepts a
+  delivered report (#1905).
+
 ### Internal
 
 - The metrics workflow runs the latest jolt-metrics and gates on its lint
   findings as well (`ci/metrics-allow.edn` lists the ones that stay), and a
   pull request's report opens with what changed since main's.
+- Every public `jolt.ffi` var has a docstring, so `doc` and editor hover answer
+  for all of them; a test fails on a new one without.
+- The native gate checks that the JIT prelude declares every C library function
+  a region's C calls, which an undeclared `memset` faulted on Apple arm64.
 
 ## [0.8.30] - 2026-11-24
 
