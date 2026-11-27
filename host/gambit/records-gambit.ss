@@ -2234,6 +2234,13 @@
      '("[J" "Object"))
     ((and (jolt-array? obj) (eq? (jolt-array-kind obj) 'double))
      '("[D" "Object"))
+    ((and (jolt-array? obj) (eq? (jolt-array-kind obj) 'short))
+     '("[S" "Object"))
+    ((and (jolt-array? obj) (eq? (jolt-array-kind obj) 'float))
+     '("[F" "Object"))
+    ((and (jolt-array? obj)
+          (eq? (jolt-array-kind obj) 'boolean))
+     '("[Z" "Object"))
     ((jolt-array? obj)
      (let ((k (jolt-array-kind obj)))
        (if (string? k)
@@ -2626,7 +2633,7 @@
         "Year" "YearMonth" "Month" "DayOfWeek" "ChronoUnit"
         "ChronoField" "TemporalAmount" "TemporalUnit"
         "TemporalField" "ByteBuffer" "java.nio.ByteBuffer" "[B" "[C"
-        "[I" "[J" "[D" "[Ljava.lang.Object;" "Reader"
+        "[I" "[J" "[D" "[S" "[F" "[Z" "[Ljava.lang.Object;" "Reader"
         "java.io.Reader" "Writer" "java.io.Writer" "StringReader"
         "java.io.StringReader" "PushbackReader"
         "java.io.PushbackReader" "BufferedReader"

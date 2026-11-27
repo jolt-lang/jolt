@@ -627,6 +627,9 @@
         ((and (jolt-array? obj) (eq? (jolt-array-kind obj) 'int)) '("[I" "Object"))
         ((and (jolt-array? obj) (eq? (jolt-array-kind obj) 'long)) '("[J" "Object"))
         ((and (jolt-array? obj) (eq? (jolt-array-kind obj) 'double)) '("[D" "Object"))
+        ((and (jolt-array? obj) (eq? (jolt-array-kind obj) 'short)) '("[S" "Object"))
+        ((and (jolt-array? obj) (eq? (jolt-array-kind obj) 'float)) '("[F" "Object"))
+        ((and (jolt-array? obj) (eq? (jolt-array-kind obj) 'boolean)) '("[Z" "Object"))
         ;; a typed reference array (String[], int[][]) is also an Object[]
         ((jolt-array? obj)
          (let ((k (jolt-array-kind obj)))
@@ -1054,7 +1057,7 @@
                 "ChronoUnit" "ChronoField" "TemporalAmount" "TemporalUnit" "TemporalField"
                 ;; ByteBuffer + JVM array classes (extend-protocol to (Class/forName "[B"))
                 "ByteBuffer" "java.nio.ByteBuffer"
-                "[B" "[C" "[I" "[J" "[D" "[Ljava.lang.Object;"
+                "[B" "[C" "[I" "[J" "[D" "[S" "[F" "[Z" "[Ljava.lang.Object;"
                 ;; java.io readers/writers — extend-protocol java.io.Reader (data.csv)
                 "Reader" "java.io.Reader" "Writer" "java.io.Writer"
                 "StringReader" "java.io.StringReader" "PushbackReader" "java.io.PushbackReader"
