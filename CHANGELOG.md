@@ -164,6 +164,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **A type test narrows the local it tests.** In `(if (double? x) (* x x) ...)`
+  the guarded branch now runs Chez flonum ops on `x`, as do `cond` arms and
+  every conjunct of an `and` chain; `string?`, `keyword?` and `number?` type
+  their branch for the optimizing passes too. `double?` is now a native op
+  (the host flonum test), like `nil?`. A dispatch-by-hand kernel ran 40-47%
+  faster (10M calls: 218 to 131 ms; two `double?` tests 320 to 170 ms).
+- **`(double x)` tests for a flonum before calling the cast helper**, as
+  `(long x)` already tests for a fixnum.
 - A native region's fast copy drops the bounds check on an index bounded by a
   long parameter (`(< i m)`, guarded once at entry by `m` against the array's
   length), by another array parameter's length, or by a length minus a
@@ -209,6 +217,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `^double` let or loop local unboxes at each arithmetic use, as on the JVM.**
+  `(let [^double x (first [2])] (* x x))` is `4.0` (it was `4`), over `1/3` it
+  is `1.0`, and over a string it throws `ClassCastException`; `str`, `class`
+  and a one-argument `+` still see the value itself. Those uses now take the
+  flonum ops: two hinted locals into `Math/sqrt` ran in 102 ms where they took
+  330 (5M calls).
+- **A one-argument `+`, `*`, `min` or `max` is no longer typed as a number.**
+  They answer their argument, so `(+ nil)` is `nil`, and an optimized build
+  folded `(nil? y)` over `y = (+ x)` to `false`. A new gate (`make rettype`)
+  runs every return-type claim the compiler trusts against the runtime on
+  representative values, which is how this was found.
 - Negative integer constants past the fixnum range keep their value in a `jolt
   build` binary: `-1152921504606846977` printed as `-17293822569102704639N`
   there (and right under `jolt -M`), as did every negative bignum except
