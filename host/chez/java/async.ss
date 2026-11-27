@@ -954,17 +954,41 @@
 ;; calling thread; otherwise on another thread. Returns true unless already closed.
 ;; That thread (and take!'s) is a daemon: it stands for core.async's dispatch pool,
 ;; and a put or take nobody ever completes must not hold the process up.
+(define (ac-start-put! ch v)
+  (async-check-put! v)
+  (jolt-with-mutex (async-chan-mu ch)
+    (let ((x (ac-try-give!/locked ch v)))
+      (if (eq? x 'full) (ac-park-putter! ch v) x))))
+
+;; Protocol operations return a derefable for an immediate completion; only
+;; a queued operation invokes its callback. Install the waiter before returning
+;; so close or a subsequent nonblocking offer sees the registration.
+(define (ac-port-result r cb)
+  (if (alt-handler? r)
+      (begin (fork-thread/daemon #t
+               (lambda () (*txn* #f) (ac-handler-await r #f)
+                 (jolt-invoke1 cb (vector-ref (alt-handler-mailbox r) 1))))
+             jolt-nil)
+      (make-jolt-reduced r)))
+(define (ac-port-put! ch v cb)
+  (let ((r (ac-start-put! ch v)))
+    (ac-port-result (case r ((ok) #t) ((closed) #f) (else r)) cb)))
+(define (ac-port-take! ch cb)
+  (ac-port-result
+    (jolt-with-mutex (async-chan-mu ch)
+      (let ((x (ac-poll!/locked ch)))
+        (if (eq? x ac-poll-empty)
+            (let ((h (alt-handler-alloc)))
+              (async-chan-alt-takers-set! ch (append (async-chan-alt-takers ch) (list h)))
+              h)
+            x)))
+    cb))
+
 (define (jolt-async-put! ch v . rest)
   (let* ((cb (if (pair? rest) (car rest) jolt-nil))
          (on-caller? (if (and (pair? rest) (pair? (cdr rest))) (jolt-truthy? (cadr rest)) #t))
          (call-cb (lambda (ok) (unless (jolt-nil? cb) (jolt-invoke cb ok)))))
-    ;; A put that cannot complete now parks HERE, on the caller, under the same
-    ;; mu as the attempt, so a close! after put! returns finds it queued; the
-    ;; forked thread only waits for its outcome to run the callback (jolt-5psco).
-    (async-check-put! v)
-    (let ((r (jolt-with-mutex (async-chan-mu ch)
-               (let ((x (ac-try-give!/locked ch v)))
-                 (if (eq? x 'full) (ac-park-putter! ch v) x)))))
+    (let ((r (ac-start-put! ch v)))
       (case r
         ((ok) (if on-caller? (call-cb #t) (fork-thread/daemon #t (lambda () (*txn* #f) (call-cb #t)))) #t)
         ((closed) (if on-caller? (call-cb #f) (fork-thread/daemon #t (lambda () (*txn* #f) (call-cb #f)))) #f)
@@ -1366,8 +1390,15 @@
 (cca-def! "<!" jolt-async-take)   (cca-def! "<!!" jolt-async-take!!)
 (cca-def! ">!" jolt-async-give)   (cca-def! ">!!" jolt-async-give!!)
 (cca-def! "timeout" jolt-async-timeout)
-(cca-def! "put!" jolt-async-put!)
-(cca-def! "take!" jolt-async-take!)
+(cca-def! "__port-put!" ac-port-put!)
+(cca-def! "__port-take!" ac-port-take!)
+(cca-def! "put!" (lambda (ch v . args)
+  (if (async-chan? ch) (apply jolt-async-put! ch v args)
+      (begin (async-check-put! v)
+             (apply jolt-invoke (var-deref "clojure.core.async" "__custom-put!") ch v args)))))
+(cca-def! "take!" (lambda (ch cb . args)
+  (if (async-chan? ch) (apply jolt-async-take! ch cb args)
+      (apply jolt-invoke (var-deref "clojure.core.async" "__custom-take!") ch cb args))))
 (cca-def! "offer!" jolt-async-offer!)
 (cca-def! "go-spawn" async-go-spawn)
 ;; thread-spawn: always a real OS thread, whatever *go-backend* says (thread

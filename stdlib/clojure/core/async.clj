@@ -25,7 +25,7 @@
   ;; The port protocol the macros and any ported caller ask about, loaded here so
   ;; a bare (require 'clojure.core.async) installs it — upstream's ns form lists
   ;; it the same way. It requires nothing back, so there is no cycle.
-  (:require [clojure.core.async.impl.protocols]))
+  (:require [clojure.core.async.impl.protocols :as impl]))
 
 ;; --- go, and the cheap park -------------------------------------------------
 ;; go spawns its body on the backend *go-backend* names, read at spawn time.
@@ -647,6 +647,28 @@
      (throw (IllegalArgumentException.
               (str "Invalid workload " (pr-str workload)
                    " — expected :io, :compute or :mixed"))))))
+
+(defn fn-handler
+  ([f] (fn-handler f true))
+  ([f blockable?] (impl/->FnHandler f blockable?)))
+
+(defn- port-callback! [cb value on-caller?]
+  (if on-caller? (cb value) (thread-call #(cb value))))
+
+(defn ^:no-doc __custom-put!
+  ([port v] (__custom-put! port v (fn [_]) true))
+  ([port v cb] (__custom-put! port v cb true))
+  ([port v cb on-caller?]
+   (if-let [box (impl/put! port v (fn-handler cb))]
+     (let [ok @box] (port-callback! cb ok on-caller?) ok)
+     true)))
+
+(defn ^:no-doc __custom-take!
+  ([port cb] (__custom-take! port cb true))
+  ([port cb on-caller?]
+   (when-let [box (impl/take! port (fn-handler cb))]
+     (port-callback! cb @box on-caller?))
+   nil))
 
 (defmacro io-thread
   "Executes body on a FIBER, returning a channel that receives the result then

@@ -440,6 +440,7 @@
   ;; without one. With one it used to be treated as a fixed buffer: the first
   ;; value stayed, offer! answered nil after it and >!! blocked. Probed on JVM
   ;; Clojure 1.12.5 + core.async 1.8.741: [[true true true 4] [true true true 2] [:done 3]].
+  {:suite "core.async / custom callback ports" :expr "(do (require '[clojure.core.async :as a] '[clojure.core.async.impl.protocols :as p]) (let [c (a/chan 1) port (reify p/ReadPort (take! [_ h] (p/take! c h)) p/WritePort (put! [_ v h] (p/put! c v h))) done (promise) item (promise)] [(a/put! port 1) (a/put! port 2 #(deliver done %)) (a/<!! c) (deref done 2000 :timeout) (a/<!! c) (a/take! port #(deliver item %)) (a/offer! c 3) (deref item 2000 :timeout) (do (a/close! c) (a/put! port 4))]))" :expected "[true true 1 true 2 nil true 3 false]"}
   {:suite "core.async / buffers" :expr "(do (require (quote [clojure.core.async :as a])) [(let [c (a/chan (a/sliding-buffer 1) (map inc))] [(a/offer! c 1) (a/offer! c 2) (a/offer! c 3) (a/poll! c)]) (let [c (a/chan (a/dropping-buffer 1) (map inc))] [(a/offer! c 1) (a/offer! c 2) (a/offer! c 3) (a/poll! c)]) (let [c (a/chan (a/sliding-buffer 1) (map inc))] [(deref (future (a/>!! c 1) (a/>!! c 2) :done) 2000 :blocked) (a/poll! c)])])" :expected "[[true true true 4] [true true true 2] [:done 3]]"}
   ;; An alts put on a FULL fixed buffer with a transducer is not ready: it used
   ;; to count as ready because the channel had a transducer, then the locked
