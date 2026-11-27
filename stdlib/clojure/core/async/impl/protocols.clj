@@ -33,7 +33,7 @@
 (defn- callback [h]
   (if (and (instance? FnHandler h) (blockable? h))
     (commit h)
-    (throw (UnsupportedOperationException. "Native port delegation requires a blocking fn-handler"))))
+    (throw (UnsupportedOperationException. "Native port delegation requires a blockable fn-handler"))))
 
 ;; A channel reports the class name upstream's ManyToManyChannel has — that is
 ;; the class-arm in host/chez/java/async.ss — but the class graph carries no row
@@ -71,6 +71,10 @@
 
 (extend-type clojure.core.async.impl.channels.ManyToManyChannel
   ReadPort
-  (take! [port handler] (clojure.core.async/__port-take! port (callback handler)))
+  (take! [port handler]
+    ;; Earlier Jolt releases also accepted a bare callback at this entry point.
+    (if (fn? handler)
+      (clojure.core.async/take! port handler)
+      (clojure.core.async/__port-take! port (callback handler))))
   WritePort
   (put! [port val handler] (clojure.core.async/__port-put! port val (callback handler))))
