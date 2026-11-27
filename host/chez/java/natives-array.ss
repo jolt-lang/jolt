@@ -1491,6 +1491,11 @@
   (register-class-statics! "Array" statics)
   (register-class-statics! "java.lang.reflect.Array" statics))
 
+;; RT.EMPTY_ARRAY is a single zero-length Object[], including through reflection.
+(let ((fields (list (cons "EMPTY_ARRAY" (na-object-array 0)))))
+  (register-class-statics! "RT" fields)
+  (register-class-statics! "clojure.lang.RT" fields))
+
 ;; java.lang.reflect.Field over the modeled class registry: getDeclaredFields on
 ;; a Class naming a deftype/defrecord returns its declared fields, each
 ;; answering getName / setAccessible / get — the reflective field walk
