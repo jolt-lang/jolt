@@ -63,7 +63,8 @@
   diagnostic."
   [cn args arg-types pos env]
   (cond
-    (contains? num-ops cn)
+    (and (contains? num-ops cn)
+         (not (and (= 1 (count args)) (contains? op-registry/arg1-identity-ops cn))))
     (reduce (fn [_ i]
               (let [t (nth arg-types i)]
                 (when (not-number? t)

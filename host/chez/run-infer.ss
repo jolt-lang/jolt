@@ -227,6 +227,14 @@
 (gate-check "an and-chain narrows each conjunct" (ret-of "(if (and (double? x) (double? y)) (+ x y) 0.0)") (kw "double"))
 (gate-check "float? narrows nothing" (ret-of "(if (float? x) x 0.0)") (kw "any"))
 (gate-check "the else branch is not narrowed" (ret-of "(if (string? x) \"\" x)") (kw "any"))
+;; A 1-arg + * min max answers its argument, number or not ((+ nil) is nil, as on
+;; the JVM): typing it :num folded (nil? y) over y = (+ x) to false in a build.
+(gate-check "(+ x) has x's type, not :num" (ret-of "(+ x)") (kw "any"))
+(gate-check "(min x) has x's type" (ret-of "(min x)") (kw "any"))
+(gate-check "(+ x 1) is still a number" (ret-of "(+ x 1)") (kw "num"))
+(gate-check "(+ s) over a proven string keeps :str" (ret-of "(let [s (str x)] (+ s))") (kw "str"))
+(gate-check "a 1-arg min of a string is no checker error" (diags "(min \"s\")" #t) 0)
+(gate-check "a 2-arg min of a string still is" (diags "(min \"s\" 1)" #t) 1)
 
 (set-record-shapes! U (jolt-hash-map))
 

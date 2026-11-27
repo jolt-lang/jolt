@@ -740,6 +740,9 @@
       ;; param (and into the fixpoint's return type) so hintless double
       ;; code unboxes.
       maybe-dbl :double
+      ;; (+ x), (min x) …: the argument itself (op-registry arg1-identity-ops)
+      (and cn (= 1 (:n c)) (contains? op-registry/arg1-identity-ops cn))
+      (ty (nth ares 0))
       :else (call-ret-type (:fnode c) env))))
 
 ;; When dbl-arith? proves :double, wrap non-double operands in coerce
