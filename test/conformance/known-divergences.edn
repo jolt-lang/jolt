@@ -498,19 +498,6 @@
            :jvm "throws IllegalArgumentException"
            :jolt "200"}
    :note "jolt models one integer type, so a byte-typed overload cannot be told from an int-typed one. Verified against Clojure 1.12.5."}
-  ;; A static call whose argument jolt cannot type reaches the shim, which takes
-  ;; any number: the JVM compiler may have typed that argument a primitive jolt
-  ;; does not (the double an arithmetic call returns), and then it resolves.
-  ;; With every argument's class known the call takes the Reflector's member
-  ;; and refuses as the JVM does ((Float/valueOf (Double/valueOf "1"))).
-  {:category :permissive
-   :behavior "((fn [x] (Double/valueOf x)) 2)"
-   :jvm "throws IllegalArgumentException (the Reflector finds no valueOf taking a Long)"
-   :jolt "2.0"
-   :check {:expr "((fn [x] (Double/valueOf x)) 2)"
-           :jvm "throws IllegalArgumentException"
-           :jolt "2.0"}
-   :note "jolt types fewer primitive expressions than the JVM compiler, so an untyped argument cannot be told from a primitive one. Verified against Clojure 1.12.5 on JDK 21."}
   ;; A bignum-literal operand (9223372036854775807 = Long/MAX_VALUE, past jolt's
   ;; 2^60-1 fixnum ceiling) BLOCKS :long specialization, so the loop var stays
   ;; generic and jolt computes the EXACT bignum sum — where the JVM keeps `i` a
@@ -1071,6 +1058,17 @@
            :jvm "[\"BigInt\" 3N]"
            :jolt "[\"Long\" 3]"}
    :note "Same one-exact-integer model as (class 1N); (unchecked-add 9223372036854775808N 1) is 9223372036854775809N on both."}
+;; The same collapse at the Reflector: a BigInt inside the long range is the
+;; fixnum a Long is, so an untyped Long/valueOf takes it as valueOf(long) where
+;; the JVM's Reflector finds no overload for a BigInt.
+  {:category :integer-box-model
+   :behavior "((fn [x] (Long/valueOf x)) 2N)"
+   :jvm "throws IllegalArgumentException (No matching method valueOf found taking 1 args)"
+   :jolt "2: 2N is the fixnum 2"
+   :check {:expr "(try ((fn [x] (Long/valueOf x)) 2N) (catch IllegalArgumentException e (ex-message e)))"
+           :jvm "\"No matching method valueOf found taking 1 args\""
+           :jolt "2"}
+   :note "Same one-exact-integer model as (class 1N). A BigInt past the long range is refused on both."}
   ;; The same collapse under *print-dup*: print-dup writes a Number as its
   ;; constructor unless it is a Long (or a BigInt, which prints with its N), and
   ;; an int, a short, a byte, a small BigInteger and a small BigInt are all the

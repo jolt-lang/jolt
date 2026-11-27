@@ -563,6 +563,13 @@
         (cons "negateExact" (lambda (a) (jolt-math-negate-exact a)))
         (cons "PI" jolt-math-pi) (cons "E" jolt-math-e)
         (cons "random" (lambda args (jolt-random 1.0)))))))
+;; The Math methods with overloads a runtime class chooses among, and
+;; Integer/valueOf: a call no overload fits at compile time (an untyped
+;; argument, a long to round) takes the Reflector's member (records-interop.ss).
+(for-each (lambda (m) (register-reflect-member! "java.lang.Math" "Math" (car m) (cadr m)))
+          '(("abs" 1) ("max" 2) ("min" 2) ("round" 1) ("signum" 1) ("ulp" 1) ("nextUp" 1)
+            ("nextDown" 1) ("nextAfter" 2) ("scalb" 2) ("getExponent" 1) ("copySign" 2)))
+(register-reflect-member! "java.lang.Integer" "Integer" "valueOf" 1)
 
 ;; ---- Double / Float bit casts -----------------------------------------------
 ;; Over the bit patterns above, as the JVM's signed long/int. doubleToLongBits
