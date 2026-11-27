@@ -1459,6 +1459,12 @@
       (contains? #{"jolt-long-cast" "jolt-unchecked-long"} (:cast-fn node))
       (let [t (fresh-label "_lc$")]
         (str "(let ((" t " " e ")) (if (fixnum? " t ") " t " (" (cast-entry node) " " t ")))"))
+      ;; (double x) hands a flonum back unchanged: the same type check first.
+      ;; It is also the cast on each arithmetic use of a ^double let/loop local
+      ;; (jolt.passes.numeric dcast-args), where the value usually is one.
+      (= "jolt-double" (:cast-fn node))
+      (let [t (fresh-label "_dc$")]
+        (str "(let ((" t " " e ")) (if (flonum? " t ") " t " (jolt-double " t ")))"))
       ;; a float cast whose value an fl op takes (:fl-unbox, numeric
       ;; pass) hands it the double it widens to, never building the jfloat
       (and (:fl-unbox node) (contains? #{"jolt-float" "jolt-unchecked-float"} (:cast-fn node)))

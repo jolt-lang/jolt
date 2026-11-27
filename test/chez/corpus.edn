@@ -9585,4 +9585,10 @@
   ;; field hit or not (the open-coded hit, rt.ss jolt-kw-get-site/i, skipped it)
   {:suite "records / keyword lookup" :label "(:k rec default) evaluates a side-effecting default on every call" :expected "[3 2 4]" :actual "(do (defrecord KsdR [ksd-a]) (def ksd-n (atom 0)) (defn ksd-f [r] (:ksd-a r (swap! ksd-n inc))) (dotimes [_ 3] (ksd-f (->KsdR 1))) [@ksd-n (ksd-f (->KsdR 2)) @ksd-n])" :portability :jvm}
   {:suite "records / keyword lookup" :label "(get rec :k default) evaluates a side-effecting default on every call" :expected "[3 2 4]" :actual "(do (defrecord KsdR2 [ksd-b]) (def ksd-m (atom 0)) (defn ksd-g [r] (get r :ksd-b (swap! ksd-m inc))) (dotimes [_ 3] (ksd-g (->KsdR2 1))) [@ksd-m (ksd-g (->KsdR2 2)) @ksd-m])" :portability :jvm}
+  ;; ^double on a let/loop local (jolt-3h7.3): the JVM leaves the value alone but
+  ;; unboxes it (RT.doubleCast) at each primitive arithmetic use
+  {:suite "type hints / ^double local" :label "a ^double let local's arithmetic unboxes it; str, + of one arg and class see the value" :expected "[[4.0 3.0 -2.0 2.0 1.0 true \"2\" 2 java.lang.Long] [0.1111111111111111 1.3333333333333333 -0.3333333333333333 0.3333333333333333 0.0 true \"1/3\" 1/3 clojure.lang.Ratio]]" :actual "(let [g (fn [v] (let [^double x (first v)] [(* x x) (inc x) (- x) (min x 5) (quot x 2) (< x 3) (str x) (+ x) (class (identity x))]))] [(g [2]) (g [1/3])])"}
+  {:suite "type hints / ^double local" :label "a ^double let local over a string: str sees it, arithmetic throws ClassCastException" :expected "[\"s\" :cce]" :actual "(let [^double x (first [\"s\"])] [(str x) (try (* x x) (catch ClassCastException _ :cce))])"}
+  {:suite "type hints / ^double local" :label "a ^double loop local over an integer init computes in doubles" :expected "16.0" :actual "(loop [^double x (first [2]) i 0] (if (< i 2) (recur (* x x) (inc i)) x))"}
+  {:suite "type hints / ^double local" :label "two ^double let locals feed Math/sqrt" :expected "5.0" :actual "(let [^double a (first [3]) ^double b (second [3 4])] (Math/sqrt (+ (* a a) (* b b))))"}
 ]

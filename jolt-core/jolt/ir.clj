@@ -272,6 +272,8 @@
 ;;   :meta-expr              a :def's evaluated metadata expression.
 ;;   :pos                    reader source position {:line :column :file}.
 ;;   :letrec                 a :let that must lower to letrec* (mutual recursion).
+;;   :dhints                 a :let/:loop's ^double-hinted local names (analyzer);
+;;                           the numeric pass casts their arithmetic uses.
 (def node-ops
   #{:const :local :var :the-var :host :host-static :host-new :if :do :invoke :def
     :let :let-values :loop :recur :fn :vector :map :set :quote :throw :coerce :try :host-call

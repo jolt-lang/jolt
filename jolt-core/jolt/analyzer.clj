@@ -53,7 +53,8 @@
                                          host-call-arg-casts static-invoke host-call-target-class
                                          with-ret-nhint fi-tag-class fi-adapt-form
                                          parse-params strip-arglist-meta arglist-ret-nkind arglist-type-method? arglist-meta
-                                         str-target-type kw-target-type sb-target-type]]
+                                         str-target-type kw-target-type sb-target-type
+                                         double-hinted-names]]
             [jolt.analyzer.tree :refer [check-recur-tails! fn-free-names check-fn-arities]]
             [jolt.analyzer.ffi :refer [analyze-ffi-layout analyze-ffi-fn analyze-ffi-pointer-fn
                                        analyze-ffi-signature-type]]
@@ -902,8 +903,11 @@
 
 (defn- analyze-let* [ctx form items env]
   (let [env (if (wraps? (:here env) :let) (wrapper-env ctx form env) env)
-        [pairs env*] (analyze-bindings ctx (binding-vector items) env)]
-    (let-node pairs (analyze-body ctx (drop 2 items) env* (or (:here env) :expression)))))
+        bvec (binding-vector items)
+        [pairs env*] (analyze-bindings ctx bvec env)
+        node (let-node pairs (analyze-body ctx (drop 2 items) env* (or (:here env) :expression)))
+        dh (double-hinted-names ctx bvec)]
+    (if (seq dh) (assoc node :dhints dh) node)))
 
 (defn- analyze-loop* [ctx form items env]
   (let [hm (form-sym-meta (first items))
@@ -924,7 +928,9 @@
         ;; against THIS loop may only sit in tail position of its body.
         body-node (analyze-body ctx (drop 2 items) body-env :return)]
     (check-recur-tails! body-node)
-    {:op :loop :bindings pairs :body body-node}))
+    (let [dh (double-hinted-names ctx bvec)]
+      (cond-> {:op :loop :bindings pairs :body body-node}
+        (seq dh) (assoc :dhints dh)))))
 
 ;; A recur onto a ^boolean loop local must pass something that can be a boolean;
 ;; the reference rejects a provably non-boolean argument at compile time.

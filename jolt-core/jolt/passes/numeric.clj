@@ -22,7 +22,7 @@
   Runs in every build and at `-e`/repl, but not the seed mint (which compiles with
   the passes off), so it stays out of the self-host fixpoint and benefits open and
   closed builds alike."
-  (:require [jolt.ir :refer [map-ir-children thread-bindings]]
+  (:require [jolt.ir :refer [map-ir-children thread-bindings coerce-node]]
             [jolt.passes.fold :refer [truthy-type-tests]]))
 
 ;; java.lang.Math members that ALWAYS return a double on the JVM and have a native
@@ -185,7 +185,7 @@
 ;; A non-numeric result (a comparison) doesn't propagate a numeric kind.
 (defn- propagate [spec] (if (= spec :bool) nil spec))
 
-(declare an rebind-boxed boxed-operand? jvm-long-expr? rebind-jvm-long)
+(declare an rebind-boxed boxed-operand? jvm-long-expr? rebind-jvm-long dcast-bind)
 
 ;; The then-branch env of an `if`: a local the test proves (double? x) is a
 ;; flonum there, so its arithmetic takes the fl ops (case-based narrowing; see
@@ -281,7 +281,10 @@
     ;; forgets that an outer one was a JVM primitive long (let-scope then
     ;; records it again when this one is)
     (cond-> (assoc tenv :boxed-locals (if boxed? (conj s nm) (disj s nm)))
-      (and j (contains? j nm)) (assoc :jvm-long-locals (disj j nm)))))
+      (and j (contains? j nm)) (assoc :jvm-long-locals (disj j nm))
+      ;; nor is it an outer ^double-hinted local any more (dcast-bind)
+      (contains? (or (get tenv :dcast-locals) #{}) nm)
+      (assoc :dcast-locals (disj (get tenv :dcast-locals) nm)))))
 
 ;; --- what the JVM compiler types as a primitive long ---------------------------
 ;; quot and rem raise "/ by zero" when the JVM compiled them to its (long, long)
@@ -618,14 +621,52 @@
       [nil (assoc node1 :lng-op (if (= nm "quot") "jolt-pquot" "jolt-prem"))]
       :else [nil node1])))
 
+;; --- ^double-hinted let/loop locals (jolt-3h7.3) ------------------------------
+;; On the JVM a ^double hint on a let or loop local whose init is an Object does
+;; not convert the value — (str x), (identity x) and (class x) see what the init
+;; answered — but every primitive arithmetic USE unboxes it with RT.doubleCast:
+;; (let [^double x (first [2])] (* x x)) is 4.0, over 1/3 it is 1.0, and over a
+;; string it throws ClassCastException. jolt used to ignore the hint (4, 1/3*…).
+;; So, as Baker's Nimble inferencer inserts a check where a declaration can't be
+;; proven (§6.6), each such use is wrapped in the checked (double x) cast, which
+;; is both the JVM's answer and a proven :double the fl ops can take.
+;;
+;; :dcast-locals in tenv is the set of names bound with the hint and not proven
+;; by their init; rebind-boxed drops a name at any rebinding.
+(defn- dcast-bind [tenv names]
+  (reduce (fn [te nm] (if (nil? (get te nm))
+                        (assoc te :dcast-locals (conj (or (get te :dcast-locals) #{}) nm))
+                        te))
+          tenv names))
+;; The JVM inlines these to a Numbers method with a double overload, so only at
+;; these arities does a hinted operand unbox: (+ x) and (* x) are the argument
+;; itself, and `=` is left alone (Util.equiv(double,double) is numeric ==, which
+;; the generic = over a cast would not be).
+(defn- dcast-arity? [nm n]
+  (cond (contains? #{"+" "*" "min" "max" "unchecked-add" "unchecked-multiply" "/"} nm) (>= n 2)
+        (contains? #{"-" "unchecked-subtract"} nm) (>= n 1)
+        (contains? #{"inc" "dec" "unchecked-inc" "unchecked-dec" "unchecked-negate"} nm) (= n 1)
+        (contains? #{"<" ">" "<=" ">=" "==" "quot" "rem"} nm) (= n 2)
+        :else false))
+(defn- dcast-args [node tenv]
+  (let [fnode (get node :fn) args (get node :args) dc (get tenv :dcast-locals)]
+    (if (and (seq dc) (= :var (get fnode :op)) (= "clojure.core" (get fnode :ns))
+             (dcast-arity? (get fnode :name) (count args)))
+      (assoc node :args (mapv (fn [a] (if (and (= :local (get a :op)) (contains? dc (get a :name)))
+                                        (coerce-node :double a "jolt-double")
+                                        a))
+                              args))
+      node)))
+
 (defn- an-invoke
   "Annotate an :invoke with its numeric kind. An arithmetic core op specializes to
   the Chez fl*/fx* op only when every operand is the same kind (:double or :long),
   except an integer literal is :wild — valid in either — so (+ ^double x 2) stays
   double. A call to a ^double/^long-returning var yields that kind without lowering
   the call (its body already coerces the return)."
-  [node tenv]
-  (let [fnode (get node :fn)
+  [node0 tenv]
+  (let [node (dcast-args node0 tenv)
+        fnode (get node :fn)
         nm (when (and (= :var (get fnode :op)) (= "clojure.core" (get fnode :ns)))
              (get fnode :name))
         fnode' (nth (an fnode tenv) 1)
@@ -684,7 +725,7 @@
 
 (defn- an-let [node tenv]
   (let [res (let-scope node tenv)
-        br (an (get node :body) (nth res 0))]
+        br (an (get node :body) (dcast-bind (nth res 0) (get node :dhints)))]
     [(nth br 0) (assoc node :bindings (nth res 1) :body (nth br 1))]))
 
 ;; inits evaluate in sequence, each seeing the loop vars bound before it (as a
@@ -712,7 +753,7 @@
                    tenv (range (count names)))]
     [nil (assoc node
                 :bindings (nth inits 1)
-                :body (nth (an (get node :body) te) 1))]))
+                :body (nth (an (get node :body) (dcast-bind te (get node :dhints))) 1))]))
 
 (defn- an-if [node tenv]
   (let [tr (an (get node :test) tenv)

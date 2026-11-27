@@ -556,5 +556,39 @@
     (jolt= (ev "(with-redefs [double? (fn [_] true)] ((fn [x] (if (double? x) (* x x) :no)) \"s\"))")
            (keyword #f "no")))
 
+;; --- ^double let/loop hints (jolt-3h7.3). The JVM does not convert a hinted
+;; local's value, but each primitive arithmetic use unboxes it (RT.doubleCast), so
+;; each such use is a checked (double x) cast — the JVM's answer, and a :double
+;; the fl ops take. Expected values are what JVM Clojure 1.12 answers.
+(let ((e (emitf "u" "(fn* ([y] (let [^double x (first y)] (* x x))))")))
+  (ok "a ^double let local's arithmetic use is cast and takes fl*"
+      (and (has? e "(jolt-double _dc$") (has? e "(#3%fl* ") (not (has? e "(jolt-n* ")))))
+(ok "a (double x) cast tests for a flonum before calling the helper"
+    (has? (emitf "u" "(fn* ([x] (double x)))") "(if (flonum? _dc$"))
+(ok "a ^double loop local's arithmetic use is cast"
+    (has? (emitf "u" "(fn* ([y] (loop [^double x (first y) i 0] (if (< i 3) (recur (* x 2.0) (inc i)) x))))")
+          "(#3%fl* (let ((_dc$"))
+(ok "a non-arithmetic use is not cast"
+    (not (has? (emitf "u" "(fn* ([y] (let [^double x (first y)] (str x))))") "jolt-double")))
+(ok "a 1-arg + is the argument, not a cast"
+    (not (has? (emitf "u" "(fn* ([y] (let [^double x (first y)] (+ x))))") "jolt-double")))
+(ok "= is left alone"
+    (not (has? (emitf "u" "(fn* ([y] (let [^double x (first y)] (= x 2))))") "jolt-double")))
+(ok "a shadowing let drops the hint"
+    (not (has? (emitf "u" "(fn* ([y] (let [^double x (first y)] (let [x (second y)] (* x x)))))") "jolt-double")))
+(define (hinted s) (ev (string-append "(fn* ([y] (let [^double x (first y)] " s ")))")))
+(ok "over an integer, arithmetic answers a double (JVM: 4.0)" (jolt= ((hinted "(* x x)") (ev "[2]")) 4.0))
+(ok "over a ratio (JVM: 1.0)" (jolt= ((hinted "(* x 3)") (ev "[1/3]")) 1.0))
+(ok "inc over an integer (JVM: 3.0)" (jolt= ((hinted "(inc x)") (ev "[2]")) 3.0))
+(ok "min over an integer (JVM: 2.0)" (jolt= ((hinted "(min x 5)") (ev "[2]")) 2.0))
+(ok "+ over a bigint (JVM: 1.0E20)" (jolt= ((hinted "(+ x 1)") (ev "[100000000000000000000N]")) 1e20))
+(ok "the value itself is not converted (JVM: \"2\")" (jolt= ((hinted "(str x)") (ev "[2]")) "2"))
+(ok "a 1-arg + answers the value (JVM: 2)" (jolt= ((hinted "(+ x)") (ev "[2]")) 2))
+(ok "over a string, arithmetic throws ClassCastException"
+    (jolt= ((hinted "(try (* x x) (catch ClassCastException e :cce))") (ev "[\"s\"]")) (keyword #f "cce")))
+(ok "over a flonum, the answer is unchanged" (jolt= ((hinted "(+ (* x x) x)") (ev "[1.5]")) 3.75))
+(ok "a hinted loop local (JVM: 16.0)"
+    (jolt= ((ev "(fn* ([y] (loop [^double x (first y) i 0] (if (< i 2) (recur (* x x) (inc i)) x))))") (ev "[2]")) 16.0))
+
 (printf "~a/~a passed~n" (- total fails) total)
 (exit (if (zero? fails) 0 1))
