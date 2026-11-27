@@ -923,6 +923,15 @@
 (check-reject "recur not in tail position" '[]
               '((loop [i 0] (do (recur (inc i)) i))) #"tail position")
 (check-reject "unknown function" '[^long a] '((println a)) #"not allowed")
+;; the head is judged before its arguments: an unsupported call names itself,
+;; not whichever unsupported argument it was passed
+(check-reject "unknown function, unsupported argument" '[^long a]
+              '((println "hi")) #"not allowed in a native region: println")
+(check-reject "unknown function, function argument" '[^doubles xs]
+              '((map inc xs)) #"not allowed in a native region: map")
+;; a literal carries no line of its own: report the enclosing form's
+(check-reject "literal reports its form's line" '[^long a]
+              (list (with-meta '(+ a :k) {:line 7})) #"not allowed in a native region: :k \(line 7\)")
 
 ;; --- stack arrays: small constant-size arrays that stay in the function -----
 ;; (jolt.native.stack) live in a frame buffer: no calloc, no free. The tracker

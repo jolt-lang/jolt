@@ -22,12 +22,16 @@
 (def ^:dynamic *instances* nil)
 (defn- next-id [] (swap! *ids* inc))
 
+;; the line of the innermost enclosing form that has one: a literal (a keyword,
+;; a string) carries no metadata, so its error reports the form it sits in
+(def ^:dynamic *line* nil)
+
 (defn fail
   "Raise a region compile error pointing at form."
   [form msg & {:as data}]
-  (let [m (meta form)]
+  (let [line (or (:line (meta form)) *line*)]
     (throw (ex-info (str "native region: " msg
-                         (when (:line m) (str " (line " (:line m) ")")))
+                         (when line (str " (line " line ")")))
                     (merge {:jolt.native/error true :form form} data)))))
 
 (defn owned? [t] (and (vector? t) (= :array (first t))))
@@ -310,7 +314,12 @@
     (when (:pending inst) (reset! (:recursed inst) true))
     (node :call (:ret inst) form :instance (:iid inst) :args args :helper-sym (:sym h))))
 
+(declare builtins)
+
 (defn- analyze-call [env [f & raw :as form] tail]
+  ;; the head first: an unsupported call is the error, not its arguments
+  (when-not (or (builtins f) (math-fns f) (helper-of env f) (extern-of env f))
+    (fail form (str "not allowed in a native region: " (pr-str f))))
   (let [args (mapv #(analyze env % false) raw)
         n (count args)
         prim (fn [t p] (node :prim t form :prim p :args args))]
@@ -400,9 +409,7 @@
             (node :math :double form :fn (name f) :args args))
         (if-let [h (helper-of env f)]
           (analyze-helper-call h args form)
-          (if-let [x (extern-of env f)]
-            (analyze-extern-call x args form)
-            (fail form (str "not allowed in a native region: " (pr-str f)))))))))
+          (analyze-extern-call (extern-of env f) args form))))))
 
 (defn- extern-arg-ok? [want t]
   (if (vector? want)
@@ -467,6 +474,8 @@
       (node :local (:type b) form :name form :binding (:id b))
       (fail form (str "unknown name " form
                       " (a region sees only its parameters and its own locals)")))
+    (and (seq? form) (:line (meta form)) (not= *line* (:line (meta form))))
+    (binding [*line* (:line (meta form))] (analyze env form tail))
     ;; a local shadows the builtin, helper or macro of its name, as in Clojure,
     ;; where the call would invoke the local's value; only the special forms
     ;; cannot be shadowed
