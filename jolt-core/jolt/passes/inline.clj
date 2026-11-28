@@ -1400,8 +1400,18 @@
       (let [locals (mapv (fn [_] (fresh "sa")) args)
             fv (fresh "pf")
             f (get node :fn)
+            ;; a ^double/^long or array-hinted param coerces on entry to the
+            ;; impl (lambda.clj nhint-init), and the copied body was compiled
+            ;; assuming it did: bind it under that coercion, as bind-args does.
+            ;; Never the receiver, which the guard proves as it is.
+            nh (param-hint-map (concat (get a :nhints) (get a :ahints)))
+            coerced (into [] (keep-indexed
+                              (fn [i p] (when (and (pos? i) (get nh p))
+                                          [p (fresh p) (coerce-node (get nh p) {:op :local :name (nth locals i)})]))
+                              (get a :params)))
             env (reduce (fn [e pl] (assoc e (nth pl 0) {:op :local :name (nth pl 1)}))
                         {} (map vector (get a :params) locals))
+            env (reduce (fn [e c] (assoc e (nth c 0) {:op :local :name (nth c 1)})) env coerced)
             ;; the copy names the method it came from, called at the site's
             ;; line, as a guarded splice names its fn (stamp-inline)
             fqn (get hit :fqn)
@@ -1409,6 +1419,15 @@
             body (if (and fqn at) (stamp-inline body fqn at (get node :inline-chain)) body)
             rbody (spec-walk (prefix-psites (subst body env (get hit :ns)) (get node :psite))
                              (inc depth) lookup)
+            ;; ...and a ^double/^long return hint coerces what it returns, as a
+            ;; return coercion (splice-parts)
+            ret (get a :ret-nhint)
+            rbody (if (or (= ret :double) (= ret :long))
+                    (assoc (coerce-node ret rbody) :return? true)
+                    rbody)
+            rbody (if (seq coerced)
+                    {:op :let :bindings (mapv (fn [c] [(nth c 1) (nth c 2)]) coerced) :body rbody}
+                    rbody)
             test {:op :proto-guard :fn {:op :local :name fv} :recv {:op :local :name (first locals)}
                   :ns (get f :ns) :name (get f :name) :proto (nth pk 0) :method (nth pk 1)
                   :desc (get hit :desc) :k (get hit :k)

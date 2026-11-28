@@ -76,6 +76,8 @@
          (mk (if (or (null? rest) (null? (cdr rest))) #f (cadr rest)))
          (cls (if (or (null? rest) (null? (cdr rest)) (null? (cddr rest))) #f (caddr rest))))
     (jolt-with-mutex fn-form-tbl-mu
+      (fn-name-note! name)
+      (fn-flags-note! name)
       (hashtable-set! fn-form-tbl name
                       (vector form ns free-names
                               (if (or (not lv) (jolt-nil? lv)) free-names lv)
@@ -123,8 +125,49 @@
 ;; registration with no form.
 (define fn-class-only-tbl (make-hashtable string-hash string=?))
 (define (image-register-fn-class! name cls)
-  (jolt-with-mutex fn-form-tbl-mu (hashtable-set! fn-class-only-tbl name cls))
+  (jolt-with-mutex fn-form-tbl-mu
+    (fn-name-note! name)
+    (hashtable-set! fn-class-only-tbl name cls))
   jolt-nil)
+
+;; Names registered more than once. A literal inside a def takes the same name
+;; each time the def is evaluated, and a namespace loaded from the AOT cache
+;; never advanced this process's literal counter, so a later literal in it can
+;; take a cached one's name. The closures made under the earlier registration
+;; carry the same code name as the later ones, so a name seen twice no longer
+;; says which source a procedure came from: the runtime specializer
+;; (specialize.ss spec-owner-reg) leaves such a literal alone. Under
+;; fn-form-tbl-mu.
+(define fn-name-reused (make-hashtable string-hash string=?))
+(define (fn-name-note! name)
+  (when (or (hashtable-contains? fn-form-tbl name) (hashtable-contains? fn-class-only-tbl name))
+    (hashtable-set! fn-name-reused name #t)))
+(define (fn-name-reused? name)
+  (jolt-with-mutex fn-form-tbl-mu (hashtable-contains? fn-name-reused name)))
+
+;; The compile flags in force where a literal was compiled, which a recompile of
+;; its source (specialize.ss) must compile under too: the loader binds
+;; *unchecked-math* and *assert* per file, and a registration runs as its form
+;; loads, inside that binding. Kept only when either differs from its default,
+;; so a plain registration costs two derefs. name -> (unchecked-math . assert).
+(define fn-flags-tbl (make-hashtable string-hash string=?))
+(define fn-flag-cells #f)
+(define (fn-flag-cells!)
+  (or fn-flag-cells
+      (let ((u (var-cell-lookup "clojure.core" "*unchecked-math*"))
+            (a (var-cell-lookup "clojure.core" "*assert*")))
+        (and u a (begin (set! fn-flag-cells (cons u a)) fn-flag-cells)))))
+(define fn-flags-default '(#f . #t))
+(define (fn-flags-note! name)
+  (let ((cs (fn-flag-cells!)))
+    (when cs
+      (let ((um (jolt-truthy? (var-cell-deref (car cs))))
+            (as (jolt-truthy? (var-cell-deref (cdr cs)))))
+        (if (or um (not as))
+            (hashtable-set! fn-flags-tbl name (cons um as))
+            (hashtable-delete! fn-flags-tbl name))))))
+(define (fn-flags-of name)
+  (jolt-with-mutex fn-form-tbl-mu (hashtable-ref fn-flags-tbl name fn-flags-default)))
 ;; The class a registered literal's closures report, from the name its code
 ;; object carries (the literal's unique letrec name), or #f.
 (define (fn-literal-class-of-name nm)

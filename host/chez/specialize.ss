@@ -45,18 +45,26 @@
 (define spec-samples-to-trip 4)
 (define spec-samples-kept 8)
 (define spec-max-gens 4)
+;; samples one site's box takes before it retires: a site its owner's
+;; recompiles have not specialized by then is polymorphic, or its owner cannot
+;; be recompiled, and counting on would only cost every call
+(define spec-site-max-samples 64)
 
 ;; The per-call half, inlined at each site: count down, and sample on every
 ;; 1024th call. The box is the site's alone; a lost update between threads only
-;; moves a sample.
+;; moves a sample. A retired site's box holds #f and the site only reads it:
+;; once a site has had its chances (spec-site-max-samples), or the
+;; specializer is off, it stops writing a line every thread calling it shares.
 (define-syntax jolt-psite-tick!
   (syntax-rules ()
     ((_ b0 f d)
-     (let* ((b b0) (n (sa-ufx- (unbox b) 1)))
-       (set-box! b n)
-       (when (sa-ufx=? 0 (sa-ufxand n 1023)) (jolt-psite-sample! b f d))))))
+     (let* ((b b0) (n0 (unbox b)))
+       (when n0
+         (let ((n (sa-ufx- n0 1)))
+           (set-box! b n)
+           (when (sa-ufx=? 0 (sa-ufxand n 1023)) (jolt-psite-sample! b f d))))))))
 
-;; box -> (owner . path). Weak: a box lives as long as the code holding it.
+;; box -> #(owner path samples). Weak: a box lives as long as the code holding it.
 ;; Under a lock of its own, never held across anything else: code loading on
 ;; one thread makes boxes while another may be in a recompile.
 (define psite-info (make-weak-eq-hashtable))
@@ -94,7 +102,7 @@
 
 (define (jolt-psite-make owner path)
   (let ((b (box 0)))
-    (jolt-with-mutex psite-mu (hashtable-set! psite-info b (cons owner path)))
+    (jolt-with-mutex psite-mu (hashtable-set! psite-info b (vector owner path 0)))
     b))
 
 ;; The specializer's constants -- a sampled descriptor, an impl -- by index, for
@@ -145,15 +153,24 @@
               s))))
 
 (define (jolt-psite-sample! b f d)
-  (when (and spec-on (not spec-busy) (jolt-lock! spec-mu #f))
-    (dynamic-wind
-      void
-      (lambda ()
-        (unless spec-busy
+  (if (not spec-on)
+      (set-box! b #f)
+      (when (and (not spec-busy) (jolt-lock! spec-mu #f))
+        (dynamic-wind
+          void
+          (lambda () (unless spec-busy (spec-sample! b f d)))
+          (lambda () (jolt-unlock! spec-mu))))))
+
+;; Under spec-mu.
+(define (spec-sample! b f d)
           (let ((info (jolt-with-mutex psite-mu (hashtable-ref psite-info b #f))))
             (when info
-              (let ((owner (car info)) (path (cdr info)))
+              (let ((owner (vector-ref info 0)) (path (vector-ref info 1))
+                    (k (fx+ 1 (vector-ref info 2))))
+                (vector-set! info 2 k)
                 (let ((o (spec-owner-of owner)))
+                  (when (or (fx>= k spec-site-max-samples) (not (eq? (spec-owner-state o) 'open)))
+                    (set-box! b #f))
                   (when (eq? (spec-owner-state o) 'open)
                     (let ((l (cons (cons f d)
                                    (spec-take (hashtable-ref (spec-owner-profile o) path '())
@@ -167,8 +184,7 @@
                           (dynamic-wind
                             void
                             (lambda () (spec-run! owner o))
-                            (lambda () (set! spec-busy #f)))))))))))))
-      (lambda () (jolt-unlock! spec-mu)))))
+                            (lambda () (set! spec-busy #f))))))))))))
 
 ;; Where the owner's procedure is installed: each (tag proto method) whose
 ;; registered impl is the owner's literal.
@@ -198,16 +214,18 @@
       (lambda (t)
         (let ((desc (hashtable-ref chez-tag-desc (car t) #f))
               (k (intern-pm-key (cadr t) (caddr t))))
-          (when desc
-            (jolt-with-mutex rec-tbl-mu
-              (let ((pt (jrdesc-ptable desc)))
-                (when (and (vector? pt) (fx< k (vector-length pt))
-                           (let ((x (vector-ref pt k))) (or (eq? x (cadddr t)) (and cur (eq? x cur)))))
-                  (let ((new (vector-copy pt)))
-                    (vector-set! new k p)
-                    (when jolt-mt? (memory-order-release))
-                    (jrdesc-ptable-set! desc new)
-                    (set! n (fx+ n 1))))))
+          (when (and desc
+                     (jolt-with-mutex rec-tbl-mu
+                       (let ((pt (jrdesc-ptable desc)))
+                         (and (vector? pt) (fx< k (vector-length pt))
+                              (let ((x (vector-ref pt k))) (or (eq? x (cadddr t)) (and cur (eq? x cur))))
+                              (let ((new (vector-copy pt)))
+                                (vector-set! new k p)
+                                (when jolt-mt? (memory-order-release))
+                                (jrdesc-ptable-set! desc new)
+                                #t)))))
+            ;; only where it went: a vector that kept what it had keeps its name
+            (set! n (fx+ n 1))
             (protocol-impl-hook (cadr t) (caddr t) p))))
       targets)
     (hashtable-set! spec-proc-owner p owner)
@@ -364,15 +382,26 @@
 ;; registration vector -> its analyzed, numbered IR. Keyed on the vector, which
 ;; a re-registration (the form loaded again) replaces.
 (define spec-ir-cache (make-weak-eq-hashtable))
+;; THUNK under what the loader bound where literal NAME of namespace NS was
+;; compiled: *ns*, which macros read as they expand, and *unchecked-math* and
+;; *assert*, which the file may have set (fn-form-registry.ss fn-flags-of).
+(define (spec-with-context name ns thunk)
+  (let ((fl (fn-flags-of name)) (cs (fn-flag-cells!)))
+    (dyn-with-frame
+      (append (if star-ns-cell (list (cons star-ns-cell (intern-ns! ns))) '())
+              (if cs (list (cons (car cs) (car fl)) (cons (cdr cs) (cdr fl))) '()))
+      thunk)))
 (define (spec-analyze form ns)
   (let* ((ctx (make-analyze-ctx ns))
          (node (parameterize ((hc-compiling-to-run #t)) (jolt-ce-analyze ctx form))))
     (parameterize ((hc-form-guarded #t))
       (jolt-ce-run-passes node ctx (jolt-ce-current-unit)))))
 ;; The owner's registration and IR, or #f: it must close over nothing, since
-;; the source is all the recompile has.
+;; the source is all the recompile has, and its name must have been registered
+;; once, or the source may not be the one the procedure was compiled from
+;; (fn-form-registry.ss fn-name-reused).
 (define (spec-owner-reg name)
-  (let ((reg (image-fn-form-lookup name)))
+  (let ((reg (and (not (fn-name-reused? name)) (image-fn-form-lookup name))))
     (and reg
          (let ((fr (vector-ref reg 2)))
            (or (null? fr) (jolt-nil? fr) (fx= 0 (jolt-count fr))))
@@ -381,7 +410,8 @@
   (or (hashtable-ref spec-ir-cache reg #f)
       (let* ((pos (fn-pos-lookup name))
              (form (if pos (spec-form-with-pos (vector-ref reg 0) pos) (vector-ref reg 0)))
-             (ir (spec-analyze form (vector-ref reg 1))))
+             (ir (spec-with-context name (vector-ref reg 1)
+                   (lambda () (spec-analyze form (vector-ref reg 1))))))
         (hashtable-set! spec-ir-cache reg ir)
         ir)))
 
@@ -439,14 +469,14 @@
                (sir (spec-specialize-sites (spec-owner-ir owner reg) owner (spec-make-lookup o spliced))))
           (if (fx= 0 (hashtable-size spliced))
               (begin (spec-log "~a: no sampled impl has source to inline" owner) #f)
-              (let ((p (parameterize ((hc-form-guarded #t) (jolt-aot-capture #f))
+              (let ((p (spec-with-context owner (vector-ref reg 1) (lambda () (parameterize ((hc-form-guarded #t) (jolt-aot-capture #f))
                          (let ((scm (begin
                                       (set! spec-compile-count (fx+ spec-compile-count 1))
                                       (jolt-ce-emit sir (string-append "jolt$spec"
                                                                        (number->string spec-compile-count))))))
                            (when (equal? (getenv "JOLT_SPEC_DEBUG") "2")
                              (fprintf (current-error-port) "spec: ~a =>\n~a\n" owner scm))
-                           (eval (read (open-input-string scm)) (interaction-environment))))))
+                           (eval (read (open-input-string scm)) (interaction-environment))))))))
                 (and (procedure? p)
                      (let ((cn (sa-procedure-code-name p)))
                        (when cn (spec-frame-name! owner cn))
