@@ -578,7 +578,12 @@
                   ;; a DataOutputStream counts what it was given; a
                   ;; ByteArrayOutputStream holds it
                   (cond ((out-stream-data-count self) => (lambda (c) (->num (unbox c))))
-                        (else (->num (bytevector-length (baos-bytes self)))))))
+                        (else
+                         ;; Extracting resets the bytevector port position. Its
+                         ;; current position counts writes since that snapshot.
+                         (let ((st (jhost-state self)))
+                           (->num (+ (bytevector-length (vector-ref st 2))
+                                     (port-position (vector-ref st 0)))))))))
    (cons "reset" (lambda (self) (baos-bytes self) (vector-set! (jhost-state self) 2 (make-bytevector 0)) jolt-nil))
    (cons "toString" (lambda (self . cs) (decode-bytevector (baos-bytes self)
                                           (if (pair? cs) (list (jolt-str-render-one (car cs))) '()))))))
