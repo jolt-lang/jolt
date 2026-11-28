@@ -193,7 +193,10 @@
     (if r
       (let [r (if (and (= :local (get r :op)) (get node :hint) (not (get r :hint)))
                 (assoc r :hint (get node :hint))
-                r)]
+                r)
+            ;; a renamed read of a ^double let/loop local is still one
+            ;; (jolt.passes.numeric dcast-use?)
+            r (if (and (get node :dcast) (= :local (get r :op))) (assoc r :dcast true) r)]
         ;; a second splice keeps what the first one marked
         (if (and (get node :boxed-param) (or (= :local (get r :op)) (= :const (get r :op))))
           (assoc r :boxed-param true)
@@ -540,7 +543,9 @@
             k (let [f (fresh p) l {:op :local :name f}]
                 (recur (inc i) (assoc env p (if (contains? seeded p) (boxed l) l))
                        (conj binds [f (coerce-node k a)])))
-            (trivial-arg? a) (recur (inc i) (assoc env p (boxed (rec-hint a p))) binds)
+            ;; the param is a plain local in the callee: a ^double
+            ;; local passed in is not cast at the callee's arithmetic
+            (trivial-arg? a) (recur (inc i) (assoc env p (boxed (rec-hint (dissoc a :dcast) p))) binds)
             :else (let [f (fresh p)]
                     (recur (inc i)
                            (assoc env p (boxed (rec-hint {:op :local :name f} p)))

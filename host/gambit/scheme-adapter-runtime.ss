@@ -108,6 +108,13 @@
 (define (sa-total-memory-bytes)
   9223372036854775807)
 
+;; (sa-static-memory-bytes) -> exact integer
+;; The boot image's share of sa-bytes-allocated, which the heap ceiling leaves
+;; out. Contract: bytes the program's data can never use. Degradation: 0 --
+;; Gambit installs no ceiling, and has no static generation to report.
+(define (sa-static-memory-bytes)
+  0)
+
 ;; (sa-max-memory-bytes) -> exact integer
 ;; Peak heap bytes since the last sa-reset-max-memory-bytes! -- the high-water
 ;; mark behind jolt.host/maximum-memory-bytes (not the JVM's maxMemory, which

@@ -119,7 +119,7 @@ JOLT-TARGETS-NEEDING-DEPS := \
   gateboot gatebootsmoke gosm hasheq httpsfetch infer inferscaling inline inline-body guardedinline specialize specializeratio irvalidate statlayout \
   jolt jolt-debug jolt-release joltsmoke libconformance libperf mandelbrot-num mathfl mvnhttp defmetacells staticsite gcpolicy stacklimit lazyretain \
   deadhost recordshadow emittedheads mirrordrift mirrordrift-regen regexdfacheck regexdfacheck-regen regexdfa regexanchor regexanchorprims regexanchorcheck regexsyntax regexbacktrack \
-  hostarity enummodel enumregistrymodel cowpublishmodel doseqperf failfastmodel imagecoverage lazyshims narrow narrowhash numeric numwp oparity s64wrap toplevelinline pic protoret printperf remint sbperf sci selfhost shakelocal \
+  hostarity enummodel enumregistrymodel cowpublishmodel doseqperf failfastmodel imagecoverage lazyshims narrow narrowhash numeric numwp oparity rettype s64wrap toplevelinline pic protoret printperf remint sbperf sci selfhost shakelocal \
   traceemit tracecompilecost vfaslceiling \
   shakesmoke smoke sortedcoll staticnativesmoke stateimage test testbin transient unit unitcontext zlibregistersmoke zlibnativesmoke noexecsmoke \
   threadsafety maskedacquire ioerrno values wp ci
@@ -180,7 +180,7 @@ CI-GATES := submodules values flonumprint recordinline corpus nsaudit unit docum
   smoke tracesmoke errorreport errorkinds buildsmoke embeddedresources reprobuildsmoke profilebuildsmoke buildlibsmoke staticnativesmoke zlibregistersmoke sci scifunctional cts loaderconf loadercache ffi ffidupsym ffiloadfail continuations stdlibfasl zlibunit depsnounzip zlibnativesmoke zipmemory noexecsmoke \
   transient sortedcoll rrbprop rrbscaling stateimage infer inferscaling wp devirt fieldread numwp fieldnum fieldjoin contagion \
   hasheq narrowhash \
-  protoret accfix pic narrow directlink linkedrace mintgate directcall defmetacells staticsite arraymap hamt recfast recfold arraybacking largebytesgc largefxgc unitcontext numeric oparity s64wrap toplevelinline mathfl flonumdisp flarr \
+  protoret accfix pic narrow directlink linkedrace mintgate directcall defmetacells staticsite arraymap hamt recfast recfold arraybacking largebytesgc largefxgc unitcontext numeric oparity rettype s64wrap toplevelinline mathfl flonumdisp flarr \
   fnform poolshape coreproc traceemit traceeval tracecompilecost degradedbacktrace \
   inline inline-body guardedinline specialize specializeratio dcerefs shakelocal manifestcheck readmecheck portcheck mirrordrift regexdfacheck regexdfa regexanchor regexanchorprims regexanchorcheck regexreplace regexsyntax regexbacktrack deadhost recordshadow emittedheads adaptercheck hostprops normalizecheck hostregistry hostarity enummodel imagecoverage lazyshims foreignhandles dispatchalloc hostsite regexmatcher winpath winplatform winparity statlayout lockcheck mmepochcheck parkcheck shelloutcheck errnocheck irvalidate seeddefs devbootsmoke \
   gatebootsmoke aotcachesmoke aotworkersmoke aotcachepathsmoke aotcachesourcepathsmoke aotcachestarfilesmoke aotfingerprint vfaslceiling vfaslstrings vfaslbignums buildscaling buildnatives buildsegments compilepathsmoke makefilesmoke versionsmoke attributioncheck noticecheck \
@@ -736,9 +736,12 @@ footprint: testbin
 # bounds the total heap (not only the live data) within the collector's working
 # room -- 10%: Chez cannot compact in place, so a full collection over live data
 # near the limit either copies (room for a second copy) or marks in place
-# (fragments that cannot go back to the OS) --
+# (fragments that cannot go back to the OS), and leaves out the boot image as
+# -Xmx leaves out code (a 96m ceiling holds data beside a 93MB image) --
 # JOLT_MAX_RAM_PERCENTAGE sets the heap ceiling, and a bad value is refused by
-# name. Each mode is its own process, since the policy is per process.
+# name. Each mode is its own process, since the policy is per process. The
+# ceiling cases run under 196m: the room 256m left beside the 60MB boot image
+# they were sized for, so they stay near the ceiling as the image grows.
 # Recipes run under bash -e (.cache/makes/init.mk), so a capture whose process is
 # meant to fail takes `|| true` and the check after it decides; without it the
 # recipe exits there with no FAIL line (macOS's make 3.81 ignores .SHELLFLAGS,
@@ -762,25 +765,29 @@ gcpolicy: testbin
 	 full=$$(JOLT_NO_USER_DEPS=1 $$j -e '(print (.maxMemory (Runtime/getRuntime)))'); \
 	 tenth=$$(JOLT_NO_USER_DEPS=1 JOLT_MAX_RAM_PERCENTAGE=10 $$j -e '(print (.maxMemory (Runtime/getRuntime)))'); \
 	 [ $$((tenth * 25 / 10)) -le $$((full + 1)) ] && [ $$((tenth * 25 / 10)) -ge $$((full - 4)) ] || { echo "FAIL gcpolicy: JOLT_MAX_RAM_PERCENTAGE=10 gave $$tenth against $$full at the default 25"; exit 1; }; \
-	 out=$$(JOLT_NO_USER_DEPS=1 JOLT_GC_LOG=1 JOLT_MAX_HEAP=256m $$j run $$t ceiling 2>&1); \
+	 errf=$$(mktemp); \
+	 out=$$(JOLT_NO_USER_DEPS=1 JOLT_GC_LOG=1 JOLT_MAX_HEAP=196m $$j run $$t ceiling 2>"$$errf"); \
 	 set -- $$(printf '%s\n' "$$out" | sed -n 's/^peak //p'); pk=$$1; mx=$$3; \
-	 after=$$(printf '%s\n' "$$out" | sed -n 's/^gc: .* total \([0-9]*\)MB .*/\1/p' | sort -n | tail -1); \
-	 echo "gcpolicy: JOLT_MAX_HEAP=256m with ~100MB held -> total after collections $${after}MB, peak $$((pk / 1048576))MB, max $$((mx / 1048576))MB"; \
-	 [ -n "$$after" ] && [ $$((after * 1048576 * 10)) -le $$((mx * 11)) ] || { echo "FAIL gcpolicy: a collection left the total heap at $${after}MB, more than 10% over JOLT_MAX_HEAP=256m: the ceiling bounds the TOTAL heap, as -Xmx does, within the collector's working room"; exit 1; }; \
-	 [ -n "$$pk" ] && [ $$((pk * 10)) -le $$((mx * 11)) ] || { echo "FAIL gcpolicy: the total heap peaked at $$pk during collections, more than 10% over JOLT_MAX_HEAP=256m (v0.8.12 peaked 23% over)"; exit 1; }; \
+	 after=$$(sed -n 's/^gc: .* total \([0-9]*\)MB .*/\1/p' "$$errf" | sort -n | tail -1); rm -f "$$errf"; \
+	 echo "gcpolicy: JOLT_MAX_HEAP=196m with ~100MB held -> total after collections $${after}MB, peak $$((pk / 1048576))MB, max $$((mx / 1048576))MB"; \
+	 [ -n "$$after" ] && [ $$((after * 1048576 * 10)) -le $$((mx * 11)) ] || { echo "FAIL gcpolicy: a collection left the total heap at $${after}MB, more than 10% over JOLT_MAX_HEAP=196m: the ceiling bounds the TOTAL heap, as -Xmx does, within the collector's working room"; exit 1; }; \
+	 [ -n "$$pk" ] && [ $$((pk * 10)) -le $$((mx * 11)) ] || { echo "FAIL gcpolicy: the total heap peaked at $$pk during collections, more than 10% over JOLT_MAX_HEAP=196m (v0.8.12 peaked 23% over)"; exit 1; }; \
 	 fdir=$$(mktemp -d); \
 	 for pad in 0 1024 4096 8192; do \
-	   set -- $$(cd "$$fdir" && JOLT_NO_USER_DEPS=1 JOLT_MAX_HEAP=256m "$(CURDIR)/$$j" run "$(CURDIR)/test/gc_ceiling_forced_test.clj" $$pad 2>&1 | sed -n 's/^peak //p'); pk=$$1; mx=$$3; \
+	   set -- $$(cd "$$fdir" && JOLT_NO_USER_DEPS=1 JOLT_MAX_HEAP=196m "$(CURDIR)/$$j" run "$(CURDIR)/test/gc_ceiling_forced_test.clj" $$pad 2>&1 | sed -n 's/^peak //p'); pk=$$1; mx=$$3; \
 	   echo "gcpolicy: a ceiling-forced full collection with ~140MB spread over the older generations, $${pad}KB more at boot -> peak $$(($${pk:-0} / 1048576))MB"; \
-	   [ -n "$$pk" ] && [ $$((pk * 10)) -le $$((mx * 11)) ] || { rmdir "$$fdir"; echo "FAIL gcpolicy: the heap peaked at $${pk:-?} near the ceiling with $${pad}KB more at boot, more than 10% over JOLT_MAX_HEAP=256m: a collection under the ceiling copied more than the room left (a whole generation beside its sources; sa-collect-young!, sa-collect-tight; jolt-exoj)"; exit 1; }; \
+	   [ -n "$$pk" ] && [ $$((pk * 10)) -le $$((mx * 11)) ] || { rmdir "$$fdir"; echo "FAIL gcpolicy: the heap peaked at $${pk:-?} near the ceiling with $${pad}KB more at boot, more than 10% over JOLT_MAX_HEAP=196m: a collection under the ceiling copied more than the room left (a whole generation beside its sources; sa-collect-young!, sa-collect-tight; jolt-exoj)"; exit 1; }; \
 	 done; rmdir "$$fdir"; \
+	 set -- $$(JOLT_NO_USER_DEPS=1 JOLT_MAX_HEAP=96m $$j run $$t boot 2>&1 | sed -n 's/^boot held //p'); \
+	 echo "gcpolicy: JOLT_MAX_HEAP=96m beside a $$(($${3:-0} / 1048576))MB boot image held $${1:-nothing}, totalMemory $$(($${7:-0} / 1048576))MB of maxMemory $$(($${5:-0} / 1048576))MB"; \
+	 [ "$${1:-}" = 300000 ] && [ "$${5:-}" = 100663296 ] && [ $$(($${7:-0} * 10)) -le $$(($$5 * 11)) ] || { echo "FAIL gcpolicy: the ceiling counted the boot image: under JOLT_MAX_HEAP=96m a program could not hold ~50MB, or totalMemory went past maxMemory (the ceiling leaves the image out, as -Xmx leaves out code and metaspace)"; exit 1; }; \
 	 set -- $$(JOLT_NO_USER_DEPS=1 $$j run $$t refresh 2>&1 | sed -n 's/^growth //p'); \
 	 echo "gcpolicy: older generations' allowance with ~100MB held $$(($${1:-0} / 1048576))MB, after dropping it and System/gc $$(($${2:-0} / 1048576))MB"; \
 	 [ -n "$${2:-}" ] && [ "$$1" -gt 67108864 ] && [ "$$2" -ge 67108864 ] && [ $$(($$2 * 2)) -lt "$$1" ] || { echo "FAIL gcpolicy: System/gc did not re-measure the live set the older generations' allowance is sized from"; exit 1; }; \
 	 st=$$(JOLT_NO_USER_DEPS=1 $$j run $$t startup 2>&1 | sed -n 's/^trip //p'); \
 	 echo "gcpolicy: a sub-millisecond first reading then cheap collections -> nursery $$st"; \
 	 [ "$$st" = "$$floor" ] || { echo "FAIL gcpolicy: one collection right after startup grew the nursery to $${st:-?} (the share must weigh collections by their time, and wait for five)"; exit 1; }; \
-	 set -- $$(JOLT_NO_USER_DEPS=1 JOLT_GC_TRIP_BYTES=16m JOLT_GC_LOG=1 $$j run $$t walk 2>&1 | sed -n 's/^gc: .* heap \([0-9]*\)MB .*/\1/p' | sort -n | sed -n '1p;$$p'); \
+	 set -- $$(JOLT_NO_USER_DEPS=1 JOLT_GC_TRIP_BYTES=16m JOLT_GC_LOG=1 $$j run $$t walk 2>&1 >/dev/null | sed -n 's/^gc: .* heap \([0-9]*\)MB .*/\1/p' | sort -n | sed -n '1p;$$p'); \
 	 echo "gcpolicy: a lazy-seq walk's heap after each collection ranged $${1:-?}MB..$${2:-?}MB"; \
 	 [ -n "$${2:-}" ] && [ $$(($$2 - $$1)) -le 4 ] || { echo "FAIL gcpolicy: the heap after a lazy-seq walk's collections climbed from $${1:-?}MB to $${2:-?}MB: a dead promoted cell is rooting the cells realized after it (nepotism; see sa-collect-young!)"; exit 1; }; \
 	 oh=$$(JOLT_NO_USER_DEPS=1 JOLT_MAX_HEAP=1g JOLT_GC_TIME_LIMIT=0 JOLT_GC_HEAP_FREE_LIMIT=100 $$j run $$t churn 2>&1) || true; \
@@ -906,7 +913,15 @@ fastpathratio: testbin
 # with var-cache off (every var ref looked up by name, 2-7x slower). A
 # QUIET-GATE: CI runs it after the rest of its shard, not beside it.
 stdlibratio: testbin
-	@JOLT_NO_USER_DEPS=1 target/release/jolt run test/stdlib_compile_ratio_test.clj
+	@if JOLT_NO_USER_DEPS=1 target/release/jolt run test/stdlib_compile_ratio_test.clj >target/stdlibratio.out 2>&1; then \
+	  cat target/stdlibratio.out; \
+	else \
+	  cat target/stdlibratio.out; \
+	  only=$$(sed -n 's/^  - \([^:]*\): ratio .*/\1/p' target/stdlibratio.out | paste -sd, -); \
+	  if [ -z "$$only" ]; then exit 1; fi; \
+	  echo; echo "stdlibratio: judging $$only again in a fresh process"; \
+	  STDLIBRATIO_ONLY="$$only" JOLT_NO_USER_DEPS=1 target/release/jolt run test/stdlib_compile_ratio_test.clj; \
+	fi
 
 # The 2026-08 sweep's remaining hot-path shapes in one gate: split-with-limit,
 # core.async timeout arming, ArrayDeque/StringTokenizer draining, ns-publics/
@@ -1527,6 +1542,13 @@ s64wrap:
 # lower arithmetic to Chez fl*/fx* ops; un-hinted integer code stays generic.
 numeric:
 	@$(CHEZ) --script test/chez/numeric-test.ss
+
+# The return-type claims the types pass and checker trust (op-registry
+# :num-result?/:bool?/:num-args?/:dbl-contagion?, lattice's vector-/str-ret
+# tables), run against the actual functions on representative values of every
+# lattice class. A wrong entry is a silent miscompile; see rettype-check.clj.
+rettype:
+	@$(CHEZ) --script test/chez/rettype-test.ss
 
 # java.lang.Math over proven flonum operands lowers to the native Chez flonum op
 # (flsqrt/flatan/…), result typed :double so flonum contagion holds; an untyped

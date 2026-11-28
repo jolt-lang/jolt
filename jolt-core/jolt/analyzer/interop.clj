@@ -5,7 +5,8 @@
   core arithmetic/cast rewrites. Answers names and forms; never analyzes."
   (:require [jolt.host :refer [resolve-global resolve-class-hint host-class-name?
                                namespace-for ns-shaped-name? late-bound-namespace?
-                               allow-unresolved-vars? compile-ns invoke-rewriter]]
+                               allow-unresolved-vars? compile-ns invoke-rewriter
+                               form-sym? form-sym-name form-sym-meta]]
             [jolt.analyzer.diagnostics :refer [analysis-error]]))
 
 ;; A `.-field` head: `(.-field target)` is field access (the dash signals field
@@ -139,13 +140,26 @@
 
 (defn unchecked-arith [hname n]
   (cond
-    (= hname "+") "unchecked-add"
-    (= hname "*") "unchecked-multiply"
-    (= hname "-") (if (= n 2) "unchecked-negate" "unchecked-subtract")
+    ;; The JVM inlines + and * only from two args up (:inline-arities >1?), so
+    ;; (+ a), (+) and (*) stay the ordinary fns; - inlines from one, as a negate.
+    (= hname "+") (when (>= n 3) "unchecked-add")
+    (= hname "*") (when (>= n 3) "unchecked-multiply")
+    (= hname "-") (cond (= n 2) "unchecked-negate" (>= n 3) "unchecked-subtract")
     (= hname "inc") "unchecked-inc"
     (= hname "dec") "unchecked-dec"
     :else (when-let [[arity target] (get unchecked-int-ops hname)]
             (when (= n arity) target))))
+
+;; The form an unchecked-arith rewrite analyzes: the op over the call's args, and
+;; past two args the left-nested pairs clojure.core's nary-inline expands to, since
+;; unchecked-add/-subtract/-multiply take exactly two: (+ a b c) is
+;; (unchecked-add (unchecked-add a b) c).
+(defn unchecked-form [unm args]
+  (let [op (symbol unm)]
+    (if (and (> (count args) 2)
+             (contains? #{"unchecked-add" "unchecked-subtract" "unchecked-multiply"} unm))
+      (reduce (fn [acc a] (list op acc a)) (list op (first args) (second args)) (drop 2 args))
+      (cons op args))))
 
 ;; A clojure.core numeric cast (double/long/int/float/byte/short of one arg)
 ;; becomes a :coerce node carrying the checked runtime helper, so it feeds the
@@ -196,3 +210,36 @@
     (let [r (resolve-global ctx head)]
       (when (= :var (:kind r))
         (f (:ns r) (:name r) form)))))
+
+;; class names that catch everything (the JVM root types); a (catch Throwable e …)
+;; clause matches any thrown value unconditionally.
+(def ^:private catch-all-names #{"Throwable" "java.lang.Throwable" "Object" "java.lang.Object"})
+
+;; The catch clauses as ONE form over the caught value `evar`: a nested-if chain
+;; testing each clause's class in order, re-throwing when none matches.
+(defn catch-dispatch-form [evar catches]
+  (reduce
+    (fn [else cl]
+      (let [cform (nth cl 1)
+            ;; the binding has the caught class, as the JVM's catch local does,
+            ;; so a host call on it resolves (hints.clj node-jclass)
+            bindsym (let [b (nth cl 2) m (form-sym-meta b)]
+                      (if (and (form-sym? cform) (not (and (map? m) (get m :tag))))
+                        (with-meta b (assoc (if (map? m) m {}) :tag cform))
+                        b))
+            bodyf (drop 3 cl)
+            ;; clojure.core-qualified: a ns that excludes (or
+            ;; :only-omits) let/or/instance? and defines its
+            ;; own must still get core's here (jolt#1095).
+            letform (cons 'clojure.core/let (cons (vector bindsym evar) bodyf))
+            fullname (when (form-sym? cform) (form-sym-name cform))
+            catch-all? (or (not (form-sym? cform))
+                           (contains? catch-all-names fullname))]
+        (if catch-all?
+          letform
+          (list 'if (list 'clojure.core/or
+                          (list 'clojure.core/instance? cform evar)
+                          (list 'clojure.core/__catch-broad? fullname evar))
+                letform else))))
+    (list 'throw evar)
+    (reverse catches)))

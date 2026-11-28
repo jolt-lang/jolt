@@ -74,8 +74,9 @@
          (cond ((> r jolt-math-long-max) jolt-math-long-max)
                ((< r jolt-math-long-min) jolt-math-long-min)
                (else (exact r))))))))
-(define (jolt-math-to-degrees r) (/ (* r 180.0) jolt-math-pi))
-(define (jolt-math-to-radians d) (/ (* d jolt-math-pi) 180.0))
+;; JDK 21 multiplies by one rounded constant; dividing pi*d by 180 rounds twice
+(define (jolt-math-to-degrees r) (fl* (exact->inexact r) 57.29577951308232))
+(define (jolt-math-to-radians d) (fl* (exact->inexact d) 0.017453292519943295))
 ;; java.lang.Math.hypot — scale by a power of 2 (exact) so a^2+b^2 can't overflow
 ;; before the sqrt; the only rounding is the correctly-rounded sqrt. NaN->NaN,
 ;; either Inf -> +Inf. (Naive sqrt(a^2+b^2) returns Inf for 3e200,4e200.)
@@ -283,11 +284,13 @@
 ;; Math.pow, and clojure.math/pow which is it: Java's special cases, not C's. A
 ;; NaN exponent is NaN even over a base of 1.0, and a base of magnitude 1.0 to an
 ;; infinite power is NaN, where expt (C's pow) answers 1.0 for both. The proven-
-;; double lowering, jolt-fl-pow in seq.ss, makes the same two checks.
+;; double lowering, jolt-fl-pow in seq.ss, makes the same two checks, and the
+;; same squaring: a double to the power 2.0 is a*a, as HotSpot answers, where
+;; the host pow can land an ulp away.
 (define (jolt-math-pow a b)
-  (if (or (nan? b) (and (infinite? b) (= (abs a) 1.0)))
-      +nan.0
-      (real-or-nan (expt a b))))
+  (cond ((and (flonum? a) (flonum? b) (fl= b 2.0)) (fl* a a))
+        ((or (nan? b) (and (infinite? b) (= (abs a) 1.0))) +nan.0)
+        (else (real-or-nan (expt a b)))))
 ;; the clojure.math fns implemented above take their numbers as given; these
 ;; take any jolt number first, as the m1/m2 wrappers do (a Float is the double
 ;; it widens to, which is what clojure.math's ^double parameters receive)
@@ -495,7 +498,9 @@
 
 (define math-float-overloads
   (list
-    (math-float-overload "abs" abs (lambda (d) (make-jfloat (abs d))))
+    ;; abs(long) wraps: Long.MIN_VALUE is its own absolute value
+    (math-float-overload "abs" (lambda (x) (if (and (exact? x) (integer? x)) (jvm-wrap (abs x) 64) (abs x)))
+                         (lambda (d) (make-jfloat (abs d))))
     (math-float-overload "signum" jolt-math-signum (lambda (d) (make-jfloat (jolt-math-signum d))))
     (math-float-overload "ulp" jolt-math-ulp (lambda (d) (make-jfloat (flt-ulp d))))
     (math-float-overload "nextUp" jolt-math-next-up (lambda (d) (make-jfloat (flt-next-up d))))
@@ -520,7 +525,8 @@
     (both-floats "min" jolt-math-min jolt-math-min)
     (both-floats "copySign" jolt-math-copy-sign jolt-math-copy-sign)))
 
-(register-class-statics! "Math"
+;; StrictMath has the same statics (jolt answers both with the host libm)
+(define math-statics
   (append math-float-overloads
   (map math-checked
   (list (cons "sqrt" (lambda (x) (real-or-nan (sqrt x))))
@@ -536,7 +542,6 @@
         (cons "ceil" (lambda (x) (->dbl (ceiling x))))
         (cons "rint" (lambda (x) (->dbl (round x))))            ; round-half-even -> double
         ;; Math.floorDiv/floorMod: integer floor division / modulus (long -> long).
-        (cons "floorDiv" (lambda (a b) (if (zero? b) (jolt-l-div0-throw) (exact (floor (/ a b))))))
         (cons "floorMod" (lambda (a b) (if (zero? b) (jolt-l-div0-throw) (exact (- a (* b (floor (/ a b))))))))
         (cons "sin" (lambda (x) (->dbl (sin x)))) (cons "cos" (lambda (x) (->dbl (cos x))))
         (cons "tan" (lambda (x) (->dbl (tan x)))) (cons "asin" (lambda (x) (real-or-nan (asin x))))
@@ -549,8 +554,8 @@
         (cons "log1p" (lambda (x) (jolt-math-log1p (->dbl x))))
         (cons "exp" (lambda (x) (->dbl (exp x))))
         (cons "expm1" (lambda (x) (jolt-math-expm1 (->dbl x))))
-        (cons "toRadians" (lambda (d) (->dbl (/ (* d jolt-math-pi) 180.0))))
-        (cons "toDegrees" (lambda (r) (->dbl (/ (* r 180.0) jolt-math-pi))))
+        (cons "toRadians" (lambda (d) (jolt-math-to-radians d)))
+        (cons "toDegrees" (lambda (r) (jolt-math-to-degrees r)))
         ;; the IEEE 754 bit-level ops and the exact long arithmetic, shared with
         ;; clojure.math; test.check's double generator uses
         ;; getExponent and scalb
@@ -563,6 +568,11 @@
         (cons "negateExact" (lambda (a) (jolt-math-negate-exact a)))
         (cons "PI" jolt-math-pi) (cons "E" jolt-math-e)
         (cons "random" (lambda args (jolt-random 1.0)))))))
+(register-class-statics! "Math" math-statics)
+(register-class-statics! "StrictMath" math-statics)
+;; Integer/valueOf: a call no overload fits at compile time takes the
+;; Reflector's member (records-interop.ss); Math's are math-int.ss's.
+(register-reflect-member! "java.lang.Integer" "Integer" "valueOf" 1)
 
 ;; ---- Double / Float bit casts -----------------------------------------------
 ;; Over the bit patterns above, as the JVM's signed long/int. doubleToLongBits

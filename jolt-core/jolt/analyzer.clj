@@ -50,18 +50,20 @@
             [jolt.analyzer.hints :refer [jvm-boolean-prim? jvm-non-boolean-class hint-of
                                          init-proves-hint add-hint tag->nkind ahint-of
                                          sym-tag-class init-jclass add-jclass
+                                         binding-jlocal add-jlocal loop-body note-recur! *jmemo* jmemo
                                          host-call-arg-casts static-invoke host-call-target-class
                                          with-ret-nhint fi-tag-class fi-adapt-form
                                          parse-params strip-arglist-meta arglist-ret-nkind arglist-type-method? arglist-meta
-                                         str-target-type kw-target-type sb-target-type]]
+                                         str-target-type kw-target-type sb-target-type
+                                         double-hinted?]]
             [jolt.analyzer.tree :refer [check-recur-tails! fn-free-names check-fn-arities]]
             [jolt.analyzer.ffi :refer [analyze-ffi-layout analyze-ffi-fn analyze-ffi-pointer-fn
                                        analyze-ffi-signature-type]]
             [jolt.analyzer.native :refer [native-form? analyze-native-region]]
-            [jolt.analyzer.interop :refer [field-head? method-head? ctor-head?
+            [jolt.analyzer.interop :refer [catch-dispatch-form field-head? method-head? ctor-head?
                                            array-class-dims array-class-name
                                            method-value-form static-class-ns
-                                           unchecked-arith num-cast invoke-rewrite]]))
+                                           unchecked-arith unchecked-form num-cast invoke-rewrite]]))
 
 (declare analyze)
 ;; the quote arm reaches it well before its definition (it needs analyze itself)
@@ -216,7 +218,9 @@
   (-> env
       (update :locals #(reduce conj % names))
       (update :hints #(reduce dissoc % names))
+      (update :dcasts #(reduce disj (or % #{}) names))
       (update :jclasses #(reduce dissoc % names))
+      (update :jlocals #(reduce dissoc % names))
       (update :jprims #(reduce dissoc % names))))
 ;; &env value handed to a macro: a map of each in-scope local SYMBOL to nil
 ;; (Clojure's &env maps locals to compiler binding objects; consumers like
@@ -283,12 +287,17 @@
               ;; one, a splice replaces an invoke), and a key on the old node was
               ;; lost with it. The back end emits an array-kind coerce as its expr.
               ak (ahint-of ctx bsym)
-              init (if ak (coerce-node ak init0) init0)]
+              init (if ak (coerce-node ak init0) init0)
+              ;; a let nested in an argument types its locals from their inits,
+              ;; not seeing the tag that types this one (hints.clj jvm-type)
+              init (if (get (form-sym-meta bsym) :tag) (assoc init :jtag true) init)]
           ;; an explicit hint wins; init-proves-hint only fills in where the
           ;; programmer wrote nothing.
           (recur (+ i 2) (let [e (-> (add-locals env [nm])
+                                     (cond-> (double-hinted? ctx bsym) (update :dcasts (fnil conj #{}) nm))
                                      (add-hint nm (or (hint-of ctx bsym) (init-proves-hint init)))
-                                     (add-jclass nm (or (sym-tag-class ctx bsym) (init-jclass ctx init env))))]
+                                     (add-jclass nm (or (sym-tag-class ctx bsym) (init-jclass ctx init env)))
+                                     (add-jlocal nm (binding-jlocal ctx bsym init env)))]
                            (if (jvm-boolean-prim? init env)
                              (assoc-in e [:jprims nm] :boolean)
                              e))
@@ -411,6 +420,7 @@
         env0 (-> (add-locals env names) (with-recur rname (+ (count fixed) (if rst 1 0))))
         env* (reduce (fn [e pr] (add-hint e (nth pr 0) (nth pr 1))) env0 (:hints pp))
         env* (reduce (fn [e pr] (add-jclass e (nth pr 0) (nth pr 1))) env* (:jclasses pp))
+        env* (reduce (fn [e pr] (add-jlocal e (nth pr 0) (nth pr 1))) env* (:jlocals pp))
         ;; One of the two recur-target roots (the other is loop*): the body is
         ;; where a recur against THIS arity may legally sit, so it is where the
         ;; tail-position check starts.
@@ -535,9 +545,6 @@
         node (if (and (map? hm) (get hm :once)) (assoc node :once true) node)]
     node))
 
-;; class names that catch everything (the JVM root types); a (catch Throwable e …)
-;; clause matches any thrown value unconditionally.
-(def ^:private catch-all-names #{"Throwable" "java.lang.Throwable" "Object" "java.lang.Object"})
 
 ;; Fold one try clause into {:body :catches :finally :finally?}.
 ;; Clause ordering, like the JVM: body exprs, then catches, then at most one
@@ -569,35 +576,6 @@
             (analysis-error :analyze/invalid-try
                   "Only catch or finally clause can follow catch in try expression"))
           (update acc :body conj c)))))
-
-;; The catch clauses as ONE form over the caught value `evar`: a nested-if chain
-;; testing each clause's class in order, re-throwing when none matches.
-(defn- catch-dispatch-form [evar catches]
-  (reduce
-    (fn [else cl]
-      (let [cform (nth cl 1)
-            ;; the binding has the caught class, as the JVM's catch local does,
-            ;; so a host call on it resolves (hints.clj node-jclass)
-            bindsym (let [b (nth cl 2) m (form-sym-meta b)]
-                      (if (and (form-sym? cform) (not (and (map? m) (get m :tag))))
-                        (with-meta b (assoc (if (map? m) m {}) :tag cform))
-                        b))
-            bodyf (drop 3 cl)
-            ;; clojure.core-qualified: a ns that excludes (or
-            ;; :only-omits) let/or/instance? and defines its
-            ;; own must still get core's here (jolt#1095).
-            letform (cons 'clojure.core/let (cons (vector bindsym evar) bodyf))
-            fullname (when (form-sym? cform) (form-sym-name cform))
-            catch-all? (or (not (form-sym? cform))
-                           (contains? catch-all-names fullname))]
-        (if catch-all?
-          letform
-          (list 'if (list 'clojure.core/or
-                          (list 'clojure.core/instance? cform evar)
-                          (list 'clojure.core/__catch-broad? fullname evar))
-                letform else))))
-    (list 'throw evar)
-    (reverse catches)))
 
 (defn- analyze-try [ctx form items env]
   (let [env (if (wraps? (or (:here env) :expression) :try) (wrapper-env ctx form env) env)
@@ -902,8 +880,10 @@
 
 (defn- analyze-let* [ctx form items env]
   (let [env (if (wraps? (:here env) :let) (wrapper-env ctx form env) env)
-        [pairs env*] (analyze-bindings ctx (binding-vector items) env)]
-    (let-node pairs (analyze-body ctx (drop 2 items) env* (or (:here env) :expression)))))
+        bvec (binding-vector items)
+        [pairs env*] (analyze-bindings ctx bvec env)
+        node (let-node pairs (analyze-body ctx (drop 2 items) env* (or (:here env) :expression)))]
+    node))
 
 (defn- analyze-loop* [ctx form items env]
   (let [hm (form-sym-meta (first items))
@@ -922,7 +902,7 @@
                         :recur-locals (mapv first pairs))
         ;; The other recur-target root (see analyze-arity): a recur
         ;; against THIS loop may only sit in tail position of its body.
-        body-node (analyze-body ctx (drop 2 items) body-env :return)]
+        body-node (loop-body ctx (mapv first pairs) body-env #(analyze-body ctx (drop 2 items) % :return))]
     (check-recur-tails! body-node)
     {:op :loop :bindings pairs :body body-node}))
 
@@ -965,7 +945,7 @@
     ;; this recur was written. nil for a macro-built recur with no
     ;; reader metadata, which falls back to the enclosing form.
     (let [args (mapv #(analyze ctx % env) (rest items))
-          _ (check-recur-prims! env args)
+          _ (do (check-recur-prims! env args) (note-recur! ctx env args))
           node {:op :recur :args args}
           p (form-position form)]
       (if p (assoc node :pos p) node))))
@@ -1391,7 +1371,9 @@
   (let [nm (form-sym-name form) ns (form-sym-ns form)]
     (cond
       (and (nil? ns) (local? env nm))
-        (let [h (get (:hints env) nm)] (if h (assoc (local nm) :hint h) (local nm)))
+        (let [h (get (:hints env) nm)
+              n (if h (assoc (local nm) :hint h) (local nm))]
+          (if (contains? (:dcasts env) nm) (assoc n :dcast true) n))
       ns (analyze-qualified-symbol ctx form nm ns env)
       :else (analyze-global-symbol ctx form nm env))))
 
@@ -1652,7 +1634,7 @@
         (cond
           ;; *unchecked-math* rewrite, before macro/special dispatch (these are
           ;; ordinary core fns). The unchecked-* form re-analyzes normally.
-          unm (analyze ctx (cons (symbol unm) (rest items)) env)
+          unm (analyze ctx (unchecked-form unm (rest items)) env)
           ;; Canonical order (Clojure/CLJS analyze-seq): macroexpand FIRST, then
           ;; dispatch special forms / interop / invoke. A local shadows the macro.
           ;; A true special form is NOT shadowable by a same-named macro, matching
@@ -1818,6 +1800,12 @@
     ;; fasl and a built binary and does not need a process-local side table.
     :else (embedded-value ctx form env)))
 
+;; A form written with a ^tag: the JVM compiler types it by the tag, which jolt
+;; does not model for an argument's type (hints.clj jvm-type takes it as
+;; :unknown).
+(defn- jtag-node [node m]
+  (if (and (map? m) (get m :tag)) (assoc node :jtag true) node))
+
 (defn analyze
   ([ctx form]
    ;; One position box per compilation, over the catch too — as-analysis-diagnostic
@@ -1830,7 +1818,7 @@
    ;; :compile-syntax-check, not the outer macro's run.
    (binding [*positioned-form-box* (or *positioned-form-box* (atom nil))
              *expansion-box* (or *expansion-box* (atom nil))
-             *macro-run-box* (atom nil)]
+             *macro-run-box* (atom nil) *jmemo* (or *jmemo* (jmemo))]
      (try
        ;; ` is a reader macro in Clojure, so a form is already past its backticks
        ;; by the time anything looks at it. jolt reads one to a marker and lowers
@@ -1848,7 +1836,7 @@
   ([ctx form env]
    (cond
      (form-literal? form) (const form)
-     (form-sym? form) (analyze-symbol ctx form env)
+     (form-sym? form) (jtag-node (analyze-symbol ctx form env) (form-sym-meta form))
      (and (or (:top? env) (:def-name env) (not (contains? #{:expression :eval} (:cx env))))
           (or (form-vec? form) (form-map? form) (form-set? form)))
      ;; a collection's elements are expressions (:eval under :eval); at top
@@ -1863,5 +1851,5 @@
                                         (form-map-pairs form))))
      (form-set? form) (with-coll-meta ctx form env
                         (set-node (mapv #(analyze ctx % env) (form-set-items form))))
-     (form-list? form) (analyze-list ctx form env)
+     (form-list? form) (jtag-node (analyze-list ctx form env) (form-coll-meta form))
      :else (analyze-leaf ctx form env))))

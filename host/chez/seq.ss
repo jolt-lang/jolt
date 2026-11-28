@@ -1598,10 +1598,6 @@
         ((number? x) (- x))
         ((jfloat? x) (fl- (jfloat-fl x)))
         (else (jolt-sub2 0 x))))
-(define (jolt-unchecked-add . xs) (if (null? xs) 0 (fold-left jolt-uncadd2 (car xs) (cdr xs))))
-(define (jolt-unchecked-mul . xs) (if (null? xs) 1 (fold-left jolt-uncmul2 (car xs) (cdr xs))))
-(define (jolt-unchecked-sub . xs)
-  (cond ((null? xs) 0) ((null? (cdr xs)) (jolt-uncneg (car xs))) (else (fold-left jolt-uncsub2 (car xs) (cdr xs)))))
 ;; The -int family is Numbers.unchecked_int_add(int, int) and its siblings: the
 ;; compiler casts EACH operand to int before the op, and only the op wraps. So
 ;; (unchecked-add-int 1/2 1/2) is 0 + 0 and (unchecked-add-int 1.5 1.5) is 2.
@@ -1765,27 +1761,34 @@
 (define (jolt-floor-quotient a b)
   (when (eqv? b 0) (jolt-l-div0-throw))
   (let ((q (quotient a b)))
-    (if (and (not (eqv? 0 (remainder a b)))
-             (if (negative? b) (positive? a) (negative? a)))
-        (- q 1)
-        q)))
+    (cond ((and (not (eqv? 0 (remainder a b)))
+                (if (negative? b) (positive? a) (negative? a)))
+           (- q 1))
+          ((eqv? q 9223372036854775808) -9223372036854775808)     ; Long.MIN_VALUE / -1 wraps
+          (else q))))
 ;; Math.abs. Deliberately the generic `abs`, not fxabs: a :long is only promised
 ;; to be within the 64-bit range, not Chez's 61-bit fixnum range (jolt-l-checked
 ;; accepts the wider one), and fxabs additionally raises on the most-negative
 ;; fixnum. The win here is against host-static-call's string-keyed method lookup,
 ;; beside which fixnum-vs-generic abs is noise. Named (and jolt- prefixed) so the
 ;; emitted head cannot be shadowed by a user local.
+;; Math.abs(long) wraps: Long.MIN_VALUE, the one long whose absolute value is
+;; not a long, is its own.
 (define-syntax jolt-l-abs
-  (syntax-rules () ((_ a) (abs a))))
+  (syntax-rules () ((_ a) (let ((r (abs a)))
+                            (if (eqv? r 9223372036854775808) -9223372036854775808 r)))))
 ;; Math.pow over proven doubles. Java's pow is not C's: a NaN exponent is NaN
 ;; even for a base of 1.0, and so is a base of magnitude 1.0 to an infinite
 ;; power, where flexpt (C's pow) answers 1.0. Every other special case agrees.
+;; An exponent of 2.0 is the one multiply a*a, which is what HotSpot answers:
+;; glibc's pow is only within an ulp, so (Math/pow -135965.65000000002 2)
+;; came out one ulp above the JVM's, and the multiply is also far cheaper.
 (define-syntax jolt-fl-pow
   (syntax-rules ()
     ((_ ea eb) (let ((a ea) (b eb))
-                 (if (or (nan? b) (and (infinite? b) (fl= (flabs a) 1.0)))
-                     +nan.0
-                     (flexpt a b))))))
+                 (cond ((fl= b 2.0) (fl* a a))
+                       ((or (nan? b) (and (infinite? b) (fl= (flabs a) 1.0))) +nan.0)
+                       (else (flexpt a b)))))))
 (define-syntax jolt-l-inc (syntax-rules () ((_ a) (jolt-l-checked (+ a 1)))))
 (define-syntax jolt-l-dec (syntax-rules () ((_ a) (jolt-l-checked (- a 1)))))
 

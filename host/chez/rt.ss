@@ -606,6 +606,19 @@
 (define jolt-heap-ceiling-bytes #f)      ; #f until installed; #f = unbounded
 (define jolt-gc-policy-installed? #f)
 (define (jolt-heap-max-bytes) jolt-heap-ceiling-bytes)
+;; The ceiling bounds the program's heap, not the boot image: -Xmx leaves out
+;; the JVM's code cache and metaspace, and the boot image (Chez's static
+;; generation: the compiled runtime and stdlib) is jolt's equivalent. Counting
+;; it, JOLT_MAX_HEAP=256m gave 0.8.12's programs ~196MB and 0.8.31's ~163MB,
+;; as the image grew from 60MB to 93MB, and a 96m ceiling could not hold the
+;; runtime at all. Chez's own counters include the image, so the policy
+;; compares them against GC-HEAP-LIMIT, the ceiling plus the image measured at
+;; install; what is reported (maxMemory, totalMemory, the GC log, error
+;; messages) leaves it out.
+(define gc-boot-bytes 0)
+(define heap-ceiling-min (* 2 1024 1024))   ; the JVM's: -Xmx1m is refused, 2m starts
+(define gc-heap-limit #f)                ; ceiling + gc-boot-bytes; #f = unbounded
+(define (gc-heap-bytes b) (max 0 (- b gc-boot-bytes)))
 ;; The ceiling JOLT_MAX_HEAP asks for, else the default; #f for none.
 (define (heap-ceiling-wanted)
   (let ((env (heap-from-env)))
@@ -625,16 +638,28 @@
     ;; No collection has run yet, so the heap still holds the boot's garbage
     ;; (163MB against 62MB live): collect before refusing, or a 150m ceiling --
     ;; and the default one in a 512MB container -- reads as under the runtime.
-    (when (and ceiling (<= ceiling (sa-bytes-allocated)))
+    (set! gc-boot-bytes (sa-static-memory-bytes))
+    ;; With the boot image left out, a built program holds next to nothing at
+    ;; this point, so the live-heap check alone let a 1k ceiling start. Refuse
+    ;; under the JVM's own floor: `java -Xmx1m` is "Too small maximum heap",
+    ;; -Xmx2m starts.
+    (when (and ceiling (< ceiling heap-ceiling-min))
+      (error 'jolt
+             (string-append
+               "JOLT_MAX_HEAP is too small: asked for " (number->string ceiling)
+               " bytes, and the smallest ceiling is " (number->string heap-ceiling-min)
+               " (2m), as for -Xmx. Raise it, or JOLT_MAX_HEAP=off for no ceiling.")))
+    (when (and ceiling (<= ceiling (gc-heap-bytes (sa-bytes-allocated))))
       (sa-gc-collect))
-    (when (and ceiling (<= ceiling (sa-bytes-allocated)))
+    (when (and ceiling (<= ceiling (gc-heap-bytes (sa-bytes-allocated))))
       (error 'jolt
              (string-append
                "JOLT_MAX_HEAP is smaller than the runtime's own live heap: asked for "
                (number->string ceiling) " bytes, already using "
-               (number->string (sa-bytes-allocated))
+               (number->string (gc-heap-bytes (sa-bytes-allocated)))
                ". Give it at least twice that, or JOLT_MAX_HEAP=off for no ceiling.")))
     (set! jolt-heap-ceiling-bytes ceiling)
+    (set! gc-heap-limit (and ceiling (+ ceiling gc-boot-bytes)))
     (gc-nursery-setup! ceiling)
     (gc-overhead-setup!)
     ;; The hook itself is target-specific, so it goes through the adapter
@@ -643,7 +668,8 @@
     ;; cannot hook collection answers #f, and then jolt is unbounded as it was
     ;; before 0.8.5, with a fixed nursery — so the ceiling is forgotten rather
     ;; than reported, keeping Runtime.maxMemory honest.
-    (let ((soft (and ceiling (exact (floor (* ceiling 3/4))))))
+    (let* ((limit gc-heap-limit)
+           (soft (and ceiling (+ gc-boot-bytes (exact (floor (* ceiling 3/4)))))))
       ;; a placeholder until the first collection measures it (below)
       (set! gc-live-after-full (sa-bytes-allocated))
       (set! gc-log? (jolt-env-flag? "JOLT_GC_LOG"))
@@ -661,7 +687,7 @@
                   (set! gc-full-this-time #f)
                   (set! gc-full-ms-this-time 0)
                   (gc-collect-old-when-grown! collect-full!)
-                  (when ceiling (gc-enforce-ceiling! soft ceiling collect-full!)))
+                  (when limit (gc-enforce-ceiling! soft limit collect-full!)))
                 (lambda (gc-ns elapsed-ns)
                   ;; the nursery answers for young collections only: a full one
                   ;; the policy forced in the same hook is the old generations'
@@ -669,8 +695,9 @@
                   ;; to 1GB, where a young collection cost 10x one at 256MB
                   (gc-size-nursery! (max 0 (- gc-ns (* gc-full-ms-this-time 1000000))) elapsed-ns)
                   (when gc-log? (gc-log-line gc-ns elapsed-ns))
-                  (when ceiling (gc-check-overhead! gc-ns elapsed-ns ceiling))))
-        (set! jolt-heap-ceiling-bytes #f))))
+                  (when limit (gc-check-overhead! gc-ns elapsed-ns limit))))
+        (set! jolt-heap-ceiling-bytes #f)
+        (set! gc-heap-limit #f))))
   ;; the stack limit's default is sized from the ceiling in force
   (jolt-stack-limit-heap-ceiling-changed!))
 
@@ -909,9 +936,9 @@
       (error 'jolt
              (string-append
                "out of memory: the heap ceiling of "
-               (number->string hard)
+               (number->string (gc-heap-bytes hard))
                " bytes was exceeded (live "
-               (number->string (sa-bytes-allocated))
+               (number->string (gc-heap-bytes (sa-bytes-allocated)))
                "). Raise or disable it with JOLT_MAX_HEAP=<n>[k|m|g] or "
                "JOLT_MAX_HEAP=off."))))
   (gc-fit-reserve! hard)
@@ -951,7 +978,7 @@
   (set! gc-long-el (+ (* 0.9 gc-long-el) elapsed-ns))
   (when (> gc-long-el 0) (set! gc-share-long (/ gc-long-gc gc-long-el)))
   (when gc-overhead-limit?
-    (let ((free-pct (* 100 (/ (exact->inexact (max 0 (- hard (sa-bytes-allocated)))) hard))))
+    (let ((free-pct (* 100 (/ (exact->inexact (max 0 (- hard (sa-bytes-allocated)))) (max 1 (gc-heap-bytes hard))))))
       (if (and (>= (* 100 gc-share-long) gc-time-limit) (< free-pct gc-heap-free-limit))
           (set! gc-overhead-count (+ gc-overhead-count 1))
           (set! gc-overhead-count 0))
@@ -963,7 +990,7 @@
                  (number->string (exact (round (* 100 gc-share-long))))
                  "% of the time collecting, with "
                  (number->string (exact (round free-pct)))
-                 "% of the heap ceiling of " (number->string hard)
+                 "% of the heap ceiling of " (number->string (gc-heap-bytes hard))
                  " bytes free. Raise it with JOLT_MAX_HEAP=<n>[k|m|g], or turn the "
                  "limit off with JOLT_GC_OVERHEAD_LIMIT=off."))))))
 (define gc-tight? #f)
@@ -1056,7 +1083,7 @@
 ;; below which collections cost more than they save.
 (define gc-room-min (* 1024 1024))
 (define (gc-room-cap)
-  (let ((c jolt-heap-ceiling-bytes))
+  (let ((c gc-heap-limit))
     (if c
         (max gc-room-min (quotient (max 0 (- c (sa-bytes-allocated))) 4))
         gc-trip-cap)))
@@ -1190,7 +1217,7 @@
       (let ((t0 (sa-real-time-ms)))
         ;; tight (in place) when a second copy of the live data would not fit
         ;; under a heap ceiling, as for the ceiling's own collections
-        (let ((c jolt-heap-ceiling-bytes))
+        (let ((c gc-heap-limit))
           (collect-full! (and c (> (+ (sa-total-memory-bytes) live) c)
                               (max 0 (- c (sa-bytes-allocated))))))
         (let* ((t1 (sa-real-time-ms))
@@ -1218,8 +1245,8 @@
              (quotient gc-ns 1000000)
              (if (> elapsed-ns 0) (quotient (* 100 gc-ns) elapsed-ns) 0)
              (quotient elapsed-ns 1000000)
-             (mb (sa-bytes-allocated)) (mb (sa-total-memory-bytes)) (mb (sa-max-memory-bytes))
-             (mb gc-live-after-full) (mb (sa-gc-trip-bytes))
+             (mb (gc-heap-bytes (sa-bytes-allocated))) (mb (gc-heap-bytes (sa-total-memory-bytes))) (mb (gc-heap-bytes (sa-max-memory-bytes)))
+             (mb (gc-heap-bytes gc-live-after-full)) (mb (sa-gc-trip-bytes))
              (if gc-full-this-time
                  (format " full:~a ~ams old-x~a" gc-full-this-time gc-full-ms-this-time gc-old-factor)
                  ""))))
@@ -2640,6 +2667,9 @@
 (def-var! "jolt.host" "bytes-allocated"      (lambda () (sa-bytes-allocated)))
 (def-var! "jolt.host" "current-memory-bytes" (lambda () (sa-total-memory-bytes)))
 (def-var! "jolt.host" "maximum-memory-bytes" (lambda () (sa-max-memory-bytes)))
+;; The boot image's share of all three, which the heap ceiling and
+;; Runtime.totalMemory leave out (gc-heap-limit).
+(def-var! "jolt.host" "static-memory-bytes" (lambda () (sa-static-memory-bytes)))
 ;; Start the peak over from now, so the growth of one stretch of work reads as
 ;; maximum minus the total at the reset; and the collector's trip threshold,
 ;; which bounds how far work that holds nothing can raise the footprint.
@@ -3783,6 +3813,7 @@
 ;; clojure.math and the IEEE 754 bit patterns (dbl->bits, flt->bits, ...).
 ;; Self-contained; ahead of byte-buffer.ss, which encodes floats with them.
 (load "host/chez/java/math.ss")
+(load "host/chez/java/math-int.ss")          ; the integer statics, fma, clamp, and StrictMath's
 (load "host/chez/java/byte-buffer.ss")          ; java.nio.ByteBuffer over a byte-array
 (load "host/chez/java/charset-coding.ss")       ; CharBuffer + the CharsetDecoder decode loop
 

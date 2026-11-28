@@ -21,14 +21,26 @@
   {:path "test/chez/ns-audit/good/host.cljc" :lib "clojure.set"
    :why "ns-audit fixture"}
   {:path "test/chez/ns-audit/good/plain.clj" :lib "clojure.string"
-   :why "ns-audit fixture"}]
+   :why "ns-audit fixture"}
+  {:path "test/chez/reload/fixtures/core_test/a.clj" :lib "b"
+   :why "jolt.reload fixture: the require is the dependency graph under test"}
+  {:path "test/chez/reload/fixtures/core_test/a.clj" :lib "z"
+   :why "jolt.reload fixture: the require is the dependency graph under test"}
+  {:path "test/chez/reload/fixtures/core_test/split.clj" :lib "clojure.string"
+   :why "jolt.reload fixture: the require is the dependency graph under test"}
+  {:path "test/chez/reload/fixtures/core_test/split_part.clj" :lib "clojure.set"
+   :why "jolt.reload fixture: the require is the dependency graph under test"}
+  {:path "test/chez/reload/fixtures/core_test/two_nses.clj" :lib "clojure.string"
+   :why "jolt.reload fixture: the require is the dependency graph under test"}]
  :unused-private
  [{:path "jolt-core/clojure/core/22-coll.clj" :name "serialized-require"
    :why "clojure.core's private, kept for code that reaches #'clojure.core/serialized-require"}
   {:path "jolt-core/clojure/core/50-io.clj" :name "lift-ns"
    :why "clojure.pprint calls #'clojure.core/lift-ns"}]
  :unused-public
- [;; Named by excluded vendor/ code jolt-metrics doesn't read; to come off once
+ [{:path "jolt-core/jolt/passes/types.clj" :name "raise-check-errors!"
+   :why "var-deref'd from host/chez/compile-eval.ss as the check's raise hook"}
+  ;; Named by excluded vendor/ code jolt-metrics doesn't read; to come off once
   ;; it resolves them.
   {:path "stdlib/clojure/sci/io_stubs.clj" :name "print-simple"
    :why "named as sci.impl.io/print-simple by vendor/sci/src/sci/impl/namespaces.cljc"}

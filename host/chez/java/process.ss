@@ -2934,8 +2934,11 @@
         ;; is what the collector has reserved from the OS (the JVM's totalMemory)
         ;; and bytes-allocated is what is live inside it, so free is the
         ;; difference. criterium reads all four for its report, and without them a
-        ;; benchmark namespace crashes rather than running.
-        (cons "totalMemory" (lambda (self) (->num (sa-total-memory-bytes))))
+        ;; benchmark namespace crashes rather than running. totalMemory leaves out
+        ;; the boot image, as maxMemory's ceiling does (rt.ss gc-heap-limit) and as
+        ;; the JVM's leaves out code and metaspace; free is the same either way.
+        (cons "totalMemory" (lambda (self) (->num (max 0 (- (sa-total-memory-bytes)
+                                                             (sa-static-memory-bytes))))))
         (cons "freeMemory"
           (lambda (self) (->num (max 0 (- (sa-total-memory-bytes) (sa-bytes-allocated))))))
         ;; maxMemory is -Xmx on the JVM. jolt has a ceiling of its own now

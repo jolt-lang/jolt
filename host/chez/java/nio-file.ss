@@ -2837,6 +2837,29 @@
                                   (fc-native-close! native)))))
                           stuck)))))))
   jolt-nil)
+(define-win32-proc win32-flush-file-buffers "kernel32.dll" "FlushFileBuffers" (iptr) int)
+
+;; force the open descriptor, including when its pathname has been replaced.
+;; fsync also satisfies force(false), which permits writing metadata.
+(define (fc-force self metadata?)
+  (jolt-with-mutex (fc-mutex self)
+    (fc-ensure-open! self)
+    (let ((native (fc-native-of self)))
+      (if (nio-windows?)
+          (when (fc-writable? self)
+            (let ((flush (win32-flush-file-buffers)))
+              (unless flush (throw-jvm 'UnsupportedOperationException "FlushFileBuffers unavailable"))
+              (let-values (((r err) (fc-win32-call win32-ok? (lambda () (flush native)))))
+                (unless (win32-ok? r) (throw-jvm 'IOException (win32-error-message err))))))
+          (begin
+            (unless c-fsync (throw-jvm 'UnsupportedOperationException "fsync unavailable"))
+            (let retry ()
+              (let-values (((r err) (io-call+errno (c-fsync native))))
+                (cond ((>= r 0) (void))
+                      ((= err 4) (retry)) ; EINTR
+                      (else (throw-jvm 'IOException (fc-posix-error-message err))))))))))
+  jolt-nil)
+
 (define (fc-size self)
   (fc-ensure-open! self)
   ((vector-ref (fc-ops) 6) (fc-native-of self) (fc-path self)))
@@ -2849,7 +2872,8 @@
         (cons "lock" (case-lambda
                        ((self) (fc-lock self 0 #x7FFFFFFFFFFFFFFF #f))
                        ((self position size shared?) (fc-lock self position size shared?))))
-        (cons "size" fc-size)))
+        (cons "size" fc-size)
+        (cons "force" fc-force)))
 (hashtable-set! jhost-tag->fqn "file-channel" "sun.nio.ch.FileChannelImpl")
 (let ((prev jolt-close))
   (set! jolt-close (lambda (x)

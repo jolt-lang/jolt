@@ -417,9 +417,9 @@
 ;; instaparse's hash mixing (unchecked-multiply-int in a loop) is exactly that
 ;; shape. Each is a fixed-arity helper from seq.ss, which op_registry.clj lowers to.
 (let ((d! (lambda (n v) (def-var! "clojure.core" n v))))
-  (d! "unchecked-add" jolt-unchecked-add)        (d! "unchecked-add-int" jolt-uncaddi2)
-  (d! "unchecked-subtract" jolt-unchecked-sub)   (d! "unchecked-subtract-int" jolt-uncsubi2)
-  (d! "unchecked-multiply" jolt-unchecked-mul)   (d! "unchecked-multiply-int" jolt-uncmuli2)
+  (d! "unchecked-add" jolt-uncadd2)             (d! "unchecked-add-int" jolt-uncaddi2)
+  (d! "unchecked-subtract" jolt-uncsub2)        (d! "unchecked-subtract-int" jolt-uncsubi2)
+  (d! "unchecked-multiply" jolt-uncmul2)        (d! "unchecked-multiply-int" jolt-uncmuli2)
   (d! "unchecked-negate" jolt-uncneg)            (d! "unchecked-negate-int" jolt-uncnegi)
   (d! "unchecked-inc" jolt-uncinc)               (d! "unchecked-inc-int" jolt-uncinci)
   (d! "unchecked-dec" jolt-uncdec)               (d! "unchecked-dec-int" jolt-uncdeci)

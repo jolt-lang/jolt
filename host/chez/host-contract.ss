@@ -1291,7 +1291,7 @@
     "assoc" "dissoc" "contains?" "find" "empty?" "peek" "pop" "first" "rest" "next" "seq"
     "cons" "list" "reverse" "last" "map" "filter" "remove" "reduce" "reduce-kv" "into" "concat"
     "apply" "range" "take" "drop" "keys" "vals" "even?" "odd?" "pos?" "neg?"
-    "zero?" "identity" "nil?" "some?" "identical?" "ex-info"
+    "zero?" "identity" "nil?" "some?" "double?" "identical?" "ex-info"
     ;; not a public name — the deftype macro's field bindings lower through it
     ;; (records.ss jrec-field). Declared here like the rest so the list matches
     ;; native-ops, which manifest-check.sh enforces.

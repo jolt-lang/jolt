@@ -27,14 +27,57 @@
    [jolt.infix.core :refer [rewrite resolve-alias base-env]]
    [jolt.infix.grammar :refer [expression]]))
 
+(defn- costly-op?
+  "A division or a Math call: ops whose generic path dispatches on the operand
+   types, so a double branch pays for its guard. `+`, `-` and `*` alone already
+   take an inline fixnum/flonum path, and a guard there costs a long input more
+   than the double branch saves (17 vs 21 ms per 3M calls of `x * 3 + y - x`)."
+  [op]
+  (and (symbol? op)
+       (or (= '/ op)
+           (= "Math" (namespace op)))))
+
+(defn- costly-arithmetic? [form]
+  (and (seq? form)
+       (or (costly-op? (first form))
+           (boolean (some costly-arithmetic? (rest form))))))
+
+(defn- operand-locals
+  "The locals (keys of the macro's &env) the prefix form reads as operands,
+   in order of first use. A call's head is not an operand."
+  [env form]
+  (cond
+    (symbol? form) (when (contains? env form) [form])
+    (seq? form)    (mapcat #(operand-locals env %) (rest form))
+    :else          nil))
+
+(defn- specialize
+  "Guards the prefix form with a branch for the case where every local it reads
+   is a double. Both branches are the same form, so no answer changes: in the
+   first, each local is rebound through `double`, which lets the compiler prove
+   it a flonum and lower the arithmetic and Math calls to native flonum ops
+   instead of generic dispatch. Longs, ratios and anything else take the
+   second branch, the expansion as it always was. Only a form with a division
+   or a Math call gets the guard (see costly-op?)."
+  [env form]
+  (let [locals (distinct (operand-locals env form))]
+    (if (and (seq locals) (costly-arithmetic? form))
+      `(if (and ~@(map (fn [l] `(double? ~l)) locals))
+         (let [~@(mapcat (fn [l] [l `(double ~l)]) locals)] ~form)
+         ~form)
+      form)))
+
 (defmacro infix
   "Takes an infix expression, resolves any aliases before rewriting the
-   infix expressions into standard LISP prefix expressions."
+   infix expressions into standard LISP prefix expressions. When the
+   expression does arithmetic on locals, it also gets a fast path taken when
+   all of those locals are doubles at run time."
   [& expr]
   (->>
    expr
    (map resolve-alias)
-   rewrite))
+   rewrite
+   (specialize &env)))
 
 ;; Short alias for infix
 (defmacro $=

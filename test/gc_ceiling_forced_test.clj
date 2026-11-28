@@ -1,5 +1,5 @@
 ;; The heap ceiling's forced full collection must not carry the heap past it
-;; (jolt-exoj). Run by `make gcpolicy` under JOLT_MAX_HEAP=256m.
+;; (jolt-exoj). Run by `make gcpolicy` under JOLT_MAX_HEAP=196m: the ceiling leaves out the boot image, and 196MB is the room 256m left beside the 60MB image these cases were sized for.
 ;;
 ;; The same work as gc_policy_test.clj's ceiling mode, as top-level forms: that
 ;; shape lands the ceiling's first full collection with ~140MB of data spread
@@ -32,4 +32,4 @@
 (loop [i 0 window []]
   (when (< i 40)
     (recur (inc i) (mapv (fn [j] {:i j :s (str j "-" i)}) (range 200000)))))
-(println "peak" (jolt.host/maximum-memory-bytes) "max" (.maxMemory (Runtime/getRuntime)) (count pad))
+(println "peak" (- (jolt.host/maximum-memory-bytes) (jolt.host/static-memory-bytes)) "max" (.maxMemory (Runtime/getRuntime)) (count pad))
