@@ -440,6 +440,7 @@
   ;; without one. With one it used to be treated as a fixed buffer: the first
   ;; value stayed, offer! answered nil after it and >!! blocked. Probed on JVM
   ;; Clojure 1.12.5 + core.async 1.8.741: [[true true true 4] [true true true 2] [:done 3]].
+  {:suite "core.async / buffers" :expr "(do (require '[clojure.core.async :as a]) (mapv (fn [make-buf] (let [b (make-buf 2) c (a/chan b)] [(count b) (do (a/offer! c 1) (a/offer! c 2) (a/offer! c 3) (count b)) (do (a/close! c) (a/poll! c) (count b)) (do (a/poll! c) (count b))])) [a/buffer a/dropping-buffer a/sliding-buffer]))" :expected "[[0 2 1 0] [0 2 1 0] [0 2 1 0]]"}
   {:suite "core.async / buffers" :expr "(do (require (quote [clojure.core.async :as a])) [(let [c (a/chan (a/sliding-buffer 1) (map inc))] [(a/offer! c 1) (a/offer! c 2) (a/offer! c 3) (a/poll! c)]) (let [c (a/chan (a/dropping-buffer 1) (map inc))] [(a/offer! c 1) (a/offer! c 2) (a/offer! c 3) (a/poll! c)]) (let [c (a/chan (a/sliding-buffer 1) (map inc))] [(deref (future (a/>!! c 1) (a/>!! c 2) :done) 2000 :blocked) (a/poll! c)])])" :expected "[[true true true 4] [true true true 2] [:done 3]]"}
   ;; An alts put on a FULL fixed buffer with a transducer is not ready: it used
   ;; to count as ready because the channel had a transducer, then the locked

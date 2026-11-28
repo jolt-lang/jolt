@@ -631,7 +631,7 @@
   (and (record? x)
        (memq (record-type-uid (record-rtd x))
              '(chez-pvec-v3 chez-pset-v2 chez-cseq-v6 chez-cseq-v7 jolt-lazyseq-v2 jolt-lazyseq-v3 empty-list-v2
-               async-chan-v3))
+               async-chan-v3 async-buffer-v1))
        #t))
 (define (legacy-cell head tail kind cvec ci crest meta)
   (if cvec
@@ -660,6 +660,8 @@
       ;; no waiter count: nothing waits in an image, so it starts at 0 (and
       ;; takew with it). mu and cv are image-sync placeholders the record walk
       ;; replaces with live ones.
+      ;; A v1 buffer stored only its capacity and kind.
+      ((async-buffer-v1) (make-async-buffer (f 0) (f 1)))
       ((async-chan-v3) (make-async-chan (f 0) (f 1) (f 2) (f 3) (f 4) (f 5) (f 6) 0 (f 8) (f 9) (f 10) 0))
       (else (error 'legacy-coll->coll "not a legacy collection record" x)))))
 
