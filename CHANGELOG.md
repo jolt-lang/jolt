@@ -115,6 +115,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   folded `(nil? y)` over `y = (+ x)` to `false`. A new gate (`make rettype`)
   runs every return-type claim the compiler trusts against the runtime on
   representative values, which is how this was found.
+- **`count` on a core.async buffer answers how many values it holds.** A
+  buffer passed to `chan` shares the channel's queue, so a caller that kept
+  the `buffer`, `dropping-buffer` or `sliding-buffer` can watch it fill and
+  drain (#1914).
+- **core.async `put!` and `take!` work on a port you implement.** They call
+  the `WritePort`/`ReadPort` protocol methods with a `fn-handler`, as
+  upstream does, and a forwarding port can hand that handler on to a native
+  channel. `clojure.core.async.impl.protocols` now has `Handler`, `WritePort`
+  and `FnHandler`. Custom ports in parking ops and `alts!` are still not
+  supported (#1913).
 
 ## [0.8.31] - 2026-11-27
 

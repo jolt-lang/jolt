@@ -99,13 +99,8 @@
 ;; it once at the top makes the gate's clojure.core.async surface match
 ;; production for every section instead of being a mid-test environment
 ;; change (and makes alts!/poll! referable here).
-(define overlay-src
-  (call-with-input-file "stdlib/clojure/core/async.clj"
-    (lambda (p)
-      (let loop ((acc '()))
-        (let ((c (read-char p)))
-          (if (eof-object? c) (list->string (reverse acc)) (loop (cons c acc))))))))
-(jolt-load-string overlay-src)
+(load "host/chez/gate-async-overlay.ss")
+(gate-load-async-overlay!)
 
 ;; The jolt-level names sections 1-3 use (a refer; unqualified *go-backend*
 ;; binding needs it referred, exactly as in real Clojure). alts!/poll! resolve

@@ -64,13 +64,8 @@
 ;; (host async.ss + stdlib/clojure/core/async.clj together) — the same setup the
 ;; R4/R5 gates use. io-thread and thread-call are overlay definitions over the
 ;; host's fiber-spawn / thread-spawn, so a gate for them has to have it loaded.
-(define overlay-src
-  (call-with-input-file "stdlib/clojure/core/async.clj"
-    (lambda (p)
-      (let loop ((acc '()))
-        (let ((c (read-char p)))
-          (if (eof-object? c) (list->string (reverse acc)) (loop (cons c acc))))))))
-(jolt-load-string overlay-src)
+(load "host/chez/gate-async-overlay.ss")
+(gate-load-async-overlay!)
 (ev "(require '[clojure.core.async
                 :refer [chan <! >! <!! >!! close! timeout alts!! go
                         thread thread-call io-thread go-monitor *go-backend*]])")

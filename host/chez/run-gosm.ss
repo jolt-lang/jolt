@@ -27,13 +27,8 @@
 (define (ev s) (jolt-compile-eval s "user"))
 
 ;; The overlay defines go/go-loop and the pass; load it the way the R4 gate does.
-(define overlay-src
-  (call-with-input-file "stdlib/clojure/core/async.clj"
-    (lambda (p)
-      (let loop ((acc '()))
-        (let ((c (read-char p)))
-          (if (eof-object? c) (list->string (reverse acc)) (loop (cons c acc))))))))
-(jolt-load-string overlay-src)
+(load "host/chez/gate-async-overlay.ss")
+(gate-load-async-overlay!)
 
 (ev "(require '[clojure.core.async
                 :refer [go go-loop chan <! >! <!! >!! close! alts! *go-backend*]])")
