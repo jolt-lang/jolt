@@ -36,6 +36,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   apply everywhere. The check's compile-time cost is within noise on the
   compile-forms bench, check on vs off; `JOLT_CHECK=0` turns it off.
 
+### Changed
+
+- **The heap ceiling leaves out the boot image, as `-Xmx` leaves out code and
+  metaspace.** `JOLT_MAX_HEAP` (and the 25%-of-RAM default) now bounds the
+  program's heap only. It counted Chez's static generation, the compiled
+  runtime and stdlib, which has grown from 60MB in 0.8.12 to 93MB, so
+  `JOLT_MAX_HEAP=256m` left a program ~163MB and a 96m ceiling could not hold
+  the runtime at all. `Runtime/totalMemory`, the `JOLT_GC_LOG` heap figures and
+  the out-of-memory messages leave it out too, so `totalMemory` stays under
+  `maxMemory`. `jolt.host/static-memory-bytes` reports the image's size. A
+  process now uses up to the image's size more memory than it did under the
+  same setting.
+
 ### Performance
 
 - `jolt.infix`'s `infix`/`$=` give an expression that divides or calls a

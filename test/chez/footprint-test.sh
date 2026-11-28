@@ -131,8 +131,8 @@ cat > "$app/src/fp/hello.clj" <<'EOF'
 (defn -main [& _]
   (println "hello" (count (range 1000)))
   (System/gc)
-  (let [rt (Runtime/getRuntime)]
-    (println "boot" (jolt.host/maximum-memory-bytes) (- (.totalMemory rt) (.freeMemory rt)))))
+  ;; both counters include the boot image (Runtime.totalMemory leaves it out)
+  (println "boot" (jolt.host/maximum-memory-bytes) (jolt.host/bytes-allocated)))
 EOF
 cat > "$app/src/fp/strs.clj" <<'EOF'
 (ns fp.strs (:require [clojure.string :as s]))
