@@ -6,7 +6,7 @@
   rebuild a live closure as code."
   (:require [clojure.string :as str]
             [jolt.host
-             :refer [form-sym? form-sym-name form-sym-ns form-sym-meta form-list? form-vec? form-map? form-set? form-char? form-literal? form-elements form-vec-items form-map-pairs form-set-items form-regex? form-regex-source form-inst? form-inst-source form-uuid? form-uuid-source form-bigdec? form-bigdec-source form-class-value?]]
+             :refer [form-sym? form-sym-name form-sym-ns form-sym-meta form-list? form-vec? form-map? form-set? form-char? form-literal? form-elements form-vec-items form-map-pairs form-set-items form-regex? form-regex-source form-inst? form-inst-source form-uuid? form-uuid-source form-bigdec? form-bigdec-source form-class-value? form-coll-meta]]
             [jolt.backend-scheme.names :refer [chez-str-lit munge-chars munge-name]]
             [jolt.backend-scheme.session :refer [fresh-label]]
             [jolt.backend-scheme.hoist :refer [*cache-cells*]]
@@ -198,6 +198,41 @@
       (when same? (str "(image-fn-form-src " (chez-str-lit s) ")")))
     (catch Exception _ nil)))
 
+;; The reader position of each list form in FORM, for the runtime specializer
+;; (#1861): the registered text reads back with none, and a recompile from it
+;; needs them for the lines a backtrace reports, its own and those of the
+;; methods it inlines. "line:column ..." over every list form in prefix order,
+;; descending lists and vectors only, 0:0 for a list with no position; nil when
+;; no list form has one. The registry re-attaches them by the same walk
+;; (fn-form-registry.ss image-fn-form-with-pos).
+(defn fnsrc-pos-table [form]
+  (let [acc (atom []) any (atom false)]
+    (letfn [(walk [x]
+              (cond
+                (form-list? x)
+                (let [m (form-coll-meta x)
+                      l (when (map? m) (get m :line))
+                      c (when (map? m) (get m :column))]
+                  (if (int? l)
+                    (do (reset! any true) (swap! acc conj (str l ":" (if (int? c) c 0))))
+                    (swap! acc conj "0:0"))
+                  (run! walk (form-elements x)))
+                (form-vec? x) (run! walk (form-vec-items x))
+                :else nil))]
+      (walk form))
+    (when @any (str/join " " @acc))))
+
+;; The file the first positioned list form in FORM names, or nil.
+(defn fnsrc-pos-file [form]
+  (letfn [(walk [x]
+            (cond
+              (form-list? x)
+              (let [m (form-coll-meta x) f (when (map? m) (get m :file))]
+                (if (string? f) f (some walk (form-elements x))))
+              (form-vec? x) (some walk (form-vec-items x))
+              :else nil))]
+    (walk form)))
+
 (defn- fnsrc-reg-call [nm f ns frees lives cls]
   (str "(image-register-fn-form! " (chez-str-lit nm) " " f " " (chez-str-lit ns) " "
        (emit-quoted frees)
@@ -219,6 +254,13 @@
         lives (nth row 4)
         lives (when (and lives (not= lives frees)) lives)
         cls (nth row 5 nil)
+        ;; [file table] for a literal the specializer may recompile (lambda.clj
+        ;; register-fn-literal), else nil
+        pos (nth row 6 nil)
+        pos-call (when pos
+                   (str "(image-register-fn-pos! " (chez-str-lit nm) " "
+                        (if (nth pos 0) (chez-str-lit (nth pos 0)) "#f")
+                        " (image-fn-form-src " (chez-str-lit (nth pos 1)) "))"))
         src (fnsrc-row-src form)
         q (if src
             [nil (binding [*quote-pool* nil] (fnsrc-reg-call nm src ns frees lives cls))]
@@ -232,9 +274,9 @@
       (update acc :calls conj (str "(image-register-fn-class! " (chez-str-lit nm) " "
                                    (chez-str-lit cls) ")"))
       (nil? q) acc
-      (nil? (nth q 0)) (update acc :calls conj (nth q 1))
+      (nil? (nth q 0)) (update acc :calls into (remove nil? [(nth q 1) pos-call]))
       :else (-> acc
-                (update :calls conj (nth q 1))
+                (update :calls into (remove nil? [(nth q 1) pos-call]))
                 (update :shared conj [form (nth q 0)])))))
 
 ;; The registration calls, wrapped in a let* binding the pooled constants.

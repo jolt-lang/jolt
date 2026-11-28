@@ -22,3 +22,6 @@
 [submodule "vendor/mir"]
 	path = vendor/mir
 	url = https://github.com/vnmakarov/mir.git
+[submodule "vendor/tools.reader"]
+	path = vendor/tools.reader
+	url = https://github.com/clojure/tools.reader

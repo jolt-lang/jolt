@@ -4031,6 +4031,12 @@
 ;; image writer call them, never Clojure.
 (load "host/chez/fn-form-registry.ss")
 
+;; Runtime specialization of hot protocol call sites (#1861): the per-site
+;; counters `jolt run` code carries, their samples, and installing a recompiled
+;; owner. The recompile itself is compile-eval.ss's. Plain defines, called only
+;; by emitted code.
+(load "host/chez/specialize.ss")
+
 ;; State images: dump the value graph to a file and read it back. Loads LAST —
 ;; walks jolt collections, var cells and atoms, prints paths through the printers,
 ;; and reads proc-name-tbl to write a fn as its var's name.
