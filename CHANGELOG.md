@@ -19,6 +19,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `init`, it watches every source dir on the class path, `.jolt` files included
   (`JOLT_RELOAD_AUTO_INIT=false` turns that off). clj-reload's own parse, core
   and keep suites run as a smoke gate: 48 tests, all passing.
+- **A call that can never succeed is a compile error.** `(+ "s" 1)`,
+  `(count :a)`, `("s" 1)`, or `(inc x)` where a `(string? x)` test just proved
+  `x` a string, now fails to compile with `:analyze/type-error`, located at the
+  call and saying why it always throws; every such call in the form is listed.
+  Only what the form itself proves feeds it (literals, what core ops return,
+  locals a type test narrowed), never a type hint, a var's value or a caller,
+  so nothing that could run is rejected, and `make rettype` checks that every
+  rejected call throws at runtime. A likely mistake that could still be meant is
+  a warning instead (`file:line:col: warning: …`): a mismatch only a `^String`
+  hint claims, `min`/`max` beside an operand that may be NaN, or a call inside a
+  `try` that catches what it throws, as `thrown?` assertions do. `jolt build`
+  prints the warnings, once each, on every build; the REPL, `jolt run` and `-e`
+  keep quiet about them unless `JOLT_CHECK=1`, which also adds the advice-only
+  diagnostics (type hints that do nothing) it used to print on its own. Errors
+  apply everywhere. The check's compile-time cost is within noise on the
+  compile-forms bench, check on vs off; `JOLT_CHECK=0` turns it off.
+
+### Performance
+
+- **A type test narrows the local it tests.** In `(if (double? x) (* x x) ...)`
+  the guarded branch now runs Chez flonum ops on `x`, as do `cond` arms and
+  every conjunct of an `and` chain; `string?`, `keyword?` and `number?` type
+  their branch for the optimizing passes too. `double?` is now a native op
+  (the host flonum test), like `nil?`. A dispatch-by-hand kernel ran 40-47%
+  faster (10M calls: 218 to 131 ms; two `double?` tests 320 to 170 ms).
+- **`(double x)` tests for a flonum before calling the cast helper**, as
+  `(long x)` already tests for a fixnum.
 
 ### Fixed
 
@@ -28,6 +55,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   source whose aliases were never loaded; an alias it answers nil for is an
   invalid token. Under `*suppress-read*` a record literal reads as a
   `TaggedLiteral` instead of being refused when `*read-eval*` is false.
+- **`unchecked-add`, `unchecked-subtract` and `unchecked-multiply` take exactly
+  two arguments**, as on the JVM, where each is a single `[x y]` arity:
+  `(unchecked-add 1)`, `(unchecked-multiply)` and `(apply unchecked-add [1 2 3])`
+  raise `ArityException` instead of answering. Under `*unchecked-math*`,
+  `(+ a b c)` becomes nested pairs, as clojure.core's inliner expands it, and
+  `(+ a)`, `(+)` and `(*)` stay the ordinary fns.
+- **A `^double` let or loop local unboxes at each arithmetic use, as on the JVM.**
+  `(let [^double x (first [2])] (* x x))` is `4.0` (it was `4`), over `1/3` it
+  is `1.0`, and over a string it throws `ClassCastException`; `str`, `class`
+  and a one-argument `+` still see the value itself. Those uses now take the
+  flonum ops: two hinted locals into `Math/sqrt` ran in 102 ms where they took
+  330 (5M calls).
+- **A one-argument `+`, `*`, `min` or `max` is no longer typed as a number.**
+  They answer their argument, so `(+ nil)` is `nil`, and an optimized build
+  folded `(nil? y)` over `y = (+ x)` to `false`. A new gate (`make rettype`)
+  runs every return-type claim the compiler trusts against the runtime on
+  representative values, which is how this was found.
 
 ## [0.8.31] - 2026-11-27
 

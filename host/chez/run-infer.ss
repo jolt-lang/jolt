@@ -216,6 +216,54 @@
 ;; outer p. Inferring every init in the outer env typed it from the wrong local.
 (gate-check "a loop init sees the earlier loop binding"
        (diags "(let [p 1] (loop [p (->P 1.0 2.0) q (+ p 1)] q))" #f) 1)
+;; --- case-based narrowing (jolt-3h7.1): a type test types the local it tests
+;; in the guarded branch, and every conjunct of an and-chain does.
+(define (ret-of s)
+  (jolt-nth (infer-body U (anode (string-append "(let [x (first q) y (second q)] " s ")")) (jolt-hash-map)) 0))
+(gate-check "string? narrows the then-branch" (ret-of "(if (string? x) x \"\")") (kw "str"))
+(gate-check "keyword? narrows the then-branch" (ret-of "(if (keyword? x) x :k)") (kw "kw"))
+(gate-check "number? narrows the then-branch" (ret-of "(if (number? x) x 0)") (kw "num"))
+(gate-check "double? narrows to :double" (ret-of "(if (double? x) (* x x) 0.0)") (kw "double"))
+(gate-check "an and-chain narrows each conjunct" (ret-of "(if (and (double? x) (double? y)) (+ x y) 0.0)") (kw "double"))
+(gate-check "float? narrows nothing" (ret-of "(if (float? x) x 0.0)") (kw "any"))
+(gate-check "the else branch is not narrowed" (ret-of "(if (string? x) \"\" x)") (kw "any"))
+;; A 1-arg + * min max answers its argument, number or not ((+ nil) is nil, as on
+;; the JVM): typing it :num folded (nil? y) over y = (+ x) to false in a build.
+(gate-check "(+ x) has x's type, not :num" (ret-of "(+ x)") (kw "any"))
+(gate-check "(min x) has x's type" (ret-of "(min x)") (kw "any"))
+(gate-check "(+ x 1) is still a number" (ret-of "(+ x 1)") (kw "num"))
+(gate-check "(+ s) over a proven string keeps :str" (ret-of "(let [s (str x)] (+ s))") (kw "str"))
+(gate-check "a 1-arg min of a string is no checker error" (diags "(min \"s\")" #t) 0)
+(gate-check "a 2-arg min of a string still is" (diags "(min \"s\" 1)" #t) 1)
+
+;; --- diagnostic levels: :error only for a call that can never succeed ----------
+;; "e/w/l" counts of :error / :warn / :lint diagnostics check-form gives src.
+(define (lv src)
+  (let ((ds (check-form U (anode src) #f)))
+    (let loop ((i 0) (e 0) (w 0) (l 0))
+      (if (= i (jolt-count ds))
+          (format "~a/~a/~a" e w l)
+          (let ((k (jolt-get (jolt-nth ds i) (kw "level") jolt-nil)))
+            (loop (+ i 1) (if (eq? k (kw "error")) (+ e 1) e)
+                  (if (eq? k (kw "warn")) (+ w 1) w) (if (eq? k (kw "lint")) (+ l 1) l)))))))
+(gate-check "literal string to + is an error"     (lv "(+ \"s\" 1)") "1/0/0")
+(gate-check "count of a keyword is an error"      (lv "(count :a)") "1/0/0")
+(gate-check "calling a string is an error"        (lv "(\"s\" 1)") "1/0/0")
+(gate-check "error inside a never-called fn"      (lv "(fn [] (inc :k))") "1/0/0")
+(gate-check "narrowed by string? then + is an error" (lv "(fn [x] (if (string? x) (+ x 1) 0))") "1/0/0")
+(gate-check "the else branch is not narrowed"     (lv "(fn [x] (if (string? x) 0 (+ x 1)))") "0/0/0")
+(gate-check "inside a catching try it warns"      (lv "(try (count :a) (catch Exception e :x))") "0/1/0")
+(gate-check "a try without catch still errors"    (lv "(try (count :a) (finally 1))") "1/0/0")
+(gate-check "thrown? style assertion warns"       (lv "(try (+ \"s\" 1) (catch ClassCastException e true))") "0/1/0")
+(gate-check "a ^String hint only warns"           (lv "(fn [^String s] (+ s 1))") "0/1/0")
+(gate-check "min beside a maybe-NaN number warns" (lv "(fn [x] (min x \"s\"))") "0/1/0")
+(gate-check "min beside a literal number errors"  (lv "(min \"s\" 1)") "1/0/0")
+(gate-check "min beside a literal NaN warns"      (lv "(min \"s\" ##NaN)") "0/1/0")
+(gate-check "a var's value proves nothing"        (lv "(do (def v \"s\") (+ v 1))") "0/0/0")
+(gate-check "a loop local recur rebinds is no error"
+            (lv "(loop [x \"a\" i 0] (if (< i 1) (recur 1 (inc i)) (+ x 1)))") "0/0/0")
+(gate-check "a dead hint is lint only"            (lv "(fn [^short n] n)") "0/0/1")
+
 (set-record-shapes! U (jolt-hash-map))
 
 (gate-summary "infer")

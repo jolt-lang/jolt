@@ -37,7 +37,7 @@
 ;; and a tail call to one leaves only the fn's own site pair behind
 ;; (*self-wrap*).
 (def ^:private no-jolt-call-procs
-  (let [preds #{"nil?" "some?" "identical?" "not" "zero?" "pos?" "neg?" "even?" "odd?"
+  (let [preds #{"nil?" "some?" "double?" "identical?" "not" "zero?" "pos?" "neg?" "even?" "odd?"
                 "chunked-seq?" "identity"}]
     ;; the array access helpers: each coerces a number or throws, and reads or
     ;; writes the backing -- nothing a jolt fn can run under
