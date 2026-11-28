@@ -124,13 +124,23 @@
     "pinned" (churn)
     ;; the heap ceiling bounds the TOTAL heap, as -Xmx does: live data, nursery
     ;; and the free memory kept (the gate reads the high-water mark and the GC log)
-    "ceiling" (hold-and-churn))
+    "ceiling" (hold-and-churn)
+    ;; the ceiling leaves out the boot image, as -Xmx leaves out code and
+    ;; metaspace: run under a ceiling the boot image alone is near, it still
+    ;; holds data up to most of the ceiling
+    "boot" (let [v (vec (map (fn [i] {:i i :s (str "boot-" i)}) (range 300000)))]
+             (println "boot held" (count v) "static" (jolt.host/static-memory-bytes)
+                      "max" (.maxMemory (Runtime/getRuntime))
+                      "total" (.totalMemory (Runtime/getRuntime)))))
   (println "trip" (jolt.host/gc-trip-bytes))
   (when (= mode "churn")
     ;; the live set its bound is sized from, read raw: the bound the policy
     ;; computes would let a broken bound vouch for itself
     (println "live" (jolt.host/scheme-eval-string "gc-live-after-full")))
   (when (= mode "ceiling")
-    (println "peak" (jolt.host/maximum-memory-bytes) "max" (.maxMemory (Runtime/getRuntime)))))
+    ;; the high-water mark is of everything Chez holds; the ceiling leaves out
+    ;; the boot image, so the peak it is judged against does too
+    (println "peak" (- (jolt.host/maximum-memory-bytes) (jolt.host/static-memory-bytes))
+             "max" (.maxMemory (Runtime/getRuntime)))))
 
 (apply -main *command-line-args*)

@@ -3621,6 +3621,13 @@
 ;; a later require loads it again instead of no-op'ing (#1469).
 (def-var! "jolt.host" "unmark-loaded!"
   (lambda (n) (ldr-unmark-loaded! (jolt-str-render-one n)) jolt-nil))
+;; Its inverse, for a namespace loaded from source text rather than through the
+;; loader — jolt.reload's load-string of a (possibly patched) file. On the JVM
+;; the ns form's own expansion conjs *loaded-libs*; here a require dedups on
+;; loaded-ns as well, so without the mark the next namespace that requires this
+;; one loads it again from disk, over the vars the reload just kept.
+(def-var! "jolt.host" "mark-loaded!"
+  (lambda (n) (ldr-mark-loaded! (jolt-str-render-one n)) jolt-nil))
 
 ;; --- jolt.loader's artifact cache (#1653) -------------------------------------
 ;; A context-private namespace (jolt.loader) is read and evaluated by the loader

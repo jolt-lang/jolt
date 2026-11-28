@@ -1379,8 +1379,19 @@
              (rdr-error s i2 (string-append "Namespaced map must specify a valid namespace: "
                                             (if (string=? nstok "") "nil" nstok))))
            (let ((mapns (if auto?
-                            (if (string=? nstok "") (chez-current-ns)
-                                (let ((a (chez-resolve-alias (chez-current-ns) nstok)))
+                            (if (string=? nstok "")
+                                (let ((r (rdr-resolver)))
+                                  (if r
+                                      ;; LispReader reads currentNS().name, so a
+                                      ;; resolver answering nil is an NPE there
+                                      (or (rdr-resolver-current-ns r)
+                                          (rdr-error-class s i2 "java.lang.NullPointerException"
+                                                           (keyword "read" "invalid-syntax")
+                                                           "Cannot read field \"name\" because the return value of \"clojure.lang.LispReader$Resolver.currentNS()\" is null"))
+                                      (chez-current-ns)))
+                                (let ((a (let ((r (rdr-resolver)))
+                                           (if r (rdr-resolver-alias r nstok)
+                                               (chez-resolve-alias (chez-current-ns) nstok)))))
                                   (cond (a a)
                                         ;; The build's require/class-provider scans
                                         ;; read every top-level form before the ns
@@ -1408,6 +1419,43 @@
     (set! rdr-read-eval-cell (jolt-var "clojure.core" "*read-eval*")))
   (let ((v (jolt-var-get rdr-read-eval-cell)))
     (and v (not (jolt-nil? v)))))
+
+;; *suppress-read*: LispReader's CtorReader answers a TaggedLiteral for every
+;; #sym form while it is set, a record literal included, so a tool that reads
+;; source without loading it (clj-reload, jolt.reload) is not refused a
+;; #my.Rec{…} it never meant to construct.
+(define rdr-suppress-read-cell #f)
+(define (rdr-suppress-read?)
+  (unless rdr-suppress-read-cell
+    (set! rdr-suppress-read-cell (jolt-var "clojure.core" "*suppress-read*")))
+  (let ((v (jolt-var-get rdr-suppress-read-cell)))
+    (and v (not (jolt-nil? v)) (not (eq? v #f)))))
+
+;; *reader-resolver*: a clojure.lang.LispReader$Resolver reify. While one is
+;; bound, auto-resolved keywords and #:: maps ask it for the namespace instead
+;; of the current ns and its aliases, as LispReader does — currentNS for ::k
+;; and #::{}, resolveAlias for ::a/k and #::a{}, nil from resolveAlias being an
+;; unknown alias. Never consulted in edn mode, which has no :: at all.
+;; Syntax-quote does not consult it (the JVM's resolveVar/resolveClass arms).
+(define rdr-resolver-cell #f)
+(define (rdr-resolver)
+  (and (not (rdr-edn-mode))
+       (begin
+         (unless rdr-resolver-cell
+           (set! rdr-resolver-cell (jolt-var "clojure.core" "*reader-resolver*")))
+         (let ((v (jolt-var-get rdr-resolver-cell)))
+           (and v (not (jolt-nil? v)) v)))))
+(define (rdr-resolver-call r method . args)
+  (let ((m (reify-method-ref r method)))
+    (unless m
+      (rdr-error-here* "java.lang.RuntimeException" (keyword "read" "invalid-syntax")
+                       (string-append "*reader-resolver* does not implement " method)))
+    (apply jolt-invoke m r args)))
+;; the namespace NAME the resolver answered, #f for nil
+(define (rdr-resolver-ns v) (and (symbol-t? v) (symbol-t-name v)))
+(define (rdr-resolver-current-ns r) (rdr-resolver-ns (rdr-resolver-call r "currentNS")))
+(define (rdr-resolver-alias r alias)
+  (rdr-resolver-ns (rdr-resolver-call r "resolveAlias" (jolt-symbol #f alias))))
 
 ;; --- user reader macros -----------------------------------------------------
 ;; Clojure's dispatch table is closed: after a `#`, the reader claims a fixed set
@@ -1683,9 +1731,11 @@
            ;; at read time and the JVM's CtorReader refuses it under
            ;; *read-eval* false, as #= is refused above. Without this, a read
            ;; that promised not to run the source called a loaded ns/map->T.
-           (when (and (rdr-record-tag? tok) (not (rdr-edn-mode)) (not (rdr-read-eval?)))
+           (when (and (rdr-record-tag? tok) (not (rdr-edn-mode)) (not (rdr-read-eval?))
+                      (not (rdr-suppress-read?)))
              (rdr-error s i "Record construction syntax can only be used when *read-eval* == true"))
-           (if (rdr-record-tag? tok)       ; #ns.Type{..}/[..] record literal
+           (if (and (rdr-record-tag? tok) (not (and (rdr-suppress-read?) (not (rdr-edn-mode)))))
+               ;; #ns.Type{..}/[..] record literal
                (values (rdr-record-ctor-form tok form) k)
                (values (rdr-make-tagged (keyword #f (string-append "#" tok)) form) k))))))))
 
@@ -1730,13 +1780,19 @@
             (rdr-invalid-token s start (string-append "::" tok))))
         (let-values (((ns name) (rdr-sym-parts tok)))
           (if auto?
-              (let* ((cur (chez-current-ns))
+              (let* ((r (rdr-resolver))
                      (rns (if (string? ns)
-                              (let ((a (chez-resolve-alias cur ns)))
+                              (let ((a (if r (rdr-resolver-alias r ns)
+                                           (chez-resolve-alias (chez-current-ns) ns))))
                                 (cond (a a)
                                       ((rdr-scan-mode) ns)
                                       (else (rdr-invalid-token s start (string-append "::" tok)))))
-                              cur)))
+                              ;; a resolver answering nil for currentNS leaves
+                              ;; ::k unresolvable, as LispReader has it
+                              (if r
+                                  (or (rdr-resolver-current-ns r)
+                                      (rdr-invalid-token s start (string-append "::" tok)))
+                                  (chez-current-ns)))))
                 (values (keyword rns name) j))
               (values (keyword ns name) j)))))))
 
@@ -1981,6 +2037,13 @@
 ;; a tagged FORM (lenient — clojure.edn raises instead).
 (define (rdr-construct-tag tag inner)
   (cond
+    ;; *suppress-read*: LispReader's CtorReader answers a TaggedLiteral for
+    ;; every #tag without consulting a reader, #inst and #uuid included. The
+    ;; regex and bigdec tags are the reader's own internal forms, not #tags.
+    ((and (not (rdr-edn-mode)) (rdr-suppress-read?)
+          (let ((nm (keyword-t-name tag)))
+            (and (fx>? (string-length nm) 0) (char=? (string-ref nm 0) #\#))))
+     (jolt-tagged-literal (rdr-tag->symbol tag) inner))
     ((eq? tag (keyword #f "#inst"))
      (when (string? inner) (rdr-validate-inst! inner))
      (jolt-inst-from-string inner))

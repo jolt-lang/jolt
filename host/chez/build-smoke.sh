@@ -157,6 +157,44 @@ case "$badout" in
   *) echo "  FAIL: a malformed ns failed the build with the wrong report:"; echo "$badout"; exit 1 ;;
 esac
 
+# The success-type check in a build: a call that can never succeed fails it,
+# located at the call; a likely mistake that could still be meant builds and
+# prints its warning once, on every build (the emit walk reports it, so an AOT-
+# cached load phase can't hide it).
+tcapp="$(dirname "$out")/tcapp"
+mkdir -p "$tcapp/src/tc"
+echo '{:paths ["src"]}' > "$tcapp/deps.edn"
+cat > "$tcapp/src/tc/core.clj" <<'TCERR'
+(ns tc.core)
+(defn helper [x] (if (keyword? x) (count x) 0))
+(defn -main [& _] (println (helper 1)))
+TCERR
+if tcout="$(JOLT_PWD="$tcapp" "$jolt" build -m tc.core -o "$tcapp/bin" 2>&1)"; then
+  echo "  FAIL: jolt build accepted a call that can never succeed"; exit 1
+fi
+case "$tcout" in
+  *"analyze/type-error"*"always throws"*"core.clj:2:35"*) ;;
+  *) echo "  FAIL: a provably-wrong call failed the build with the wrong report:"; echo "$tcout"; exit 1 ;;
+esac
+cat > "$tcapp/src/tc/core.clj" <<'TCWARN'
+(ns tc.core)
+(defn hinted [^String s] (+ s 1))
+(defn -main [& _] (println "built"))
+TCWARN
+for tcpass in 1 2; do
+  if ! tcout="$(JOLT_PWD="$tcapp" "$jolt" build -m tc.core -o "$tcapp/bin" 2>&1)"; then
+    echo "  FAIL: a warning-only app did not build (build $tcpass)"; echo "$tcout"; exit 1
+  fi
+  tcn="$(printf '%s\n' "$tcout" | grep -c 'core.clj:2:26: warning: `+` requires a number, but argument 1 (`s`) is hinted as a string')"
+  if [ "$tcn" != 1 ]; then
+    echo "  FAIL: build $tcpass printed the hint warning $tcn times, not once"; echo "$tcout"; exit 1
+  fi
+done
+if [ "$("$tcapp/bin")" != built ]; then
+  echo "  FAIL: the warning-only app's binary"; exit 1
+fi
+rm -rf "$tcapp"
+
 # The cross-ns app.core -> app.util/shout reference is direct-linked in the plain
 # release build, not var-routed.
 #
@@ -360,20 +398,24 @@ hm_off="$(JOLT_MAX_HEAP=off heap_max)"
 if [ "$hm_off" != "9223372036854775807" ]; then
   echo "  FAIL: JOLT_MAX_HEAP=off gave $hm_off, want Long/MAX_VALUE"; exit 1
 fi
-# and exceeding one is an error the program can catch, not a SIGKILL. 256m, not
-# something smaller: a built binary's own baseline live heap is ~83MB here, and a
-# ceiling under that cannot be satisfied at all (checked separately below).
+# and exceeding one is an error the program can catch, not a SIGKILL.
 hm_oom="$(cd / && JOLT_MAX_HEAP=256m "$out" --heap-oom 2>&1 | sed -n 's/^heap-oom: //p')"
 if [ "$hm_oom" != ":caught-oom" ]; then
   echo "  FAIL: exceeding a 256m ceiling gave '$hm_oom', want :caught-oom"; exit 1
 fi
-# a ceiling below the runtime's own live heap is rejected AS a bad setting, named
-# as such, rather than failing somewhere inside namespace initialization
-hm_low="$(cd / && JOLT_MAX_HEAP=16m "$out" --heap 2>&1 | head -2)"
+# a ceiling too small to use is rejected AS a bad setting, named as such, rather
+# than failing somewhere inside namespace initialization. The ceiling leaves out
+# the boot image, so what a built program holds at startup is next to nothing;
+# the floor is the JVM's instead: 2m starts, 1m is "Too small maximum heap".
+hm_low="$(cd / && JOLT_MAX_HEAP=1m "$out" --heap 2>&1 | head -2)"
 case "$hm_low" in
-  *"smaller than the runtime's own live heap"*) : ;;
-  *) echo "  FAIL: a 16m ceiling should be refused with a clear message, got: $hm_low"; exit 1 ;;
+  *"JOLT_MAX_HEAP is too small"*) : ;;
+  *) echo "  FAIL: a 1m ceiling should be refused with a clear message, got: $hm_low"; exit 1 ;;
 esac
+hm_two="$(JOLT_MAX_HEAP=2m heap_max)"
+if [ "$hm_two" != "2097152" ]; then
+  echo "  FAIL: a 2m ceiling, the JVM's floor, gave $hm_two, want 2097152"; exit 1
+fi
 
 # A NAMED inner fn inside a spliced callee (jolt-pzos). Two claims:
 #  - the alpha-rename the splicer applies for hygiene (step-boom -> step-boom__ilN)
@@ -2340,4 +2382,4 @@ if [ "$got_ls" != "$want_ls" ]; then
 fi
 rm -rf "$ls_d"
 
-echo "build smoke: passed (release + optimized + direct-link + tree-shake + compiler+core shake + data-reader + no-main + optional-native + deps-opt + cljc-cond + jolt-ext + vendored-fs + petite-only-fs + vendored-process + petite-only-process + ffi-clj-layer + petite-only-ffi + declare-only-var + install-owned-order + split-provider-order + embedded-value + sdeps-before-build + source-mode-driver + build-error-location + compile-error-position + scan-alias-set + as-alias + flat-split + runtime-cache + unit-cache + boot-modes + compiler-verdict + gzip-round-trip + signable + include + dep-resources + emitted-head-defs + lazy-shim-absent)"
+echo "build smoke: passed (release + optimized + direct-link + tree-shake + compiler+core shake + data-reader + no-main + optional-native + deps-opt + cljc-cond + jolt-ext + vendored-fs + petite-only-fs + vendored-process + petite-only-process + ffi-clj-layer + petite-only-ffi + declare-only-var + install-owned-order + split-provider-order + embedded-value + sdeps-before-build + source-mode-driver + build-error-location + type-check + compile-error-position + scan-alias-set + as-alias + flat-split + runtime-cache + unit-cache + boot-modes + compiler-verdict + gzip-round-trip + signable + include + dep-resources + emitted-head-defs + lazy-shim-absent)"

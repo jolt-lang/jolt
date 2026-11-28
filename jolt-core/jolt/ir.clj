@@ -196,6 +196,12 @@
 ;; :inline-guard :fn :ns :name :token             :fn  (a guarded splice's test:
 ;;                                                     the fn read off the var is
 ;;                                                     the root :token stamped)
+;; :proto-guard  :fn :recv :ns :name :proto :method :desc :k
+;;                                                :fn :recv  (a specialized
+;;                                                     protocol site's test, #1861:
+;;                                                     the var holds the protocol
+;;                                                     fn, :recv's type is :desc and
+;;                                                     its impl is :k)
 ;;
 ;;  * the positions map-ir-children / reduce-ir-children recurse. A `?` marks an
 ;;    optional position recursed only when present.
@@ -272,11 +278,14 @@
 ;;   :meta-expr              a :def's evaluated metadata expression.
 ;;   :pos                    reader source position {:line :column :file}.
 ;;   :letrec                 a :let that must lower to letrec* (mutual recursion).
+;;   :dcast                  a :local that reads a ^double-hinted let/loop
+;;                           binding (analyzer); the numeric pass casts its
+;;                           arithmetic uses.
 (def node-ops
   #{:const :local :var :the-var :host :host-static :host-new :if :do :invoke :def
     :let :let-values :loop :recur :fn :vector :map :set :quote :throw :coerce :try :host-call
     :set-var :set-field :defmacro :ffi-layout :ffi-fn :ffi-callable :regex :inst :uuid :bigdec
-    :the-ns :load-time-value :inline-guard :native-region})
+    :the-ns :load-time-value :inline-guard :proto-guard :native-region})
 
 ;; op -> the keys a node of that op must carry. Optional keys (:init, annotations)
 ;; are not listed. Kept conservative for the leaf/host ops so a shape change
@@ -295,6 +304,7 @@
    :ffi-fn [:csym :argtypes :rettype] :ffi-callable [:fn :argtypes :rettype]
    :regex [:source] :inst [:source] :uuid [:source] :bigdec [:source]
    :the-ns [:name] :load-time-value [:expr] :inline-guard [:fn :ns :name :token]
+   :proto-guard [:fn :recv :ns :name :proto :method :desc :k]
    :native-region [:sym :src :kinds :result :mode :args :raise]})
 
 ;; Problems with THIS node's shape (not its children): an unknown or missing :op,
@@ -389,6 +399,7 @@
    :ffi-callable [[:fn :node]]
    :native-region [[:args :nodes] [:raise :node]]
    :inline-guard [[:fn :node]]
+   :proto-guard [[:fn :node] [:recv :node]]
    :invoke [[:fn :node] [:args :nodes]]
    :vector [[:items :nodes]]
    :set [[:items :nodes]]

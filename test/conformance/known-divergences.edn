@@ -948,15 +948,6 @@
            :jvm "5"
            :jolt "1"}
    :note "Between values the calls match: each argument of print/pr/println/prn is its own write, the space and the newline are appends, and PrintWriter.printf writes each Formatter piece. The text is identical; only a Writer that logs its calls can tell. jolt renders a value in the host printer, which is also what keeps pr-str fast, rather than walking print-method once per element."}
-  ;; unchecked-add/-subtract/-multiply accept any arity (the JVM's take exactly 2).
-  {:category :permissive
-   :behavior "(unchecked-add x) or (unchecked-add a b c), e.g. through apply"
-   :jvm "throws ArityException — these are arity-2 only"
-   :jolt "folds like +: no args => 0, one => the operand, N => a left fold"
-   :check {:expr "(unchecked-add)"
-           :jvm "throws ArityException"
-           :jolt "0"}
-   :note "The overlay is variadic where the JVM's is fixed-arity. At arity 2 — every arity the JVM accepts — the wrapping result is identical, 64-bit edges included, so portable code is unaffected. Costs nothing on the hot path either: proven-long operands lower straight to jolt-uncadd2 (a left fold past 2 operands) and never reach the variadic overlay, which only serves value position."}
   ;; defonce takes a docstring, as def does; the JVM's defonce is [name expr] only.
   {:category :permissive
    :behavior "(defonce name \"doc\" init) — the (def sym doc-string? init) shape, on defonce"
@@ -1477,6 +1468,19 @@
            :jvm "throws RuntimeException"
            :jolt "\"a 3 b 4\""}
    :note "clojure.core.strint/<< ships alongside it and expands through the same grammar; a string with no marker reads as itself, so #$\"plain\" IS \"plain\"."}
+  ;; *reader-resolver* reaches ::k, ::alias/k and #::{} (reader.ss rdr-resolver)
+  ;; but not syntax-quote: jolt lowers a backquote against *ns* and its aliases,
+  ;; where LispReader asks the resolver's resolveClass/resolveVar/currentNS. Only
+  ;; a tool that binds a resolver and reads backquoted source sees it; clj-reload
+  ;; (jolt.reload) binds one but reads only ns forms and top-level def heads.
+  {:category :reader-model
+   :behavior "`foo read with a *reader-resolver* whose currentNS is cur"
+   :jvm "(quote cur/foo), qualified through the resolver"
+   :jolt "(quote user/foo), qualified against *ns*"
+   :check {:expr "(binding [*reader-resolver* (reify clojure.lang.LispReader$Resolver (currentNS [_] (quote cur)) (resolveClass [_ s] nil) (resolveAlias [_ s] nil) (resolveVar [_ s] nil))] (read-string \"`foo\"))"
+           :jvm "(quote cur/foo)"
+           :jolt "(quote user/foo)"}
+   :note "Known since jolt.reload (PR #1898)."}
   ;; Class reflection answers from what jolt REGISTERS for a class — a deftype's
   ;; methods and fields (the protocol/type registry), an ArrayList's methods (the
   ;; host shim tables), Long/MAX_VALUE and Math/floor (class-statics) — because
@@ -1959,6 +1963,19 @@
    :check :prose
    :why "the jolt side is the host libm's answer, which differs between macOS, glibc, musl and Windows; the JVM side differs between CPUs for the intrinsics"
    :note "Chosen for speed: an fdlibm port in Scheme made Math calls 1.3x to 20x slower. sqrt, cbrt, log10, IEEEremainder, toRadians and toDegrees match JDK 21 bit for bit."}
+  ;; double? is a native op (op_registry.clj), so a direct call compiles to the
+  ;; flonum test rather than a load of the var: the numeric pass reads it as a
+  ;; type test that narrows its operand to :double, which is what lets a
+  ;; (if (double? x) …) branch take the fl ops. Clojure's double? is a plain defn
+  ;; with no :inline, so rebinding the var reaches every caller there.
+  {:category :impl-detail
+   :behavior "(with-redefs [double? f] (double? x)), a rebinding of double? seen by a direct call"
+   :jvm "the call goes through the var, so it answers what f does"
+   :jolt "the call is compiled to the native flonum test, so it answers whether x is a double"
+   :check {:expr "(with-redefs [double? (constantly true)] (double? \"x\"))"
+           :jvm "true"
+           :jolt "false"}
+   :note "A higher-order use, (mapv double? xs), answers the same way."}
 ]
  :entries
  [;; sorted-map/sorted-set are a B+tree, not PersistentTreeMap's red-black tree,
