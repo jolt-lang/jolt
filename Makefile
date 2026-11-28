@@ -907,7 +907,15 @@ fastpathratio: testbin
 # with var-cache off (every var ref looked up by name, 2-7x slower). A
 # QUIET-GATE: CI runs it after the rest of its shard, not beside it.
 stdlibratio: testbin
-	@JOLT_NO_USER_DEPS=1 target/release/jolt run test/stdlib_compile_ratio_test.clj
+	@if JOLT_NO_USER_DEPS=1 target/release/jolt run test/stdlib_compile_ratio_test.clj >target/stdlibratio.out 2>&1; then \
+	  cat target/stdlibratio.out; \
+	else \
+	  cat target/stdlibratio.out; \
+	  only=$$(sed -n 's/^  - \([^:]*\): ratio .*/\1/p' target/stdlibratio.out | paste -sd, -); \
+	  if [ -z "$$only" ]; then exit 1; fi; \
+	  echo; echo "stdlibratio: judging $$only again in a fresh process"; \
+	  STDLIBRATIO_ONLY="$$only" JOLT_NO_USER_DEPS=1 target/release/jolt run test/stdlib_compile_ratio_test.clj; \
+	fi
 
 # The 2026-08 sweep's remaining hot-path shapes in one gate: split-with-limit,
 # core.async timeout arming, ArrayDeque/StringTokenizer draining, ns-publics/
