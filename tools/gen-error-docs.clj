@@ -19,7 +19,8 @@
   {"read"    "Reader"
    "analyze" "Analysis"
    "runtime" "Runtime"
-   "ffi"     "Foreign interface"})
+   "ffi"     "Foreign interface"
+   "native"  "Native regions"})
 
 (def ^:private phase-blurbs
   {"read"    "Raised while reading source text into forms, before anything is compiled."
@@ -27,7 +28,10 @@
    "runtime" "Raised while a program runs."
    "ffi"     "Raised while checking a jolt.ffi layout, type or signature. These are
 compile-time like the analysis errors, but concern a foreign type description
-rather than Clojure itself."})
+rather than Clojure itself."
+   "native"  "Raised while compiling a jolt.native region, defnative helper or defextern
+to C. These are compile-time too, and are reported in the REPL as soon as the form
+is evaluated."})
 
 (defn render []
   (let [kinds (read-string (slurp registry-path))
@@ -72,7 +76,7 @@ rather than Clojure itself."})
     ;; how six ffi/ kinds were silently dropped from this page — the same way a
     ;; hardcoded namespace list once made `make errorkinds` blind to them. Known
     ;; phases lead, in pipeline order; anything else follows rather than vanishes.
-    (doseq [phase (let [known ["read" "analyze" "ffi" "runtime"]
+    (doseq [phase (let [known ["read" "analyze" "ffi" "native" "runtime"]
                         present (set (keys by-phase))]
                     (concat (filter present known)
                             (sort (remove (set known) present))))
