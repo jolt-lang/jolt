@@ -22,13 +22,8 @@
 (define (ev s) (jolt-compile-eval s "user"))
 (define (jv-nth v i) (pvec-nth-d v i jolt-nil))
 
-(define overlay-src
-  (call-with-input-file "stdlib/clojure/core/async.clj"
-    (lambda (p)
-      (let loop ((acc '()))
-        (let ((c (read-char p)))
-          (if (eof-object? c) (list->string (reverse acc)) (loop (cons c acc))))))))
-(jolt-load-string overlay-src)
+(load "host/chez/gate-async-overlay.ss")
+(gate-load-async-overlay!)
 (ev "(require '[clojure.core.async :refer [chan go <! >!! <!! timeout *go-backend* go-monitor]])")
 
 (printf "== fiber monitors ==\n")

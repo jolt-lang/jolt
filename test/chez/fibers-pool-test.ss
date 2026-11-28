@@ -92,13 +92,8 @@
 ;; Load the real async overlay up front, exactly as the production loader does
 ;; (host async.ss + stdlib/clojure/core/async.clj together), then refer the
 ;; names the gate uses — the same setup the R4 go gate uses.
-(define overlay-src
-  (call-with-input-file "stdlib/clojure/core/async.clj"
-    (lambda (p)
-      (let loop ((acc '()))
-        (let ((c (read-char p)))
-          (if (eof-object? c) (list->string (reverse acc)) (loop (cons c acc))))))))
-(jolt-load-string overlay-src)
+(load "host/chez/gate-async-overlay.ss")
+(gate-load-async-overlay!)
 (ev "(require '[clojure.core.async
                 :refer [go chan <! <!! >!! *go-backend*]])")
 
