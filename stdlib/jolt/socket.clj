@@ -1876,9 +1876,9 @@
 ;; What bind(null) binds a unix listener to: a fresh name in the temp directory,
 ;; as the JDK's does.
 (defn- temp-unix-path []
-  (let [dir (or (System/getProperty "java.io.tmpdir") "/tmp")]
-    (str dir (when-not (str/ends-with? dir "/") "/")
-         "socket_" (Long/toHexString (rand-int Integer/MAX_VALUE)))))
+  ;; File joins with the platform separator: tmpdir ends in \ on Windows
+  (.getPath (java.io.File. (or (System/getProperty "java.io.tmpdir") "/tmp")
+                           (str "socket_" (Long/toHexString (rand-int Integer/MAX_VALUE))))))
 
 (defn- unix-listen! [ch path backlog]
   (let [fd (jolt.host/ref-get ch :fd)
