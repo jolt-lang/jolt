@@ -645,6 +645,9 @@
                (analyzed (or cached
                              (ei-timed "emit: analyze (uncached)"
                                (lambda () (jolt-ce-analyze ctx form)))))
+               ;; the build's success-type check and its warnings: every app
+               ;; form passes here on every build (compile-eval.ss)
+               (_ (jolt-check-build-node! analyzed))
                (ir (ei-timed "emit: run-passes"
                      (lambda () (jolt-ce-run-passes analyzed ctx (ei-unit)))))
                (str (if (eq? kind 'macro)
@@ -705,6 +708,8 @@
         (cons "jolt.backend-scheme.interop" "jolt-core/jolt/backend_scheme/interop.clj")
         (cons "jolt.backend-scheme.lambda" "jolt-core/jolt/backend_scheme/lambda.clj")
         (cons "jolt.backend-scheme.fused" "jolt-core/jolt/backend_scheme/fused.clj")
+        (cons "jolt.backend-scheme.slots" "jolt-core/jolt/backend_scheme/slots.clj")
+        (cons "jolt.backend-scheme.specialize" "jolt-core/jolt/backend_scheme/specialize.clj")
         (cons "jolt.backend-scheme" "jolt-core/jolt/backend_scheme.clj")))
 
 ;; The clojure.core tiers + stdlib namespaces, in load order.

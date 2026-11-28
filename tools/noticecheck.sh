@@ -18,7 +18,7 @@ fails=0
 fail() { echo "  FAIL: $*"; fails=$((fails + 1)); }
 
 # Test-only submodules: the gates run them, no binary carries them.
-test_only="vendor/sci vendor/clojure-test-suite"
+test_only="vendor/sci vendor/clojure-test-suite vendor/tools.reader"
 
 for path in $(sed -n 's/^[[:space:]]*path = //p' .gitmodules); do
   case " $test_only " in *" $path "*) continue ;; esac

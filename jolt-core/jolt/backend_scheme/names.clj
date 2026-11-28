@@ -219,7 +219,7 @@
                   ;; PIC, ffi, def, and image sites.
                   "make-jfloat" "jfloat?" "jfloat-fl" "jfloat-unbox" "jnum->exact"
                   "jrec-field-site-make" "jrec-field-site-ref" "jrec-field-site-ref/i" "jolt=2/i" "jolt-char-pred/i" "jolt-zero?/i" "jolt-pos?/i" "jolt-neg?/i" "jolt-str1/i" "jolt-nth/i" "jolt-kw-get-site/i" "jolt-instance-site/i" "str-index-of-any/i" "jolt-pic-host-key/i" "host-new-site/i" "host-new-site-make" "jrec-own-field" "jolt-set-own-field!" "jrec-pic-desc" "jrec-pic-desc/i" "jrdesc-vtable-ref" "jrec-slot/u" "jrec-slot-set!/u" "jrec*-slot/u" "jrec*-slot-set!/u" "intern-pm-key" "protocol-direct-impl" "protocol-direct-impl/site" "protocol-fn-of" "jrec?" "jrec-desc"
-                  "jrec-own-slot-miss" "jrec-own-slot-set-miss!" "jrec*-vals" "unbox" "pvec-in-range/i" "jrec-self-site-fill!" "jrec-field"
+                  "jrec-own-slot-miss" "jrec-own-slot-set-miss!" "jrec*-vals" "unbox" "pvec-in-range/i" "jrec-self-site-fill!" "jrec-field" "jolt-psite-make" "jolt-psite-tick!" "jolt-spec-const" "image-register-fn-pos!"
                   "jolt-atom-new" "jolt-atom-val" "jolt-atom-cas!"
                   "pvec?" "pvec-cnt" "pvec-nth-in-range" "fx<?"
                   ;; The guarded into/filter/map lowering keeps these runtime

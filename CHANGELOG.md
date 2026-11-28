@@ -7,6 +7,125 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Runtime specialization of hot protocol calls (#1861).** Under `jolt run`,
+  a protocol call on a record counts its calls and samples which method it
+  reaches. Once a call site in a deftype or `extend` method has seen one type
+  for a while, the method is recompiled from its source with the callee's body
+  inlined behind a guard, and the inlined body reads and writes the callee's
+  fields with no type check. The guard falls back to the ordinary call when
+  the type, the method or the protocol var is redefined. tools.reader's
+  indexing reader reads a char in about two thirds of the time, and the #1713
+  benchmarks (tools.reader `read-string`, rewrite-clj `parse-string`) run
+  10-15% faster. `JOLT_SPECIALIZE=0` turns it off; `JOLT_SPEC_DEBUG=1` reports
+  each recompile.
+- **`jolt.reload`: clj-reload, built in.** A port of Nikita Prokopov's
+  [clj-reload](https://github.com/tonsky/clj-reload) 1.0.0 (MIT). `init` names
+  the source dirs; `reload` unloads every namespace whose file changed, and
+  everything that depends on it, then loads them back in dependency order.
+  `defonce` and `^:jolt.reload/keep` vars survive a reload (deftype, defrecord
+  and defprotocol included), `^:jolt.reload/no-reload` and `no-unload` opt a
+  namespace out, and the upstream `:clj-reload/...` spellings work too. With no
+  `init`, it watches every source dir on the class path, `.jolt` files included
+  (`JOLT_RELOAD_AUTO_INIT=false` turns that off). clj-reload's own parse, core
+  and keep suites run as a smoke gate: 48 tests, all passing.
+- **A call that can never succeed is a compile error.** `(+ "s" 1)`,
+  `(count :a)`, `("s" 1)`, or `(inc x)` where a `(string? x)` test just proved
+  `x` a string, now fails to compile with `:analyze/type-error`, located at the
+  call and saying why it always throws; every such call in the form is listed.
+  Only what the form itself proves feeds it (literals, what core ops return,
+  locals a type test narrowed), never a type hint, a var's value or a caller,
+  so nothing that could run is rejected, and `make rettype` checks that every
+  rejected call throws at runtime. A likely mistake that could still be meant is
+  a warning instead (`file:line:col: warning: …`): a mismatch only a `^String`
+  hint claims, `min`/`max` beside an operand that may be NaN, or a call inside a
+  `try` that catches what it throws, as `thrown?` assertions do. `jolt build`
+  prints the warnings, once each, on every build; the REPL, `jolt run` and `-e`
+  keep quiet about them unless `JOLT_CHECK=1`, which also adds the advice-only
+  diagnostics (type hints that do nothing) it used to print on its own. Errors
+  apply everywhere. The check's compile-time cost is within noise on the
+  compile-forms bench, check on vs off; `JOLT_CHECK=0` turns it off.
+
+### Changed
+
+- **The heap ceiling leaves out the boot image, as `-Xmx` leaves out code and
+  metaspace.** `JOLT_MAX_HEAP` (and the 25%-of-RAM default) now bounds the
+  program's heap only. It counted Chez's static generation, the compiled
+  runtime and stdlib, which has grown from 60MB in 0.8.12 to 93MB, so
+  `JOLT_MAX_HEAP=256m` left a program ~163MB and a 96m ceiling could not hold
+  the runtime at all. `Runtime/totalMemory`, the `JOLT_GC_LOG` heap figures and
+  the out-of-memory messages leave it out too, so `totalMemory` stays under
+  `maxMemory`. `jolt.host/static-memory-bytes` reports the image's size. A
+  process now uses up to the image's size more memory than it did under the
+  same setting. As with `-Xmx`, a ceiling under 2MB is refused at startup.
+
+### Performance
+
+- `jolt.infix`'s `infix`/`$=` give an expression that divides or calls a
+  `Math` function on locals a branch for when every one of those locals is a
+  double: the same prefix form with the locals rebound through `double`, so it
+  compiles to flonum ops instead of generic arithmetic, about 6x faster on a
+  trig-and-power expression. Any other input takes the expansion as before, so
+  longs, ratios and bigints answer as they did.
+- **A type test narrows the local it tests.** In `(if (double? x) (* x x) ...)`
+  the guarded branch now runs Chez flonum ops on `x`, as do `cond` arms and
+  every conjunct of an `and` chain; `string?`, `keyword?` and `number?` type
+  their branch for the optimizing passes too. `double?` is now a native op
+  (the host flonum test), like `nil?`. A dispatch-by-hand kernel ran 40-47%
+  faster (10M calls: 218 to 131 ms; two `double?` tests 320 to 170 ms).
+- **`(double x)` tests for a flonum before calling the cast helper**, as
+  `(long x)` already tests for a fixnum.
+
+### Fixed
+
+- A `jolt.native` region, `defnative` or `defextern` the region compiler
+  rejects reports as `error[native/invalid-region]`, with
+  `:jolt.error/kind :native/invalid-region` in its ex-data. It read as
+  `error[analyze/internal-failure]`, which says the compiler failed, for a
+  mistake in the program such as using an array after a helper took it.
+- A native region error names the call it can't compile: `(println "hi")` and
+  `(map inc xs)` reported their arguments (the string, or `inc` as an unknown
+  name) instead of the unsupported head. A literal, which has no line of its
+  own, reports the line of the form around it.
+- **The reader honors `*reader-resolver*` and `*suppress-read*`.** With a
+  `clojure.lang.LispReader$Resolver` bound, `::k`, `::alias/k`, `#::{}` and
+  `#::alias{}` ask it for their namespace, as on the JVM, so a tool can read
+  source whose aliases were never loaded; an alias it answers nil for is an
+  invalid token. Under `*suppress-read*` a record literal reads as a
+  `TaggedLiteral` instead of being refused when `*read-eval*` is false.
+- `Math/pow` (and `clojure.math/pow`) of a double to the power 2 is the
+  multiply `x*x`, as on the JVM. It went through the host's `pow`, which glibc
+  rounds to within an ulp, so `(Math/pow -135965.65000000002 2)` answered
+  `1.848665797992251E10` where the JVM answers `1.8486657979922504E10`.
+- **`unchecked-add`, `unchecked-subtract` and `unchecked-multiply` take exactly
+  two arguments**, as on the JVM, where each is a single `[x y]` arity:
+  `(unchecked-add 1)`, `(unchecked-multiply)` and `(apply unchecked-add [1 2 3])`
+  raise `ArityException` instead of answering. Under `*unchecked-math*`,
+  `(+ a b c)` becomes nested pairs, as clojure.core's inliner expands it, and
+  `(+ a)`, `(+)` and `(*)` stay the ordinary fns.
+- **A `^double` let or loop local unboxes at each arithmetic use, as on the JVM.**
+  `(let [^double x (first [2])] (* x x))` is `4.0` (it was `4`), over `1/3` it
+  is `1.0`, and over a string it throws `ClassCastException`; `str`, `class`
+  and a one-argument `+` still see the value itself. Those uses now take the
+  flonum ops: two hinted locals into `Math/sqrt` ran in 102 ms where they took
+  330 (5M calls).
+- **A one-argument `+`, `*`, `min` or `max` is no longer typed as a number.**
+  They answer their argument, so `(+ nil)` is `nil`, and an optimized build
+  folded `(nil? y)` over `y = (+ x)` to `false`. A new gate (`make rettype`)
+  runs every return-type claim the compiler trusts against the runtime on
+  representative values, which is how this was found.
+- **`count` on a core.async buffer answers how many values it holds.** A
+  buffer passed to `chan` shares the channel's queue, so a caller that kept
+  the `buffer`, `dropping-buffer` or `sliding-buffer` can watch it fill and
+  drain (#1914).
+- **core.async `put!` and `take!` work on a port you implement.** They call
+  the `WritePort`/`ReadPort` protocol methods with a `fn-handler`, as
+  upstream does, and a forwarding port can hand that handler on to a native
+  channel. `clojure.core.async.impl.protocols` now has `Handler`, `WritePort`
+  and `FnHandler`. Custom ports in parking ops and `alts!` are still not
+  supported (#1913).
+
 ## [0.8.31] - 2026-11-27
 
 `jolt.native` regions now always run as native code: outside a `jolt build`

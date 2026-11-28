@@ -332,6 +332,43 @@
 (chk= "be-eq3" ((parse-all g/expression "0 = 0.0") base-env) false)
 (chk= "be-eqeq" ((parse-all g/expression "0 == 0.0") base-env) true)
 
+;; ------------------------------------------------------- double fast path
+;; infix guards an expression over locals with a branch taken when every local
+;; is a double. Both branches are the same prefix form, so each input must give
+;; exactly what the plain prefix expression gives, whichever branch it takes.
+(def specialize @#'jolt.infix/specialize)
+(let [form (specialize '{x nil y nil} '(+ (Math/pow x 2) (* 3 (/ x y))))]
+  (chk= "fp-guard" (take 2 form)
+        (list 'if (list 'clojure.core/and (list 'clojure.core/double? 'x)
+                        (list 'clojure.core/double? 'y)))))
+(chk= "fp-no-locals" (specialize '{} '(+ a 1)) '(+ a 1))
+(chk= "fp-no-arith" (specialize '{x nil} '(and x true)) '(and x true))
+(chk= "fp-plain-arith" (specialize '{x nil y nil} '(+ (* x 3) (- y x))) '(+ (* x 3) (- y x)))
+(chk= "fp-div-guarded" (first (specialize '{x nil} '(+ 1 (/ x 2)))) 'if)
+(chk= "fp-head-not-operand" (specialize '{f nil} '(f 1 2)) '(f 1 2))
+(chk= "fp-local-sym" (specialize '{x nil} 'x) 'x)
+
+(defn fp-infix [x y] (infix x ** 2 + sqrt(y) * sin(x) - 3 * x / y))
+(defn fp-prefix [x y] (+ (Math/pow x 2) (- (* (Math/sqrt y) (Math/sin x)) (* 3 (/ x y)))))
+(doseq [[x y] [[1.5 2.5] [3 2] [1/2 3] [1.5 2] [2 0.5] [-0.0 1.0] [##NaN 1.0]
+               [##Inf 4.0] [1e300 1e-300] [(float 1.5) 2.5] [10N 4]]]
+  (chk= (str "fp-same " x " " y) (pr-str (fp-infix x y)) (pr-str (fp-prefix x y))))
+
+(defn fp-int [a b] (infix a + b * 2))
+(chk= "fp-long" (fp-int 3 4) 11)
+(chk "fp-long-type" (instance? Long (fp-int 3 4)))
+(chk= "fp-double" (fp-int 3.0 4.0) 11.0)
+(defn fp-div [a b] (infix a / b))
+(chk= "fp-ratio" (fp-div 1 2) 1/2)
+(chk= "fp-ratio-double" (fp-div 1.0 2.0) 0.5)
+(chk-throws "fp-div0-long" (constantly true) #(fp-div 1 0))
+(chk= "fp-div0-double" (fp-div 1.0 0.0) ##Inf)
+(chk= "fp-cmp" ((fn [a b] (infix a * 2 > b)) 1.5 2.9) true)
+(let [k 2.0] (chk= "fp-let-local" (infix k * k + 1) 5.0))
+(def fp-v 2.0)
+(chk= "fp-var-operand" ((fn [x] (infix x * fp-v)) 3.0) 6.0)
+(chk= "fp-local-fn-head" ((fn [f x] (infix f(x) + x)) inc 1.5) 4.0)
+
 ;; ---------------------------------------------------------------------- report
 (if (empty? @failures)
   (println "INFIX OK")

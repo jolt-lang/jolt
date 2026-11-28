@@ -162,6 +162,13 @@ infix
   MIT License: licenses/MIT-infix.txt
   stdlib/jolt/infix.clj and stdlib/jolt/infix/.
 
+clj-reload (1.0.0)
+  https://github.com/tonsky/clj-reload
+  Copyright (c) 2024 Nikita Prokopov
+  MIT License: licenses/MIT-clj-reload.txt
+  stdlib/jolt/reload.clj and stdlib/jolt/reload/, and the test suites and
+  fixtures in test/chez/reload/.
+
 Racket treelist
   https://github.com/racket/racket (racket/collects/racket/treelist.rkt)
   Copyright (c) PLT Design Inc. and contributors

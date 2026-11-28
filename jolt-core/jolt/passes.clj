@@ -17,7 +17,8 @@
             [jolt.passes.fold :refer [const-fold]]
             [jolt.passes.numeric :as numeric]
             [jolt.passes.inline :refer [inline-node flatten-lets scalar-replace direct-call-edges
-                                        begin-growth-budget! end-growth-budget! guarded-candidate?]]
+                                        begin-growth-budget! end-growth-budget! guarded-candidate?
+                                        number-psites]]
             [jolt.passes.loop-maps :refer [lower-fixed-map-loops]]
             [jolt.passes.types :refer [run-inference reinfer-def
                                        set-record-shapes! set-protocol-methods!
@@ -315,6 +316,10 @@
                (guarded-inline? ctx) (pt :inline (fn [] (optimize-guarded node ctx unit)))
                ;; Dev/normal: const-fold + numeric only
                :else (pt :fold (fn [] (const-fold node))))
-          result (pt :numeric (fn [] (numeric/annotate ir)))]
+          result (pt :numeric (fn [] (numeric/annotate ir)))
+          ;; the open-world spine numbers protocol sites for the runtime
+          ;; specializer (#1861, jolt.passes.inline number-psites); last, so
+          ;; a site a splice copied in is numbered where it landed
+          result (if (guarded-inline? ctx) (number-psites result ctx) result)]
       (when ir-validate? (report-ir! "passes" result))
       result))))

@@ -49,11 +49,11 @@
 (def op-registry
   ;; arithmetic
   {"+"   {:call "jolt-n+"    :value "jolt-add"   :dbl "fl+"  :lng "jolt-l+"    :bd "jbd-add"
-          :dbl-contagion? true :num-result? true :num-args? true :pure? true :foldable? true}
+          :arg1-identity? true :dbl-contagion? true :num-result? true :num-args? true :pure? true :foldable? true}
    "-"   {:call "jolt-n-"    :value "jolt-sub"   :dbl "fl-"  :lng "jolt-l-"    :bd "jbd-sub"
           :dbl-contagion? true :num-result? true :num-args? true :pure? true :foldable? true}
    "*"   {:call "jolt-n*"    :value "jolt-mul"   :dbl "fl*"  :lng "jolt-l*"    :bd "jbd-mul"
-          :dbl-contagion? true :num-result? true :num-args? true :pure? true :foldable? true}
+          :arg1-identity? true :dbl-contagion? true :num-result? true :num-args? true :pure? true :foldable? true}
    "/"   {:call "jolt-n-div" :value "jolt-div"   :dbl "fl/"                   :bd "jbd-div"
           :dbl-contagion? true :num-result? true :num-args? true :foldable? true}
    ;; comparisons: vacuously true at arity 1 and don't inspect the arg, but
@@ -78,10 +78,10 @@
    "not" {:call "jolt-not" :value "jolt-not-fn" :arity #(= % 1) :bool? true :pure? true}
    "min" {:call "jolt-n-min" :value "jolt-min"
           :dbl "flmin" :lng "jolt-l-min" :bd "jbd-min"
-          :num-result? true :num-args? true :pure? true}
+          :arg1-identity? true :num-result? true :num-args? true :pure? true}
    "max" {:call "jolt-n-max" :value "jolt-max"
           :dbl "flmax" :lng "jolt-l-max" :bd "jbd-max"
-          :num-result? true :num-args? true :pure? true}
+          :arg1-identity? true :num-result? true :num-args? true :pure? true}
    "abs" {:num-result? true :num-args? true :pure? true}  ; overlay fn, not a native op
    ;; no :bd — there is no jbd-mod. The bigdec kind is only assigned to quot/rem
    ;; (passes.numeric bd-result-kind), so a "jbd-mod" here never reached emission;
@@ -102,17 +102,19 @@
    ;; was var-deref + jolt-invoke + the variadic rest-list fold — 29 ns against
    ;; 3.6 for + on the same operands, and the hinted-Clojure idiom libraries
    ;; write (unchecked-inc on a loop counter, unchecked-add on an accumulator) is
-   ;; exactly what paid it. :fixed names the 2-arg entry; :lng keeps the proven-
-   ;; long path on the same WRAPPING helpers (never the raising fx ops); :dbl is
-   ;; the same flonum op as +/-/*: unchecked-* wrap only longs and are ordinary
-   ;; arithmetic on a flonum operand, so a proven-double pair unboxes too.
-   "unchecked-add"      {:call "jolt-unchecked-add" :fixed {2 "jolt-uncadd2"}
+   ;; exactly what paid it. :lng keeps the proven-long path on the same WRAPPING
+   ;; helpers (never the raising fx ops); :dbl is the same flonum op as +/-/*:
+   ;; unchecked-* wrap only longs and are ordinary arithmetic on a flonum operand,
+   ;; so a proven-double pair unboxes too. add/subtract/multiply take exactly two
+   ;; args, as on the JVM, where each has a single [x y] arity; (+ a b c) under
+   ;; *unchecked-math* becomes nested pairs (jolt.analyzer.interop).
+   "unchecked-add"      {:call "jolt-uncadd2" :arity #(= % 2)
                          :lng "jolt-uncadd2" :dbl "fl+"
                          :dbl-contagion? true :num-result? true :num-args? true}
-   "unchecked-subtract" {:call "jolt-unchecked-sub" :fixed {2 "jolt-uncsub2"}
+   "unchecked-subtract" {:call "jolt-uncsub2" :arity #(= % 2)
                          :lng "jolt-uncsub2" :dbl "fl-"
                          :dbl-contagion? true :num-result? true :num-args? true}
-   "unchecked-multiply" {:call "jolt-unchecked-mul" :fixed {2 "jolt-uncmul2"}
+   "unchecked-multiply" {:call "jolt-uncmul2" :arity #(= % 2)
                          :lng "jolt-uncmul2" :dbl "fl*"
                          :dbl-contagion? true :num-result? true :num-args? true}
    "unchecked-inc"      {:call "jolt-uncinc" :arity #(= % 1)
@@ -261,6 +263,11 @@
    "identity" {:call "jolt-identity" :value "jolt-identity-fn" :arity #(= % 1)}
    "nil?"     {:call "jolt-nil?"   :value "jolt-nil?-fn"   :arity #(= % 1) :bool? true :pure? true}
    "some?"    {:call "jolt-some?"  :value "jolt-some?-fn"  :arity #(= % 1) :bool? true :pure? true}
+   ;; double? is flonum? (host/chez/predicates.ss). Native, like nil?/some?, because
+   ;; the numeric pass narrows a local it tests to :double and runs unsafe fl ops
+   ;; on it in the guarded branch (jolt.passes.fold/truthy-type-tests): the test
+   ;; must be the host predicate, not whatever the var holds.
+   "double?"  {:call "jolt-double?" :arity #(= % 1) :bool? true :pure? true}
    ;; the reference inlines identical? (:inline -> Util/identical); a var call
    ;; here cost ~100ns per use in cell-less seed code (true?/false?/boolean?).
    "identical?" {:call "jolt-identical?" :value "jolt-identical?-fn" :arity #(= % 2) :bool? true :pure? true}
@@ -347,8 +354,14 @@
 
 ;; types/dbl-arith-ops: arithmetic ops that yield a flonum under double contagion.
 (def dbl-arith-ops (keys-with :dbl-contagion?))
-;; lattice/num-ret-fns: ops whose result is provably a number.
+;; lattice/num-ret-fns: ops whose result is provably a number — at arity 2 and up
+;; for the arg1-identity ops below.
 (def num-result-ops (keys-with :num-result?))
+;; Ops whose 1-arg call answers its argument unchanged, number or not, as the
+;; JVM's do: (+ nil) and (* nil) are nil, (min "s") is "s". So at arity 1 the
+;; result has the argument's type (not :num), and a non-number argument is no
+;; error for the checker. Found by the return-type gate (test/chez/rettype-test.ss).
+(def arg1-identity-ops (keys-with :arg1-identity?))
 ;; check/num-ops: ops that require every argument to be a number.
 (def num-arg-ops (keys-with :num-args?))
 ;; inline/pure-fns: pure AND total ops (a fold may duplicate or discard them).
