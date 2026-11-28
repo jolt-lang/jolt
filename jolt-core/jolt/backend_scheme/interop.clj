@@ -238,6 +238,9 @@
         ;; an int or long literal in range is already the unboxed value
         (and (#{"int" "long"} p) (re-matches #"-?[0-9]{1,9}" a)) a
         (get unbox-entries p) (str "(" (get unbox-entries p) " " a ")")
+        ;; a double unboxes inline when it already is one
+        (= p "double") (let [v (fresh-label "_ud$")]
+                         (str "(let ((" v " " a ")) (if (flonum? " v ") " v " (jolt-unbox-double " v ")))"))
         :else a))
 (defn- cast-args [node args]
   (let [ps (:arg-casts node)]

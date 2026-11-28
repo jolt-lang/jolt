@@ -119,7 +119,7 @@ JOLT-TARGETS-NEEDING-DEPS := \
   gateboot gatebootsmoke gosm hasheq httpsfetch infer inferscaling inline inline-body guardedinline irvalidate statlayout \
   jolt jolt-debug jolt-release joltsmoke libconformance libperf mandelbrot-num mathfl mvnhttp defmetacells staticsite gcpolicy stacklimit lazyretain \
   deadhost recordshadow emittedheads mirrordrift mirrordrift-regen regexdfacheck regexdfacheck-regen regexdfa regexanchor regexanchorprims regexanchorcheck regexsyntax regexbacktrack \
-  hostarity enummodel enumregistrymodel cowpublishmodel doseqperf failfastmodel imagecoverage lazyshims narrow narrowhash numeric numwp oparity s64wrap toplevelinline pic protoret printperf remint sbperf sci selfhost shakelocal \
+  hostarity enummodel enumregistrymodel cowpublishmodel doseqperf failfastmodel imagecoverage lazyshims narrow narrowhash numeric numwp oparity rettype s64wrap toplevelinline pic protoret printperf remint sbperf sci selfhost shakelocal \
   traceemit tracecompilecost vfaslceiling \
   shakesmoke smoke sortedcoll staticnativesmoke stateimage test testbin transient unit unitcontext zlibregistersmoke zlibnativesmoke noexecsmoke \
   threadsafety maskedacquire ioerrno values wp ci
@@ -180,7 +180,7 @@ CI-GATES := submodules values flonumprint recordinline corpus nsaudit unit docum
   smoke tracesmoke errorreport errorkinds buildsmoke embeddedresources reprobuildsmoke profilebuildsmoke buildlibsmoke staticnativesmoke zlibregistersmoke sci scifunctional cts loaderconf loadercache ffi ffidupsym ffiloadfail continuations stdlibfasl zlibunit depsnounzip zlibnativesmoke zipmemory noexecsmoke \
   transient sortedcoll rrbprop rrbscaling stateimage infer inferscaling wp devirt fieldread numwp fieldnum fieldjoin contagion \
   hasheq narrowhash \
-  protoret accfix pic narrow directlink linkedrace mintgate directcall defmetacells staticsite arraymap hamt recfast recfold arraybacking largebytesgc largefxgc unitcontext numeric oparity s64wrap toplevelinline mathfl flonumdisp flarr \
+  protoret accfix pic narrow directlink linkedrace mintgate directcall defmetacells staticsite arraymap hamt recfast recfold arraybacking largebytesgc largefxgc unitcontext numeric oparity rettype s64wrap toplevelinline mathfl flonumdisp flarr \
   fnform poolshape coreproc traceemit traceeval tracecompilecost degradedbacktrace \
   inline inline-body guardedinline dcerefs shakelocal manifestcheck readmecheck portcheck mirrordrift regexdfacheck regexdfa regexanchor regexanchorprims regexanchorcheck regexreplace regexsyntax regexbacktrack deadhost recordshadow emittedheads adaptercheck hostprops normalizecheck hostregistry hostarity enummodel imagecoverage lazyshims foreignhandles dispatchalloc hostsite regexmatcher winpath winplatform winparity statlayout lockcheck mmepochcheck parkcheck shelloutcheck errnocheck irvalidate seeddefs devbootsmoke \
   gatebootsmoke aotcachesmoke aotworkersmoke aotcachepathsmoke aotcachesourcepathsmoke aotcachestarfilesmoke aotfingerprint vfaslceiling vfaslstrings vfaslbignums buildscaling buildnatives buildsegments compilepathsmoke makefilesmoke versionsmoke attributioncheck noticecheck \
@@ -762,9 +762,10 @@ gcpolicy: testbin
 	 full=$$(JOLT_NO_USER_DEPS=1 $$j -e '(print (.maxMemory (Runtime/getRuntime)))'); \
 	 tenth=$$(JOLT_NO_USER_DEPS=1 JOLT_MAX_RAM_PERCENTAGE=10 $$j -e '(print (.maxMemory (Runtime/getRuntime)))'); \
 	 [ $$((tenth * 25 / 10)) -le $$((full + 1)) ] && [ $$((tenth * 25 / 10)) -ge $$((full - 4)) ] || { echo "FAIL gcpolicy: JOLT_MAX_RAM_PERCENTAGE=10 gave $$tenth against $$full at the default 25"; exit 1; }; \
-	 out=$$(JOLT_NO_USER_DEPS=1 JOLT_GC_LOG=1 JOLT_MAX_HEAP=256m $$j run $$t ceiling 2>&1); \
+	 errf=$$(mktemp); \
+	 out=$$(JOLT_NO_USER_DEPS=1 JOLT_GC_LOG=1 JOLT_MAX_HEAP=256m $$j run $$t ceiling 2>"$$errf"); \
 	 set -- $$(printf '%s\n' "$$out" | sed -n 's/^peak //p'); pk=$$1; mx=$$3; \
-	 after=$$(printf '%s\n' "$$out" | sed -n 's/^gc: .* total \([0-9]*\)MB .*/\1/p' | sort -n | tail -1); \
+	 after=$$(sed -n 's/^gc: .* total \([0-9]*\)MB .*/\1/p' "$$errf" | sort -n | tail -1); rm -f "$$errf"; \
 	 echo "gcpolicy: JOLT_MAX_HEAP=256m with ~100MB held -> total after collections $${after}MB, peak $$((pk / 1048576))MB, max $$((mx / 1048576))MB"; \
 	 [ -n "$$after" ] && [ $$((after * 1048576 * 10)) -le $$((mx * 11)) ] || { echo "FAIL gcpolicy: a collection left the total heap at $${after}MB, more than 10% over JOLT_MAX_HEAP=256m: the ceiling bounds the TOTAL heap, as -Xmx does, within the collector's working room"; exit 1; }; \
 	 [ -n "$$pk" ] && [ $$((pk * 10)) -le $$((mx * 11)) ] || { echo "FAIL gcpolicy: the total heap peaked at $$pk during collections, more than 10% over JOLT_MAX_HEAP=256m (v0.8.12 peaked 23% over)"; exit 1; }; \
@@ -780,7 +781,7 @@ gcpolicy: testbin
 	 st=$$(JOLT_NO_USER_DEPS=1 $$j run $$t startup 2>&1 | sed -n 's/^trip //p'); \
 	 echo "gcpolicy: a sub-millisecond first reading then cheap collections -> nursery $$st"; \
 	 [ "$$st" = "$$floor" ] || { echo "FAIL gcpolicy: one collection right after startup grew the nursery to $${st:-?} (the share must weigh collections by their time, and wait for five)"; exit 1; }; \
-	 set -- $$(JOLT_NO_USER_DEPS=1 JOLT_GC_TRIP_BYTES=16m JOLT_GC_LOG=1 $$j run $$t walk 2>&1 | sed -n 's/^gc: .* heap \([0-9]*\)MB .*/\1/p' | sort -n | sed -n '1p;$$p'); \
+	 set -- $$(JOLT_NO_USER_DEPS=1 JOLT_GC_TRIP_BYTES=16m JOLT_GC_LOG=1 $$j run $$t walk 2>&1 >/dev/null | sed -n 's/^gc: .* heap \([0-9]*\)MB .*/\1/p' | sort -n | sed -n '1p;$$p'); \
 	 echo "gcpolicy: a lazy-seq walk's heap after each collection ranged $${1:-?}MB..$${2:-?}MB"; \
 	 [ -n "$${2:-}" ] && [ $$(($$2 - $$1)) -le 4 ] || { echo "FAIL gcpolicy: the heap after a lazy-seq walk's collections climbed from $${1:-?}MB to $${2:-?}MB: a dead promoted cell is rooting the cells realized after it (nepotism; see sa-collect-young!)"; exit 1; }; \
 	 oh=$$(JOLT_NO_USER_DEPS=1 JOLT_MAX_HEAP=1g JOLT_GC_TIME_LIMIT=0 JOLT_GC_HEAP_FREE_LIMIT=100 $$j run $$t churn 2>&1) || true; \
@@ -1514,6 +1515,13 @@ s64wrap:
 # lower arithmetic to Chez fl*/fx* ops; un-hinted integer code stays generic.
 numeric:
 	@$(CHEZ) --script test/chez/numeric-test.ss
+
+# The return-type claims the types pass and checker trust (op-registry
+# :num-result?/:bool?/:num-args?/:dbl-contagion?, lattice's vector-/str-ret
+# tables), run against the actual functions on representative values of every
+# lattice class. A wrong entry is a silent miscompile; see rettype-check.clj.
+rettype:
+	@$(CHEZ) --script test/chez/rettype-test.ss
 
 # java.lang.Math over proven flonum operands lowers to the native Chez flonum op
 # (flsqrt/flatan/…), result typed :double so flonum contagion holds; an untyped

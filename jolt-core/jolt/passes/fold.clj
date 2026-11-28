@@ -7,6 +7,39 @@
   (:require [jolt.ir :refer [map-ir-children]]
             [jolt.op-registry :as op-registry]))
 
+;; Case-based narrowing (Baker, "The Nimble Type Inferencer", §4.1): a type test
+;; on a local proves that local's type in the branch the test guards, so a fn
+;; that dispatches by hand, (if (double? x) (* x x) ...), gets a specialized arm.
+;; Each predicate here answers true for exactly one lattice type: double? is
+;; flonum? on the host, string?/keyword?/number? are the scalar tags' own tests.
+;; float? is absent (it also accepts a jfloat, which is not a flonum), and so are
+;; int?/integer?, which accept bignums a :long op would overflow on.
+(def type-test-preds {"double?" :double "string?" :str "keyword?" :kw "number?" :num})
+(defn truthy-type-tests
+  "{local-name pred-name} for the type tests that all hold whenever `test` is
+  truthy: a direct (pred x) on a local, and every conjunct of an `and` chain,
+  which expands to (let* [g a] (if g b g))."
+  [test]
+  (case (get test :op)
+    :invoke
+    (let [f (get test :fn) args (get test :args)]
+      (if (and (= :var (get f :op)) (= "clojure.core" (get f :ns))
+               (contains? type-test-preds (get f :name))
+               (= 1 (count args)) (= :local (get (nth args 0) :op)))
+        {(get (nth args 0) :name) (get f :name)}
+        {}))
+    :let
+    (let [bs (get test :bindings) body (get test :body)]
+      (if (and (= 1 (count bs)) (= :if (get body :op)))
+        (let [g (nth (nth bs 0) 0)
+              is-g? (fn [n] (and (= :local (get n :op)) (= g (get n :name))))]
+          (if (and (is-g? (get body :test)) (is-g? (get body :else)))
+            (dissoc (merge (truthy-type-tests (nth (nth bs 0) 1))
+                           (truthy-type-tests (get body :then)))
+                    g)
+            {}))
+        {}))
+    {}))
 ;; Folding computes with THE ACTUAL jolt fns, so a folded result matches what
 ;; the unfolded code would produce at runtime by construction. Conservative:
 ;; numbers only, the op table only names pure numeric fns, and any throw

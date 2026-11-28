@@ -447,25 +447,40 @@
             ((ce-top-do? form)
              (for-each (lambda (x) (ce-scan-requires! x ns)) (cdr items)))))))))
 
-;; --- success-type lint (RFC 0006), opt-in via JOLT_CHECK --------------------
-;; A Carp-inspired surfacing of the existing success-type checker: with JOLT_CHECK
-;; set to a truthy value, every runtime-compiled top-level form is run through
-;; jolt.passes.types/check-form and any diagnostics are printed to stderr as
-;; located warnings (file:line:col: warning: …). Off by default: zero cost, no
-;; behavior change. A checker error is swallowed — linting must never break a
-;; compile. Only runtime-compiled code is linted; clojure.core and the prelude are
-;; baked into the seed at mint time, so they are never re-checked here.
+;; --- success-type check (RFC 0006) ------------------------------------------
+;; Every runtime-compiled top-level form (load, require, eval, -e, the REPLs, and
+;; the app load a `jolt build` starts with) is run through
+;; jolt.passes.types/check-form, and what it finds is acted on by level
+;; (jolt.passes.types.check):
+;;
+;;   :error  a call that can never succeed — the form does not compile; it
+;;           raises :analyze/type-error at the call (raise-check-errors!)
+;;   :warn   a likely mistake that could still be meant — the form compiles.
+;;           `jolt build` prints these (file:line:col: warning: …) from its emit
+;;           walk, which sees every app form on every build; at the REPL, in
+;;           jolt run and in -e they would only be noise, so there they print
+;;           only when JOLT_CHECK is set
+;;   :lint   advice (a dead type hint) — printed only when JOLT_CHECK is set
+;;
+;; JOLT_CHECK=0 (or off/false/no) skips the check entirely: an escape hatch, not
+;; a mode anyone needs. A failure INSIDE the checker is swallowed — a checker
+;; bug must never break a compile; only its verdict may. clojure.core and the
+;; prelude are baked into the seed at mint time, so they are never checked here.
+(define jolt-check-env (getenv "JOLT_CHECK"))
+(define jolt-check-off? (and jolt-check-env (jolt-trace-env-off? jolt-check-env)))
 (define jolt-check-lint?
-  (let ((e (getenv "JOLT_CHECK")))
-    (and e (fx>? (string-length e) 0) (not (jolt-trace-env-off? e)))))
+  (and jolt-check-env (fx>? (string-length jolt-check-env) 0) (not jolt-check-off?)))
 (define jolt-check-form-fn #f)
+(define jolt-check-raise-fn #f)
 (define jolt-check-unit #f)
 (define (jolt-check-form node)
   (unless jolt-check-form-fn
     (set! jolt-check-form-fn (var-deref "jolt.passes.types" "check-form"))
+    (set! jolt-check-raise-fn (var-deref "jolt.passes.types" "raise-check-errors!"))
     (set! jolt-check-unit ((var-deref "jolt.passes.types" "new-unit"))))
-  ;; non-strict: only the always-safe core error domains, no user-fn signature
-  ;; probing (fewer false positives for a warning-level lint).
+  ;; non-strict, on a unit of its own: only the core error domains, over what
+  ;; the form itself proves — no var value, return type or caller from anywhere
+  ;; else, which a redefinition could make wrong.
   (jolt-check-form-fn jolt-check-unit node #f))
 
 ;; "file:line:col" / "line:col" for a diagnostic's :pos map, the top-level form's
@@ -483,21 +498,47 @@
 
 (define diag-kw-pos (keyword #f "pos"))
 (define diag-kw-msg (keyword #f "msg"))
-(define (jolt-lint-node! node)
-  (when jolt-check-lint?
-    (guard (_ (#t #f))
-      (let ((diags (jolt-check-form node))
-            (port (current-error-port)))
-        (let loop ((s (jolt-seq diags)))
-          (unless (jolt-nil? s)
-            (let* ((d (seq-first s))
-                   (loc (jolt-diag-loc-string (jolt-get d diag-kw-pos jolt-nil)))
-                   (msg (jolt-get d diag-kw-msg jolt-nil)))
-              (when loc (display loc port) (display ": " port))
-              (display "warning: " port)
-              (unless (jolt-nil? msg) (display (jolt-str-render-one msg) port))
-              (newline port))
-            (loop (jolt-seq (seq-more s)))))))))
+(define diag-kw-level (keyword #f "level"))
+(define diag-kw-error (keyword #f "error"))
+(define diag-kw-lint (keyword #f "lint"))
+;; #t for the whole of a `jolt build` (build-binary). Its load phase compiles
+;; through jolt-check-node! but prints nothing (a namespace the AOT cache
+;; supplies is not compiled at all, so warnings there would come and go); the
+;; emit walk (ei-emit-ns-records) checks every app form and prints them, once each.
+(define jolt-check-in-build (make-parameter #f))
+(define jolt-check-printed (make-hashtable string-hash string=?))
+
+(define (jolt-print-diags! diags warn?)
+  (let ((port (current-error-port)))
+    (let loop ((s (jolt-seq diags)))
+      (unless (jolt-nil? s)
+        (let* ((d (seq-first s))
+               (level (jolt-get d diag-kw-level jolt-nil)))
+          (when (if (eq? level diag-kw-lint) jolt-check-lint?
+                    (and warn? (not (eq? level diag-kw-error))))
+            (let* ((loc (jolt-diag-loc-string (jolt-get d diag-kw-pos jolt-nil)))
+                   (msg (jolt-get d diag-kw-msg jolt-nil))
+                   (line (string-append (if loc (string-append loc ": ") "") "warning: "
+                                        (if (jolt-nil? msg) "" (jolt-str-render-one msg)))))
+              (unless (hashtable-contains? jolt-check-printed line)
+                (when (jolt-check-in-build) (hashtable-set! jolt-check-printed line #t))
+                (display line port)
+                (newline port)))))
+        (loop (jolt-seq (seq-more s)))))))
+(define (jolt-check-run! node warn?)
+  (unless jolt-check-off?
+    (let ((diags (guard (_ (#t #f)) (jolt-check-form node))))
+      (when (and diags (not (jolt-nil? (jolt-seq diags))))
+        (jolt-print-diags! diags warn?)
+        ;; outside the guard: the verdict is the one thing allowed to fail a compile
+        (jolt-check-raise-fn diags)))))
+;; the runtime compile path: warnings only under JOLT_CHECK, and never in a
+;; build's load phase (the emit walk reports those)
+(define (jolt-check-node! node)
+  (jolt-check-run! node (and jolt-check-lint? (not (jolt-check-in-build)))))
+;; a build's emit walk: every app form, warnings always
+(define (jolt-check-build-node! node)
+  (when (jolt-check-in-build) (jolt-check-run! node #t)))
 
 ;; Already-read FORM -> Scheme source string (analyze -> emit on Chez).
 ;; `ns` is the compile namespace unqualified symbols resolve against. No require
@@ -507,7 +548,7 @@
   (let* ((ctx (make-analyze-ctx ns))
          ;; the form runs as soon as it compiles (hc-late-bound-namespace?)
          (node (parameterize ((hc-compiling-to-run #t)) (jolt-ce-analyze ctx form))))
-    (jolt-lint-node! node)
+    (jolt-check-node! node)
     (cond
       ((hc-compiler-direct-linking?) (jolt-direct-link-emit node ctx))
       ;; guarded inlining stashes and splices on the back end's unit, the one

@@ -645,6 +645,9 @@
                (analyzed (or cached
                              (ei-timed "emit: analyze (uncached)"
                                (lambda () (jolt-ce-analyze ctx form)))))
+               ;; the build's success-type check and its warnings: every app
+               ;; form passes here on every build (compile-eval.ss)
+               (_ (jolt-check-build-node! analyzed))
                (ir (ei-timed "emit: run-passes"
                      (lambda () (jolt-ce-run-passes analyzed ctx (ei-unit)))))
                (str (if (eq? kind 'macro)

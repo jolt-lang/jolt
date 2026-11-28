@@ -662,6 +662,87 @@
         ((jfloat? x) (jfloat-fl x))
         (else (jolt-reflect-no-method "valueOf" 1))))
 (def-var! "jolt.host" "method-overload-entry" method-overload-entry)
+;; The Reflector's member for any static whose overloads its arguments' runtime
+;; classes choose among, as Reflector.invokeMatchingMethod picks: the overloads
+;; whose parameters fit the arguments' classes (paramArgTypeMatch: a double
+;; parameter takes a Double, a float one a Float, a long or int one a Long, a
+;; class parameter an instance or nil), a later one replacing the pick only when
+;; it subsumes it, so of two that fit alike the first in getMethods order wins;
+;; none fitting, the same again over the arguments widened (a Float to a
+;; Double); none then is its IllegalArgumentException. The pick's arguments are
+;; boxArg's (an int parameter takes a Long's intValue), and its own member is
+;; called when the runtime registers one for it, else the shim under SHORT.
+(define (sig-prim? p) (member p '("double" "float" "long" "int" "short" "byte" "char" "boolean")))
+(define (sig-runtime-fits? p x)
+  (cond ((string=? p "double") (flonum? x))
+        ((string=? p "float") (jfloat? x))
+        ((member p '("long" "int" "short" "byte"))
+         (and (number? x) (exact? x) (integer? x)
+              (<= -9223372036854775808 x 9223372036854775807)))
+        ((string=? p "char") (or (char? x) (jsurr? x)))
+        ((string=? p "boolean") (boolean? x))
+        (else (or (jolt-nil? x) (instance-check p x)))))
+;; Compiler.subsumes: every differing parameter a reference over a primitive or
+;; a subclass of the other's, and at least one differing
+(define (sig-subsumes? c1 c2)
+  (let loop ((a c1) (b c2) (better #f))
+    (cond ((null? a) better)
+          ((string=? (car a) (car b)) (loop (cdr a) (cdr b) better))
+          ((and (not (sig-prim? (car a)))
+                (or (sig-prim? (car b)) (jch-isa? (car a) (car b))))
+           (loop (cdr a) (cdr b) #t))
+          (else #f))))
+(define (sig-reflector-pick pss args)
+  (let loop ((pss pss) (found #f))
+    (cond ((null? pss) found)
+          ((and (let fit ((ps (car pss)) (as args))
+                  (or (null? ps) (and (sig-runtime-fits? (car ps) (car as)) (fit (cdr ps) (cdr as)))))
+                (or (not found) (sig-subsumes? (car pss) found)))
+           (loop (cdr pss) (car pss)))
+          (else (loop (cdr pss) found)))))
+(define (sig-box-arg p x)
+  (cond ((string=? p "int") (jvm-wrap x 32))
+        ((string=? p "short") (jvm-wrap x 16))
+        ((string=? p "byte") (jvm-wrap x 8))
+        (else x)))
+(define (make-reflect-member cls short name argc)
+  (let ((pss #f) (procs '()))
+    (define (proc-for ps)
+      (cond ((assoc ps procs) => cdr)
+            (else
+             (let* ((entry (hashtable-ref method-overload-entries (sig-entry-key cls name ps) #f))
+                    (p (host-static-ref short (if (string? entry) entry name))))
+               (set! procs (cons (cons ps p) procs))
+               p))))
+    (define (call args)
+      (unless pss
+        (set! pss (reverse (map (lambda (e) (vector-ref e 2)) (method-sig-candidates cls name #t argc)))))
+      (let* ((ps (sig-reflector-pick pss args))
+             (args (if ps args (map (lambda (x) (if (jfloat? x) (jfloat-fl x) x)) args)))
+             (ps (or ps (sig-reflector-pick pss args))))
+        (if ps
+            (apply (proc-for ps) (map sig-box-arg ps args))
+            (jolt-reflect-no-method name (length args)))))
+;; fixed at the method's argument count, so the member answers its arity
+    (case argc
+      ((1) (lambda (a) (call (list a))))
+      ((2) (lambda (a b) (call (list a b))))
+      ((3) (lambda (a b c) (call (list a b c))))
+      (else (lambda args (call args))))))
+(define (register-reflect-member! cls short name argc)
+  (let ((entry (string-append name "(reflect)")))
+    (register-reflect-entry! cls name argc entry)
+    (register-class-statics! short (list (cons entry (make-reflect-member cls short name argc))))))
+;; A resolved call's double parameter: RT.doubleCast, a Number's doubleValue
+(define (jolt-unbox-double x)
+  (cond ((flonum? x) x)
+        ((jfloat? x) (jfloat-fl x))
+        ((number? x) (exact->inexact x))
+        ((jbigdec? x) (jolt-double x))
+        ((jolt-nil? x)
+         (throw-jvm 'NullPointerException
+                    "Cannot invoke \"java.lang.Number.doubleValue()\" because \"x\" is null"))
+        (else (jolt-checkcast-fail x "java.lang.Number"))))
 ;; The methods cls has under that name and arity. A static method belongs to
 ;; the class it is called on; an instance method is found through the class's
 ;; supers.
@@ -710,6 +791,12 @@
           (m (apply jolt-vector (vector-ref m 2)))
           (else jolt-nil))))
 (def-var! "jolt.host" "method-param-classes" method-param-classes)
+;; Whether the table has (cls).method at argc arguments at all: a call none of
+;; them fits is reflective, where a method it does not have is one it cannot
+;; type (hints.clj method-jtype).
+(define (method-sig-registered? cls method static? argc)
+  (pair? (method-sig-candidates cls method (jolt-truthy? static?) argc)))
+(def-var! "jolt.host" "method-sig-registered?" method-sig-registered?)
 ;; Does an argument the compiler types as A (a JVM class name, "long"/"double"
 ;; for a numeric literal, "null" for nil, nil when it has no type and so is an
 ;; Object) fit parameter P? Clojure's Reflector.paramArgTypeMatch, which the
@@ -1172,6 +1259,16 @@
 (register-method-params! "java.lang.Throwable" "addSuppressed" '("java.lang.Throwable"))
 (register-method-params! "java.lang.Throwable" "initCause" '("java.lang.Throwable") "java.lang.Throwable")
 (register-method-params! "java.lang.Object" "toString" '() "java.lang.String")
+;; StringBuilder/StringBuffer append, every overload JDK 21 has, so a call the
+;; JVM compiler finds ambiguous ((.append sb (byte 97)) fits int and long) is
+;; refused here too
+(for-each
+ (lambda (cls)
+   (for-each (lambda (ps) (register-method-params! cls "append" ps cls))
+             '(("java.lang.Object") ("java.lang.String") ("java.lang.StringBuffer")
+               ("java.lang.CharSequence") ("java.lang.CharSequence" "int" "int") ("[C")
+               ("[C" "int" "int") ("boolean") ("char") ("int") ("long") ("float") ("double"))))
+ '("java.lang.StringBuilder" "java.lang.StringBuffer"))
 ;; compareTo on the Comparables whose parameter is their own class
 (for-each (lambda (c) (register-method-params! c "compareTo" (list c)))
           '("java.lang.Long" "java.lang.Double" "java.lang.Float" "java.lang.String"
@@ -1209,6 +1306,115 @@
 (for-each (lambda (c) (register-reflect-entry! c "valueOf" 1 "valueOf(reflect)"))
           '("java.lang.Long" "java.lang.Double" "java.lang.Float"))
 (register-static-method! "java.lang.Long" "decode" '("java.lang.String") "java.lang.Long")
+;; Statics registered a row at a time: a method and its overloads, each a
+;; string of class letters, return class first: D double, F float, J long,
+;; I int, O Object, N Number, B BigInteger, S String. A return class may be a
+;; primitive, which the analyzer types an argument by (hints.clj jvm-type).
+(define (register-static-rows! cls rows)
+  (let ((letter (lambda (ch)
+                  (case ch
+                    ((#\D) "double") ((#\F) "float") ((#\J) "long") ((#\I) "int")
+                    ((#\O) "java.lang.Object") ((#\N) "java.lang.Number")
+                    ((#\S) "java.lang.String") (else "java.math.BigInteger")))))
+    (for-each
+     (lambda (row)
+       (for-each (lambda (sig)
+                   (let ((cs (map letter (string->list sig))))
+                     (register-static-method! cls (car row) (cdr cs) (car cs))))
+                 (cdr row)))
+     rows)))
+;; clojure.lang.Numbers, the statics clojure.core's arithmetic inlines to on the
+;; JVM ((* x 2.0) is Numbers.multiply(Object, double)), so the analyzer types
+;; such a call's result as the JVM compiler does.
+(register-static-rows! "clojure.lang.Numbers"
+ '(("add" "DDD" "DDJ" "DDO" "DJD" "DOD" "JJJ" "NJO" "NOJ" "NOO")
+   ("addP" "DDD" "DDJ" "DDO" "DJD" "DOD" "NJJ" "NJO" "NOJ" "NOO")
+   ("minus" "DD" "DDD" "DDJ" "DDO" "DJD" "DOD" "JJ" "JJJ" "NJO" "NO" "NOJ" "NOO")
+   ("minusP" "DD" "DDD" "DDJ" "DDO" "DJD" "DOD" "NJ" "NJJ" "NJO" "NO" "NOJ" "NOO")
+   ("multiply" "DDD" "DDJ" "DDO" "DJD" "DOD" "JJJ" "NJO" "NOJ" "NOO")
+   ("multiplyP" "DDD" "DDJ" "DDO" "DJD" "DOD" "NJJ" "NJO" "NOJ" "NOO")
+   ("divide" "DDD" "DDJ" "DDO" "DJD" "DOD" "NBB" "NJJ" "NJO" "NOJ" "NOO")
+   ("inc" "DD" "JJ" "NO") ("incP" "DD" "NJ" "NO")
+   ("dec" "DD" "JJ" "NO") ("decP" "DD" "NJ" "NO")
+   ("max" "DDD" "JJJ" "ODJ" "ODO" "OJD" "OJO" "OOD" "OOJ" "OOO")
+   ("min" "DDD" "JJJ" "ODJ" "ODO" "OJD" "OJO" "OOD" "OOJ" "OOO")
+   ("abs" "DD" "JJ" "NO")
+   ("quotient" "DDD" "DDJ" "DJD" "JJJ" "NDO" "NJO" "NOD" "NOJ" "NOO")
+   ("remainder" "DDD" "DDJ" "DJD" "JJJ" "NDO" "NJO" "NOD" "NOJ" "NOO")
+   ("unchecked_add" "DDD" "DDJ" "DDO" "DJD" "DOD" "JJJ" "NJO" "NOJ" "NOO")
+   ("unchecked_minus" "DD" "DDD" "DDJ" "DDO" "DJD" "DOD" "JJ" "JJJ" "NJO" "NO" "NOJ" "NOO")
+   ("unchecked_multiply" "DDD" "DDJ" "DDO" "DJD" "DOD" "JJJ" "NJO" "NOJ" "NOO")
+   ("unchecked_inc" "DD" "JJ" "NO") ("unchecked_dec" "DD" "JJ" "NO")))
+;; java.lang.Math and StrictMath, every public static JDK 21 has (PI, E and TAU
+;; as no-argument ones, which is how the analyzer asks for a field's class),
+;; each name's overloads in the order JDK 21's Class.getMethods lists them: the
+;; Reflector keeps the first of two that fit equally well, so the order is
+;; its tie-break (an untyped Long to Math/floorMod takes the int overload).
+(register-static-rows! "java.lang.Math"
+ '(("abs" "DD" "FF" "JJ" "II") ("absExact" "JJ" "II") ("acos" "DD")
+   ("addExact" "JJJ" "III") ("asin" "DD") ("atan" "DD") ("atan2" "DDD")
+   ("cbrt" "DD") ("ceil" "DD") ("ceilDiv" "JJJ" "JJI" "III")
+   ("ceilDivExact" "JJJ" "III") ("ceilMod" "JJJ" "IJI" "III")
+   ("clamp" "FFFF" "JJJJ" "DDDD" "IJII") ("copySign" "DDD" "FFF") ("cos" "DD")
+   ("cosh" "DD") ("decrementExact" "II" "JJ") ("divideExact" "III" "JJJ")
+   ("exp" "DD") ("expm1" "DD") ("floor" "DD") ("floorDiv" "JJJ" "JJI" "III")
+   ("floorDivExact" "JJJ" "III") ("floorMod" "III" "IJI" "JJJ")
+   ("fma" "DDDD" "FFFF") ("getExponent" "ID" "IF") ("hypot" "DDD")
+   ("IEEEremainder" "DDD") ("incrementExact" "JJ" "II") ("log" "DD")
+   ("log10" "DD") ("log1p" "DD") ("max" "DDD" "FFF" "JJJ" "III")
+   ("min" "DDD" "FFF" "JJJ" "III") ("multiplyExact" "JJJ" "JJI" "III")
+   ("multiplyFull" "JII") ("multiplyHigh" "JJJ") ("negateExact" "II" "JJ")
+   ("nextAfter" "FFD" "DDD") ("nextDown" "DD" "FF") ("nextUp" "DD" "FF")
+   ("pow" "DDD") ("random" "D") ("rint" "DD") ("round" "IF" "JD")
+   ("scalb" "FFI" "DDI") ("signum" "DD" "FF") ("sin" "DD") ("sinh" "DD")
+   ("sqrt" "DD") ("subtractExact" "JJJ" "III") ("tan" "DD") ("tanh" "DD")
+   ("toDegrees" "DD") ("toIntExact" "IJ") ("toRadians" "DD") ("ulp" "DD" "FF")
+   ("unsignedMultiplyHigh" "JJJ") ("PI" "D") ("E" "D") ("TAU" "D")))
+(register-static-rows! "java.lang.StrictMath"
+ '(("abs" "DD" "FF" "JJ" "II") ("absExact" "JJ" "II") ("acos" "DD")
+   ("addExact" "JJJ" "III") ("asin" "DD") ("atan" "DD") ("atan2" "DDD")
+   ("cbrt" "DD") ("ceil" "DD") ("ceilDiv" "JJJ" "JJI" "III")
+   ("ceilDivExact" "JJJ" "III") ("ceilMod" "JJJ" "IJI" "III")
+   ("clamp" "FFFF" "DDDD" "JJJJ" "IJII") ("copySign" "DDD" "FFF") ("cos" "DD")
+   ("cosh" "DD") ("decrementExact" "II" "JJ") ("divideExact" "III" "JJJ")
+   ("exp" "DD") ("expm1" "DD") ("floor" "DD") ("floorDiv" "III" "JJJ" "JJI")
+   ("floorDivExact" "III" "JJJ") ("floorMod" "IJI" "III" "JJJ")
+   ("fma" "DDDD" "FFFF") ("getExponent" "IF" "ID") ("hypot" "DDD")
+   ("IEEEremainder" "DDD") ("incrementExact" "JJ" "II") ("log" "DD")
+   ("log10" "DD") ("log1p" "DD") ("max" "FFF" "III" "DDD" "JJJ")
+   ("min" "FFF" "III" "DDD" "JJJ") ("multiplyExact" "JJJ" "JJI" "III")
+   ("multiplyFull" "JII") ("multiplyHigh" "JJJ") ("negateExact" "II" "JJ")
+   ("nextAfter" "FFD" "DDD") ("nextDown" "FF" "DD") ("nextUp" "DD" "FF")
+   ("pow" "DDD") ("random" "D") ("rint" "DD") ("round" "IF" "JD")
+   ("scalb" "FFI" "DDI") ("signum" "FF" "DD") ("sin" "DD") ("sinh" "DD")
+   ("sqrt" "DD") ("subtractExact" "III" "JJJ") ("tan" "DD") ("tanh" "DD")
+   ("toDegrees" "DD") ("toIntExact" "IJ") ("toRadians" "DD") ("ulp" "DD" "FF")
+   ("unsignedMultiplyHigh" "JJJ") ("PI" "D") ("E" "D") ("TAU" "D")))
+;; the int overloads whose answer is not the long one's: an int result wraps or
+;; overflows at 32 bits. A call resolved to one, or reflected to one, calls its
+;; own member (math.ss).
+(for-each
+ (lambda (cls)
+   (for-each
+    (lambda (m)
+      (hashtable-set! method-overload-entries
+                      (sig-entry-key cls (car m) (cadr m)) (string-append (car m) "(int)")))
+    '(("abs" ("int")) ("absExact" ("int")) ("addExact" ("int" "int"))
+      ("subtractExact" ("int" "int")) ("multiplyExact" ("int" "int"))
+      ("incrementExact" ("int")) ("decrementExact" ("int")) ("negateExact" ("int"))
+      ("divideExact" ("int" "int")) ("floorDivExact" ("int" "int"))
+      ("ceilDivExact" ("int" "int")) ("floorDiv" ("int" "int")) ("ceilDiv" ("int" "int")))))
+ '("java.lang.Math" "java.lang.StrictMath"))
+;; System's clocks are primitive longs: (Math/round (System/currentTimeMillis))
+;; fits no overload, as on the JVM
+(register-static-rows! "java.lang.System" '(("currentTimeMillis" "J") ("nanoTime" "J")))
+;; the boxed numbers' parsers, and Integer/valueOf
+(register-static-rows! "java.lang.Integer" '(("parseInt" "IS" "ISI")))
+(register-static-rows! "java.lang.Long" '(("parseLong" "JS" "JSI")))
+(register-static-rows! "java.lang.Double" '(("parseDouble" "DS")))
+(register-static-rows! "java.lang.Float" '(("parseFloat" "FS")))
+(for-each (lambda (p) (register-static-method! "java.lang.Integer" "valueOf" p "java.lang.Integer"))
+          '(("java.lang.String") ("int") ("java.lang.String" "int")))
 (register-static-method! "java.lang.Character" "valueOf" '("char") "java.lang.Character")
 ;; UUID, URI, File
 (register-static-method! "java.util.UUID" "randomUUID" '() "java.util.UUID")

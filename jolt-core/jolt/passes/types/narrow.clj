@@ -7,6 +7,7 @@
   (:require [jolt.ir :refer [map-ir-children]]
             [jolt.passes.types.lattice :refer
              [union-type? umembers nilable? strip-nilable decl-of type-depth]]
+            [jolt.passes.fold :refer [type-test-preds truthy-type-tests]]
             [jolt.passes.types.records :refer [record-type-from-entry record-t?]]))
 
 ;; Predicate folding: a type predicate whose argument's type is
@@ -84,6 +85,17 @@
                  (= pred-name (get f :name))
                  (= 1 (count args)) (= :local (get (nth args 0) :op)))
         (get (nth args 0) :name)))))
+;; a type test narrows a local whose type says nothing it would contradict: no
+;; structural info, a declared hint, a scalar union, or :num tested by double?
+(defn- narrowable? [cur t]
+  (or (nil? cur) (= cur :any) (= cur :truthy) (some? (decl-of cur)) (union-type? cur)
+      (and (= cur :num) (= t :double))))
+(defn- narrow-type-tests [tenv test]
+  (reduce-kv (fn [te nm pred]
+               (let [t (get type-test-preds pred)]
+                 (if (narrowable? (get te nm) t) (assoc te nm t) te)))
+             tenv (truthy-type-tests test)))
+
 (defn- narrow-nonnil [tenv nm]
   (let [t (get tenv nm)] (if (nilable? t) (assoc tenv nm (strip-nilable t)) tenv)))
 ;; --- declared ^Record params ------------------------------------------------
@@ -155,9 +167,14 @@
                    (get node :arities) (get orig :arities)))
       node)))
 
-;; [then-tenv else-tenv] for an `if` whose test narrows a nilable local, or is a
-;; declared-record guard (each tested local is that record in the then-branch).
+;; [then-tenv else-tenv] for an `if` whose test narrows a nilable local, is a
+;; declared-record guard (each tested local is that record in the then-branch),
+;; or type-tests locals (truthy-type-tests, then-branch only).
+(declare if-narrow-nil)
 (defn if-narrow [test tenv env]
+  (let [r (if-narrow-nil test tenv env)]
+    [(narrow-type-tests (nth r 0) test) (nth r 1)]))
+(defn- if-narrow-nil [test tenv env]
   (let [somev (test-local test "some?")
         nilv (test-local test "nil?")
         rg (rec-guard-pairs test)]

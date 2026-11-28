@@ -9,6 +9,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A call that can never succeed is a compile error.** `(+ "s" 1)`,
+  `(count :a)`, `("s" 1)`, or `(inc x)` where a `(string? x)` test just proved
+  `x` a string, now fails to compile with `:analyze/type-error`, located at the
+  call and saying why it always throws; every such call in the form is listed.
+  Only what the form itself proves feeds it (literals, what core ops return,
+  locals a type test narrowed), never a type hint, a var's value or a caller,
+  so nothing that could run is rejected, and `make rettype` checks that every
+  rejected call throws at runtime. A likely mistake that could still be meant is
+  a warning instead (`file:line:col: warning: …`): a mismatch only a `^String`
+  hint claims, `min`/`max` beside an operand that may be NaN, or a call inside a
+  `try` that catches what it throws, as `thrown?` assertions do. `jolt build`
+  prints the warnings, once each, on every build; the REPL, `jolt run` and `-e`
+  keep quiet about them unless `JOLT_CHECK=1`, which also adds the advice-only
+  diagnostics (type hints that do nothing) it used to print on its own. Errors
+  apply everywhere. The check's compile-time cost is within noise on the
+  compile-forms bench, check on vs off; `JOLT_CHECK=0` turns it off.
+
+### Performance
+
+- `jolt.infix`'s `infix`/`$=` give an expression that divides or calls a
+  `Math` function on locals a branch for when every one of those locals is a
+  double: the same prefix form with the locals rebound through `double`, so it
+  compiles to flonum ops instead of generic arithmetic, about 6x faster on a
+  trig-and-power expression. Any other input takes the expansion as before, so
+  longs, ratios and bigints answer as they did.
+- **A type test narrows the local it tests.** In `(if (double? x) (* x x) ...)`
+  the guarded branch now runs Chez flonum ops on `x`, as do `cond` arms and
+  every conjunct of an `and` chain; `string?`, `keyword?` and `number?` type
+  their branch for the optimizing passes too. `double?` is now a native op
+  (the host flonum test), like `nil?`. A dispatch-by-hand kernel ran 40-47%
+  faster (10M calls: 218 to 131 ms; two `double?` tests 320 to 170 ms).
+- **`(double x)` tests for a flonum before calling the cast helper**, as
+  `(long x)` already tests for a fixnum.
+
+### Fixed
+
+- `Math/pow` (and `clojure.math/pow`) of a double to the power 2 is the
+  multiply `x*x`, as on the JVM. It went through the host's `pow`, which glibc
+  rounds to within an ulp, so `(Math/pow -135965.65000000002 2)` answered
+  `1.848665797992251E10` where the JVM answers `1.8486657979922504E10`.
+- **`unchecked-add`, `unchecked-subtract` and `unchecked-multiply` take exactly
+  two arguments**, as on the JVM, where each is a single `[x y]` arity:
+  `(unchecked-add 1)`, `(unchecked-multiply)` and `(apply unchecked-add [1 2 3])`
+  raise `ArityException` instead of answering. Under `*unchecked-math*`,
+  `(+ a b c)` becomes nested pairs, as clojure.core's inliner expands it, and
+  `(+ a)`, `(+)` and `(*)` stay the ordinary fns.
+- **A `^double` let or loop local unboxes at each arithmetic use, as on the JVM.**
+  `(let [^double x (first [2])] (* x x))` is `4.0` (it was `4`), over `1/3` it
+  is `1.0`, and over a string it throws `ClassCastException`; `str`, `class`
+  and a one-argument `+` still see the value itself. Those uses now take the
+  flonum ops: two hinted locals into `Math/sqrt` ran in 102 ms where they took
+  330 (5M calls).
+- **A one-argument `+`, `*`, `min` or `max` is no longer typed as a number.**
+  They answer their argument, so `(+ nil)` is `nil`, and an optimized build
+  folded `(nil? y)` over `y = (+ x)` to `false`. A new gate (`make rettype`)
+  runs every return-type claim the compiler trusts against the runtime on
+  representative values, which is how this was found.
+
+## [0.8.31] - 2026-11-27
+
+`jolt.native` regions now always run as native code: outside a `jolt build`
+binary they are compiled in process by a vendored MIR C compiler, and they can
+specialize on runtime values, pick a body by the running CPU, be built from
+data at runtime (`native-fn`), and read binary record layouts. Projects get
+`deps.local.edn` for per-machine overrides and `jolt.configure` to find native
+libraries on the machine. Common host operations and number printing are
+several times faster. The rest is JVM parity: `Throwable` suppression, the JVM's
+`ClassCastException` wording for resolved and reflective calls, argument types
+and overload choice as the JVM compiler and Reflector work them out, the JDK 21
+`Math` methods jolt lacked, a streaming Base64 decoder, `Arrays/compare` and
+`mismatch`, `java.util.StringJoiner`, `PrintWriter` over a stream or a file,
+`FileChannel.force`, and promesa's scheduler running.
+
+### Added
+
+- **The rest of JDK 21's `java.lang.Math`, and `StrictMath`.** `fma` (one
+  rounding, float and double), `clamp` (all four overloads and their
+  `IllegalArgumentException`s), `ceilDiv`, `ceilMod`, `divideExact`,
+  `floorDivExact`, `ceilDivExact`, `absExact`, `toIntExact`, `multiplyFull`,
+  `multiplyHigh`, `unsignedMultiplyHigh` and `TAU`. `StrictMath` answers the
+  same set with the same digits.
+
+- **`java.util.StringJoiner`.** `add`, `toString`, `length`, `setEmptyValue`
+  and `merge`, with the JDK's answers for nil parts, empty values and merging.
+  `add` and `length` are O(1) and `toString` copies each part once, so a
+  200k-part join runs as fast as on the JVM. editscript's `:clj` string patch
+  builds its result in one; its suite (now in the library conformance
+  manifest) goes from 11 errors to 63 tests, 291 passing, none failing.
+
 - **`deps.local.edn`: per-machine overrides merged over deps.edn.** A project's
   `deps.local.edn` (or the file `$JOLT_DEPS_LOCAL` names, relative to the
   project) merges over its deps.edn the way deps.edn merges over the user's,
@@ -164,12 +253,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
-- `jolt.infix`'s `infix`/`$=` give an expression over locals a branch for
-  when every one of those locals is a double: the same prefix form with the
-  locals rebound through `double`, so it compiles to flonum ops instead of
-  generic arithmetic, about 5x faster on a trig-and-power expression. Any other
-  input takes the expansion as before, so longs, ratios and bigints answer as
-  they did.
 - A native region's fast copy drops the bounds check on an index bounded by a
   long parameter (`(< i m)`, guarded once at entry by `m` against the array's
   length), by another array parameter's length, or by a length minus a
@@ -215,10 +298,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `Math/pow` (and `clojure.math/pow`) of a double to the power 2 is the
-  multiply `x*x`, as on the JVM. It went through the host's `pow`, which glibc
-  rounds to within an ulp, so `(Math/pow -135965.65000000002 2)` answered
-  `1.848665797992251E10` where the JVM answers `1.8486657979922504E10`.
+- `Math/toRadians` and `Math/toDegrees` multiply by one rounded constant, as
+  the JDK does, instead of rounding twice through pi and 180.
+
+- An untyped `Math` call picks its overload as the Reflector does: Floats
+  widen to Doubles when no float overload fits (`(Math/nextAfter x y)` over two
+  Floats is a Double), a tie goes to the overload `getMethods` lists first, and
+  an int pick takes the Long's `intValue`. A call resolved to an int overload
+  wraps or overflows at 32 bits (`(Math/abs (int -2147483648))`,
+  `(Math/addExact (int a) (int b))`), and `Math/abs` and `Math/floorDiv` of
+  `Long/MIN_VALUE` wrap instead of answering a BigInt.
+
+- `(.append sb (byte 97))` is refused as ambiguous between `append(int)` and
+  `append(long)`, as the JVM compiler refuses it, and so is `(.append sb nil)`
+  with a literal nil ("More than one matching method found: append"); an
+  untyped nil still appends "null". `System/currentTimeMillis`
+  and `System/nanoTime` are primitive longs, so `(Math/round (System/currentTimeMillis))`
+  finds no overload, as on the JVM.
+
+- `Long/valueOf`, `Double/valueOf` and `Float/valueOf` of an untyped argument
+  refuse what the JVM's Reflector refuses: `((fn [x] (Double/valueOf x)) 2)`
+  throws `IllegalArgumentException` instead of answering `2.0`. The analyzer
+  now types arguments as the JVM compiler does, so a call the JVM resolves
+  statically still works: clojure.core arithmetic by the `Numbers` overload it
+  inlines to (`(Float/valueOf (* x 2.0))` is a double), primitive casts, a
+  `^double` or `^long` arglist, `^double` parameters and tags, `Math` methods,
+  the boxed numbers' parsers, and let locals, `if` and `case` built from them.
+  A loop local that starts as a primitive long or double stays one unless a
+  recur passes it something else, as the JVM boxes it then.
+- `java.lang.Math` methods with overloads (`abs`, `max`, `min`, `round`,
+  `signum`, `ulp`, `nextUp`, `nextDown`, `nextAfter`, `scalb`, `getExponent`,
+  `copySign`) and `Integer/valueOf` pick by the argument's class as the JVM
+  does: `(Math/round 2)` and `(Math/abs "2")` throw "No matching method"
+  instead of answering, while a call over typed doubles or longs keeps its
+  native path. The single-overload ones (`sqrt`, `sin`, ...) cast their
+  argument as `RT.doubleCast` does, with the JDK's ClassCastException and
+  NullPointerException, and `Integer/parseInt`, `Long/parseLong`,
+  `Double/parseDouble` and `Float/parseFloat` refuse a non-String the same way.
 - Negative integer constants past the fixnum range keep their value in a `jolt
   build` binary: `-1152921504606846977` printed as `-17293822569102704639N`
   there (and right under `jolt -M`), as did every negative bignum except
@@ -328,11 +444,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `:invalid-arity` and `(c-div 7 2)` does. A wrapper's raw binding gets the
   same extra parameter.
 
+- A local jar's embedded POM keeps each dependency's `<exclusions>`, as the
+  effective-POM path does, so a locally built jar no longer pulls in a
+  transitive dependency its POM excludes (#1903).
+- Protocols extended to `short[]`, `float[]` and `boolean[]` dispatch on those
+  array classes instead of falling through to `Object[]`, so hasch finds its
+  short and float array hash coercions (#1900).
+- `FileChannel.force` exists: it fsyncs the open descriptor (retrying `EINTR`),
+  uses `FlushFileBuffers` on Windows, and throws `ClosedChannelException` on a
+  closed channel. Konserve's durable writes call it (#1902).
+- `deliver` invokes a callable that is not a promise, as Clojure's
+  `(deliver p v)` is `(p v)`, so Datahike's transaction result accepts a
+  delivered report (#1905).
+
 ### Internal
 
 - The metrics workflow runs the latest jolt-metrics and gates on its lint
   findings as well (`ci/metrics-allow.edn` lists the ones that stay), and a
   pull request's report opens with what changed since main's.
+- Every public `jolt.ffi` var has a docstring, so `doc` and editor hover answer
+  for all of them; a test fails on a new one without.
+- The native gate checks that the JIT prelude declares every C library function
+  a region's C calls, which an undeclared `memset` faulted on Apple arm64.
 
 ## [0.8.30] - 2026-11-24
 

@@ -55,10 +55,15 @@
 (gate-check "nil init: every element conj'd" (let ((r (ev-safe some-src))) (if (pair? r) r (jolt-count r))) 3)
 
 (define str-src "(reduce (fn [acc x] (if (string? acc) (count acc) (+ acc x))) \"abc\" [1 2 3])")
-;; (the emission's registration preamble replays the SOURCE, so `string?` is a
-;; vacuous substring — the folded shape is the `if` collapsing to jolt-str-count)
-(gate-check "string init: count is not lowered to the string primitive"
-            (gate-sub? (emitf str-src) "jolt-str-count") #f)
+;; (the emission's registration preamble replays the SOURCE, so a bare
+;; `string?` is a vacuous substring; the emitted callee reference is not.) The
+;; accumulator is not proven a string, so the test stays a runtime call. Inside
+;; its then-branch the test DOES prove it (type-test narrowing), so count there
+;; lowering to jolt-str-count is right, not a sign the test folded.
+(gate-check "string init: string? on the accumulator stays a runtime test"
+            (gate-sub? (emitf str-src) "(jolt-var \"clojure.core\" \"string?\")") #t)
+(gate-check "string init: count in the string? branch lowers to the string primitive"
+            (gate-sub? (emitf str-src) "jolt-str-count") #t)
 (gate-check "string init: 3+2+3 = 8" (exact-safe str-src) 8)
 
 ;; a 0.0 init whose closure sometimes returns a long: no ^double hint on acc, so
