@@ -864,6 +864,27 @@
 (jch-register-supers! "java.nio.channels.NonWritableChannelException" '("java.lang.IllegalStateException"))
 (jch-register-supers! "java.nio.channels.AsynchronousCloseException" '("java.nio.channels.ClosedChannelException"))
 (jch-register-supers! "java.nio.channels.FileLockInterruptionException" '("java.io.IOException"))
+;; The socket channels jolt.socket provides (SocketChannel, ServerSocketChannel)
+;; and the failures they raise, where java.base puts them.
+(jch-register-supers! "java.nio.channels.NetworkChannel" '("java.nio.channels.Channel"))
+(jch-mark-interface! "java.nio.channels.NetworkChannel")
+(jch-register-supers! "java.nio.channels.SelectableChannel" '("java.nio.channels.spi.AbstractInterruptibleChannel"))
+(jch-register-supers! "java.nio.channels.spi.AbstractSelectableChannel" '("java.nio.channels.SelectableChannel"))
+(jch-register-supers! "java.nio.channels.SocketChannel"
+                      '("java.nio.channels.spi.AbstractSelectableChannel" "java.nio.channels.ByteChannel"
+                        "java.nio.channels.ScatteringByteChannel" "java.nio.channels.GatheringByteChannel"
+                        "java.nio.channels.NetworkChannel"))
+(jch-register-supers! "java.nio.channels.ServerSocketChannel"
+                      '("java.nio.channels.spi.AbstractSelectableChannel" "java.nio.channels.NetworkChannel"))
+(jch-register-supers! "sun.nio.ch.SocketChannelImpl" '("java.nio.channels.SocketChannel"))
+(jch-register-supers! "sun.nio.ch.ServerSocketChannelImpl" '("java.nio.channels.ServerSocketChannel"))
+(jch-register-supers! "java.nio.channels.UnsupportedAddressTypeException" '("java.lang.IllegalArgumentException"))
+(jch-register-supers! "java.nio.channels.UnresolvedAddressException" '("java.lang.IllegalArgumentException"))
+(jch-register-supers! "java.nio.channels.AlreadyBoundException" '("java.lang.IllegalStateException"))
+(jch-register-supers! "java.nio.channels.NotYetBoundException" '("java.lang.IllegalStateException"))
+(jch-register-supers! "java.nio.channels.NotYetConnectedException" '("java.lang.IllegalStateException"))
+(jch-register-supers! "java.nio.channels.AlreadyConnectedException" '("java.lang.IllegalStateException"))
+(jch-register-supers! "java.nio.channels.IllegalBlockingModeException" '("java.lang.IllegalStateException"))
 (jch-register-supers! "java.net.JarURLConnection" '("java.net.URLConnection"))
 (jch-register-supers! "java.net.UnknownHostException" '("java.io.IOException"))
 (jch-register-supers! "java.net.SocketException" '("java.io.IOException"))
@@ -873,6 +894,8 @@
 (jch-register-supers! "java.net.PortUnreachableException" '("java.net.SocketException"))
 (jch-register-supers! "java.net.ProtocolException" '("java.io.IOException"))
 (jch-register-supers! "java.net.SocketTimeoutException" '("java.io.InterruptedIOException"))
+(jch-register-supers! "java.net.UnixDomainSocketAddress" '("java.net.SocketAddress"))
+(jch-register-supers! "java.net.StandardProtocolFamily" '("java.lang.Enum" "java.net.ProtocolFamily"))
 (jch-register-supers! "java.net.MalformedURLException" '("java.io.IOException"))
 (jch-register-supers! "java.net.URISyntaxException" '("java.lang.Exception"))
 (jch-register-supers! "javax.net.ssl.SSLException" '("java.io.IOException"))

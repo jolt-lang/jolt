@@ -7,7 +7,9 @@
 (ns jolt.socket
   "Socket support over the host's C sockets — POSIX, and Winsock on Windows.
   Registers Socket, ServerSocket, InetSocketAddress, InetAddress and the socket
-  stream classes with the host class registry.
+  stream classes with the host class registry, and UnixDomainSocketAddress with
+  java.nio.channels' SocketChannel, ServerSocketChannel and Channels streams
+  over unix-domain and TCP sockets.
 
   Deliberate divergences from the JVM (test/conformance/known-divergences.edn):
   a recv error reads as EOF (-1) rather than throwing.
@@ -1607,6 +1609,377 @@
                           (network-interfaces)))
            nil)))})
 
+;; -- unix-domain addresses and socket channels (jolt-lang/jolt#1911) -----------
+;; java.net.UnixDomainSocketAddress, and the java.nio.channels SocketChannel and
+;; ServerSocketChannel over AF_UNIX, AF_INET and AF_INET6, with Channels'
+;; stream adapters. A channel is the same kind of owner a Socket is — :fd,
+;; :closed?, the op count — so io-call, close-owner! and the socket streams
+;; serve it unchanged, and it waits on jolt.io-poller like any other socket.
+;;
+;; As the JDK has it: a unix path is a filesystem name (no Linux abstract
+;; namespace), binding a path that exists fails with BindException, closing a
+;; listener leaves its path for the caller to remove, and a path whose UTF-8
+;; bytes do not fit sun_path (108 bytes on Linux, 104 on macOS, NUL included)
+;; fails at bind or connect with "Unix domain path too long".
+;;
+;; Channels are blocking only: configureBlocking(false) is refused, since there
+;; is no Selector to drive a non-blocking channel with.
+
+(defn- unix-address [path]
+  (doto (tt :unix-address "java.net.UnixDomainSocketAddress")
+    (jolt.host/ref-put! :path (str path))))
+
+(defn- unix-address? [x] (= :unix-address (jolt.host/ref-get x :jolt/type)))
+(defn- unix-path [a] (jolt.host/ref-get a :path))
+
+(defn- unix-address-of [p]
+  (when (nil? p) (throw (NullPointerException.)))
+  (unix-address (str p)))
+
+(def ^:private unix-address-methods
+  {"getPath"  (fn [self] (java.nio.file.Path/of (unix-path self) (into-array String [])))
+   "toString" (fn [self] (unix-path self))
+   "equals"   (fn [self o] (boolean (and (unix-address? o) (= (unix-path self) (unix-path o)))))
+   "hashCode" (fn [self] (.hashCode ^String (unix-path self)))})
+
+(def ^:private unix-address-statics {"of" unix-address-of})
+
+(defn- closed-channel! [] (throw (java.nio.channels.ClosedChannelException.)))
+
+(defn- ensure-channel-open! [ch]
+  (when (jolt.host/ref-get ch :closed?) (closed-channel!)))
+
+(defn- ensure-channel-connected! [ch]
+  (ensure-channel-open! ch)
+  (when-not (jolt.host/ref-get ch :connected?)
+    (throw (java.nio.channels.NotYetConnectedException.))))
+
+;; An operation a close cut off raises AsynchronousCloseException, as the JDK's
+;; channels do, rather than the SocketException a Socket's would.
+(defmacro ^:private channel-io [ch & body]
+  `(let [c# ~ch]
+     (try ~@body
+          (catch java.net.SocketException e#
+            (if (jolt.host/ref-get c# :closed?)
+              (throw (java.nio.channels.AsynchronousCloseException.))
+              (throw e#))))))
+
+(defn- protocol-family
+  "The address family a StandardProtocolFamily constant names."
+  [pf]
+  (when (nil? pf) (throw (NullPointerException.)))
+  (case (try (.name pf) (catch Throwable _ nil))
+    "UNIX"  native/af-unix
+    "INET"  native/af-inet
+    "INET6" native/af-inet6
+    (throw (UnsupportedOperationException. "Protocol family not supported"))))
+
+(defn- unix-sockaddr
+  "[sa len] for a unix path, or SocketException when it does not fit sun_path."
+  [path]
+  (or (native/make-sockaddr-un path)
+      (throw (java.net.SocketException. "Unix domain path too long"))))
+
+;; -- SocketChannel --
+(defn- new-socket-channel [family fd any-family?]
+  (doto (tt :socket-channel "sun.nio.ch.SocketChannelImpl")
+    (jolt.host/ref-put! :fd fd)
+    (jolt.host/ref-put! :family family)
+    (jolt.host/ref-put! :any-family? any-family?)
+    (jolt.host/ref-put! :closed? false)
+    (jolt.host/ref-put! :connected? false)))
+
+;; An unconnected channel opened without a family trades its fd for one of the
+;; address's family, as ensure-family! does for a Socket.
+(defn- channel-family! [ch family]
+  (let [have (jolt.host/ref-get ch :family)]
+    (cond
+      (= have family) nil
+      (or (= have native/af-unix) (= family native/af-unix)
+          (and (not (jolt.host/ref-get ch :any-family?))
+               (= have native/af-inet)))
+      (throw (java.nio.channels.UnsupportedAddressTypeException.))
+      :else
+      (let [nfd (new-fd! family)
+            old (locking ch
+                  (when-not (jolt.host/ref-get ch :closed?)
+                    (let [o (jolt.host/ref-get ch :fd)]
+                      (jolt.host/ref-put! ch :fd nfd)
+                      (jolt.host/ref-put! ch :family family)
+                      o)))]
+        (if old
+          (fd-release! old)
+          (do (native/c-close nfd) (closed-channel!)))))))
+
+(defn- unix-connect-fd! [owner fd path]
+  (let [[sa len] (unix-sockaddr path)]
+    (try
+      (with-op owner
+        (loop []
+          (let [[r e] (native/c-connect fd sa len)]
+            (cond
+              (zero? r) nil
+              (native/eintr? e) (recur)
+              ;; Windows answers a connect in flight with WSAEWOULDBLOCK
+              (native/connect-pending? e)
+              (do (poller/wait-ready fd :write nil)
+                  (raise-if-closed! owner "Socket closed")
+                  (let [pe (native/pending-error fd)]
+                    (cond (zero? pe) nil
+                          (native/connect-pending? pe) (recur)
+                          :else (throw (socket-failure pe)))))
+              ;; Linux: the listener's backlog is full. Nothing becomes
+              ;; writable to say it has room, so try again shortly.
+              (native/eagain? e)
+              (do (Thread/sleep 1)
+                  (raise-if-closed! owner "Socket closed")
+                  (recur))
+              :else (throw (socket-failure e))))))
+      (finally (ffi/free sa)))))
+
+(defn- channel-connect! [ch addr]
+  (ensure-channel-open! ch)
+  (when (jolt.host/ref-get ch :connected?)
+    (throw (java.nio.channels.AlreadyConnectedException.)))
+  (when (nil? addr) (throw (IllegalArgumentException. "Address is null")))
+  (channel-io ch
+    (cond
+      (unix-address? addr)
+      (do (channel-family! ch native/af-unix)
+          (unix-connect-fd! ch (jolt.host/ref-get ch :fd) (unix-path addr))
+          (jolt.host/ref-put! ch :remote-addr addr))
+
+      (= :inet-socket-address (jolt.host/ref-get addr :jolt/type))
+      (let [inet (or (isa-addr addr) (throw (java.nio.channels.UnresolvedAddressException.)))
+            port (jolt.host/ref-get addr :port)]
+        (channel-family! ch (inet-family inet))
+        (connect-fd! ch (jolt.host/ref-get ch :fd) inet port nil)
+        (jolt.host/ref-put! ch :remote-addr (make-isa nil inet port)))
+
+      :else (throw (java.nio.channels.UnsupportedAddressTypeException.))))
+  (jolt.host/ref-put! ch :connected? true)
+  true)
+
+(defn- channel-local-address [ch]
+  (ensure-channel-open! ch)
+  (let [fd (jolt.host/ref-get ch :fd)]
+    (if (= native/af-unix (jolt.host/ref-get ch :family))
+      (unix-address (or (native/local-path fd) ""))
+      (when-let [a (local-inet fd)]
+        (make-isa nil a (local-port fd))))))
+
+(defn- channel-read! [ch bb]
+  (ensure-channel-connected! ch)
+  (let [want (min (.remaining bb) recv-max)]
+    (if (zero? want)
+      0
+      (channel-io ch
+        (let [[buf size] (take-recv-buf! ch want)]
+          (try
+            (let [n (do-recv ch (jolt.host/ref-get ch :fd) buf want)]
+              (when (pos? n)
+                (let [arr (byte-array n)]
+                  (ffi/read-into! buf :byte arr 0 0 n)
+                  (.put bb arr 0 n)))
+              n)
+            (finally (return-recv-buf! ch buf size))))))))
+
+(defn- channel-write! [ch bb]
+  (ensure-channel-connected! ch)
+  (when (jolt.host/ref-get ch :out-shutdown?) (closed-channel!))
+  (let [n (.remaining bb)]
+    (when (pos? n)
+      (let [arr (byte-array n)
+            buf (ffi/alloc n)]
+        (.get bb arr)
+        (try
+          (ffi/write-array buf :byte arr 0 0 n)
+          (channel-io ch (send-fully! ch (jolt.host/ref-get ch :fd) buf n))
+          (finally (ffi/free buf)))))
+    n))
+
+(defn- channel-shutdown! [ch how flag]
+  (ensure-channel-connected! ch)
+  (when-not (jolt.host/ref-get ch flag)
+    (jolt.host/ref-put! ch flag true)
+    (with-op ch
+      (let [[r e] (native/c-shutdown (jolt.host/ref-get ch :fd) how)]
+        (when (and (neg? r) (not= e native/enotconn))
+          (jolt.host/ref-put! ch flag false)
+          (throw (java.net.SocketException. (native/error-message e)))))))
+  ch)
+
+(defn- configure-blocking [ch block?]
+  (ensure-channel-open! ch)
+  (when-not block?
+    (throw (UnsupportedOperationException.
+            "non-blocking mode: jolt's socket channels are blocking only (there is no Selector)")))
+  ch)
+
+(defn- addr-text [a] (when a (str (if (unix-address? a) (unix-path a) a))))
+
+(defn- socket-channel->str [ch]
+  (str "java.nio.channels.SocketChannel["
+       (cond (jolt.host/ref-get ch :closed?) "closed"
+             (jolt.host/ref-get ch :connected?)
+             (str "connected local=" (addr-text (try (channel-local-address ch) (catch Throwable _ nil)))
+                  " remote=" (addr-text (jolt.host/ref-get ch :remote-addr)))
+             :else "unconnected")
+       "]"))
+
+(def ^:private socket-channel-methods
+  {"connect"        channel-connect!
+   "finishConnect"  (fn [ch] (ensure-channel-open! ch) (boolean (jolt.host/ref-get ch :connected?)))
+   "isConnected"    (fn [ch] (boolean (jolt.host/ref-get ch :connected?)))
+   "isConnectionPending" (fn [_] false)
+   "isOpen"         (fn [ch] (not (jolt.host/ref-get ch :closed?)))
+   "isBlocking"     (fn [_] true)
+   "configureBlocking" configure-blocking
+   "close"          (fn [ch] (close-owner! ch))
+   "read"           channel-read!
+   "write"          channel-write!
+   "shutdownInput"  (fn [ch] (channel-shutdown! ch native/shut-rd :in-shutdown?))
+   "shutdownOutput" (fn [ch] (channel-shutdown! ch native/shut-wr :out-shutdown?))
+   "getLocalAddress"  channel-local-address
+   "getRemoteAddress" (fn [ch] (ensure-channel-open! ch) (jolt.host/ref-get ch :remote-addr))
+   "toString"       socket-channel->str})
+
+(defn- open-socket-channel
+  ([] (new-socket-channel native/af-inet (new-fd! native/af-inet) true))
+  ([x]
+   (when (nil? x) (throw (NullPointerException.)))
+   (if (#{:unix-address :inet-socket-address} (jolt.host/ref-get x :jolt/type))
+     (let [ch (if (unix-address? x)
+                (new-socket-channel native/af-unix (new-fd! native/af-unix) false)
+                (open-socket-channel))]
+       (try (channel-connect! ch x)
+            (catch Throwable e (close-owner! ch) (throw e)))
+       ch)
+     (let [fam (protocol-family x)]
+       (new-socket-channel fam (new-fd! fam) false)))))
+
+;; -- ServerSocketChannel --
+(defn- new-server-channel [family fd any-family?]
+  (doto (tt :server-socket-channel "sun.nio.ch.ServerSocketChannelImpl")
+    (jolt.host/ref-put! :fd fd)
+    (jolt.host/ref-put! :family family)
+    (jolt.host/ref-put! :any-family? any-family?)
+    (jolt.host/ref-put! :closed? false)
+    (jolt.host/ref-put! :bound? false)))
+
+(defn- open-server-channel
+  ([] (new-server-channel native/af-inet (new-fd! native/af-inet) true))
+  ([pf]
+   (let [fam (protocol-family pf)]
+     (new-server-channel fam (new-fd! fam) false))))
+
+;; What bind(null) binds a unix listener to: a fresh name in the temp directory,
+;; as the JDK's does.
+(defn- temp-unix-path []
+  ;; File joins with the platform separator: tmpdir ends in \ on Windows
+  (.getPath (java.io.File. (or (System/getProperty "java.io.tmpdir") "/tmp")
+                           (str "socket_" (Long/toHexString (rand-int Integer/MAX_VALUE))))))
+
+(defn- unix-listen! [ch path backlog]
+  (let [fd (jolt.host/ref-get ch :fd)
+        [sa len] (unix-sockaddr path)]
+    (try
+      (let [[r e] (native/c-bind fd sa len)]
+        (when (neg? r) (throw (socket-failure e))))
+      (let [[r e] (native/c-listen fd backlog)]
+        (when (neg? r) (throw (socket-failure e))))
+      (finally (ffi/free sa)))
+    (jolt.host/ref-put! ch :local-addr (unix-address (or (native/local-path fd) path)))))
+
+(defn- inet-listen! [ch addr backlog]
+  (let [inet (if addr (or (isa-addr addr) (throw (java.nio.channels.UnresolvedAddressException.))) (any-local))
+        port (if addr (jolt.host/ref-get addr :port) 0)
+        have (jolt.host/ref-get ch :family)]
+    (when (and (inet6? inet) (= have native/af-inet) (not (jolt.host/ref-get ch :any-family?)))
+      (throw (java.nio.channels.UnsupportedAddressTypeException.)))
+    (let [[fd fam] (bind-listen! inet port backlog nil)
+          old (locking ch
+                (when-not (jolt.host/ref-get ch :closed?)
+                  (let [o (jolt.host/ref-get ch :fd)]
+                    (jolt.host/ref-put! ch :fd fd)
+                    (jolt.host/ref-put! ch :family fam)
+                    o)))]
+      (if old
+        (fd-release! old)
+        (do (native/c-close fd) (closed-channel!)))
+      (jolt.host/ref-put! ch :local-addr (make-isa nil inet (if (zero? port) (local-port fd) port))))))
+
+(defn- server-channel-bind! [ch addr backlog]
+  (ensure-channel-open! ch)
+  (when (jolt.host/ref-get ch :bound?) (throw (java.nio.channels.AlreadyBoundException.)))
+  (let [backlog (if (< backlog 1) 50 backlog)]
+    (if (= native/af-unix (jolt.host/ref-get ch :family))
+      (cond
+        (nil? addr) (unix-listen! ch (temp-unix-path) backlog)
+        (unix-address? addr) (unix-listen! ch (unix-path addr) backlog)
+        :else (throw (java.nio.channels.UnsupportedAddressTypeException.)))
+      (cond
+        (or (nil? addr) (= :inet-socket-address (jolt.host/ref-get addr :jolt/type)))
+        (inet-listen! ch addr backlog)
+        :else (throw (java.nio.channels.UnsupportedAddressTypeException.)))))
+  (jolt.host/ref-put! ch :bound? true)
+  ch)
+
+(defn- server-channel-accept [ch]
+  (ensure-channel-open! ch)
+  (when-not (jolt.host/ref-get ch :bound?)
+    (throw (java.nio.channels.NotYetBoundException.)))
+  (let [[sa lenp] (native/alloc-sockaddr)
+        fd  (jolt.host/ref-get ch :fd)
+        fam (jolt.host/ref-get ch :family)]
+    (try
+      (let [cfd (channel-io ch (io-call ch #(native/c-accept fd sa lenp) fd :read))]
+        (when (neg? cfd) (throw (java.io.IOException. "accept() failed")))
+        (guard-fd! cfd)
+        (doto (new-socket-channel fam cfd false)
+          (jolt.host/ref-put! :connected? true)
+          (jolt.host/ref-put! :remote-addr
+                              (if (= fam native/af-unix)
+                                (unix-address (native/sockaddr-un-path sa (ffi/read lenp :int 0)))
+                                (make-isa nil (sockaddr->inet sa) (native/sockaddr-port sa))))))
+      (finally (ffi/free sa) (ffi/free lenp)))))
+
+(defn- server-channel->str [ch]
+  (str "sun.nio.ch.ServerSocketChannelImpl["
+       (cond (jolt.host/ref-get ch :closed?) "closed"
+             (jolt.host/ref-get ch :bound?) (addr-text (jolt.host/ref-get ch :local-addr))
+             :else "unbound")
+       "]"))
+
+(def ^:private server-socket-channel-methods
+  {"bind"           (fn
+                      ([ch addr] (server-channel-bind! ch addr 0))
+                      ([ch addr backlog] (server-channel-bind! ch addr (int backlog))))
+   "accept"         server-channel-accept
+   "close"          (fn [ch] (close-owner! ch))
+   "isOpen"         (fn [ch] (not (jolt.host/ref-get ch :closed?)))
+   "isBlocking"     (fn [_] true)
+   "configureBlocking" configure-blocking
+   "getLocalAddress" (fn [ch] (ensure-channel-open! ch) (jolt.host/ref-get ch :local-addr))
+   "toString"       server-channel->str})
+
+;; -- Channels --
+(defn- channel-stream [ch tag cls marker]
+  (when (nil? ch) (throw (NullPointerException. "ch")))
+  (when-not (= :socket-channel (jolt.host/ref-get ch :jolt/type))
+    (throw (UnsupportedOperationException.
+            (str "Channels stream over " (class ch) ": jolt adapts socket channels only"))))
+  (doto (tt tag cls)
+    (jolt.host/ref-put! marker true)
+    (jolt.host/ref-put! :fd (jolt.host/ref-get ch :fd))
+    (jolt.host/ref-put! :socket ch)))
+
+(def ^:private channels-statics
+  {"newInputStream"
+   (fn [ch] (channel-stream ch :socket-input-stream "sun.nio.ch.ChannelInputStream" :jolt/in-stream))
+   "newOutputStream"
+   (fn [ch] (channel-stream ch :socket-output-stream "java.nio.channels.Channels$1" :jolt/out-stream))})
+
 ;; -- value-semantics + registration -------------------------------------------
 
 (def ^:private tag->classes
@@ -1621,7 +1994,19 @@
    :inet-address         #{"InetAddress" "java.net.InetAddress"}
    :interface-address    #{"InterfaceAddress" "java.net.InterfaceAddress"}
    :network-interface    #{"NetworkInterface" "java.net.NetworkInterface"}
-   :enumeration          #{"Enumeration" "java.util.Enumeration"}})
+   :enumeration          #{"Enumeration" "java.util.Enumeration"}
+   :unix-address         #{"UnixDomainSocketAddress" "java.net.UnixDomainSocketAddress"
+                           "SocketAddress" "java.net.SocketAddress"}
+   :socket-channel       #{"SocketChannel" "java.nio.channels.SocketChannel"
+                           "sun.nio.ch.SocketChannelImpl"
+                           "java.nio.channels.ByteChannel" "java.nio.channels.ReadableByteChannel"
+                           "java.nio.channels.WritableByteChannel" "java.nio.channels.Channel"
+                           "java.nio.channels.NetworkChannel" "java.io.Closeable"
+                           "java.lang.AutoCloseable"}
+   :server-socket-channel #{"ServerSocketChannel" "java.nio.channels.ServerSocketChannel"
+                            "sun.nio.ch.ServerSocketChannelImpl"
+                            "java.nio.channels.Channel" "java.nio.channels.NetworkChannel"
+                            "java.io.Closeable" "java.lang.AutoCloseable"}})
 
 (def ^:private tag->render
   {:socket              socket->str
@@ -1630,7 +2015,10 @@
    :inet-socket-address isa->str
    :inet-address        inet-address->str
    :interface-address   ia->str
-   :network-interface   ni->str})
+   :network-interface   ni->str
+   :unix-address        unix-path
+   :socket-channel      socket-channel->str
+   :server-socket-channel server-channel->str})
 
 (def ^:private registered? (atom false))
 
@@ -1662,6 +2050,18 @@
     (clojure.core/__register-class-statics! "NetworkInterface" network-interface-statics)
     (clojure.core/__register-class-statics! "java.net.NetworkInterface" network-interface-statics)
 
+    (clojure.core/__register-class-methods! :unix-address unix-address-methods)
+    (clojure.core/__register-class-statics! "UnixDomainSocketAddress" unix-address-statics)
+    (clojure.core/__register-class-statics! "java.net.UnixDomainSocketAddress" unix-address-statics)
+    (clojure.core/__register-class-methods! :socket-channel socket-channel-methods)
+    (clojure.core/__register-class-methods! :server-socket-channel server-socket-channel-methods)
+    (clojure.core/__register-class-statics! "SocketChannel" {"open" open-socket-channel})
+    (clojure.core/__register-class-statics! "java.nio.channels.SocketChannel" {"open" open-socket-channel})
+    (clojure.core/__register-class-statics! "ServerSocketChannel" {"open" open-server-channel})
+    (clojure.core/__register-class-statics! "java.nio.channels.ServerSocketChannel" {"open" open-server-channel})
+    (clojure.core/__register-class-statics! "Channels" channels-statics)
+    (clojure.core/__register-class-statics! "java.nio.channels.Channels" channels-statics)
+
     (clojure.core/__register-class-ctor! "Socket" socket-ctor)
     (clojure.core/__register-class-ctor! "java.net.Socket" socket-ctor)
 
@@ -1683,16 +2083,19 @@
     ;; = and hash on an InetAddress or InetSocketAddress are by value, as
     ;; their equals/hashCode are.
     (clojure.core/__register-eq!
-      (fn [a b] (or (contains? #{:inet-address :inet-socket-address} (jolt.host/ref-get a :jolt/type))
-                    (contains? #{:inet-address :inet-socket-address} (jolt.host/ref-get b :jolt/type))))
+      (fn [a b] (or (contains? #{:inet-address :inet-socket-address :unix-address} (jolt.host/ref-get a :jolt/type))
+                    (contains? #{:inet-address :inet-socket-address :unix-address} (jolt.host/ref-get b :jolt/type))))
       (fn [a b]
-        (let [ta (jolt.host/ref-get a :jolt/type)]
-          (if (= ta :inet-address) (inet-address= a b) (isa= a b)))))
+        (case (jolt.host/ref-get a :jolt/type)
+          :inet-address (inet-address= a b)
+          :unix-address (boolean (and (unix-address? b) (= (unix-path a) (unix-path b))))
+          (if (unix-address? b) false (isa= a b)))))
     (clojure.core/__register-hash!
-      (fn [x] (contains? #{:inet-address :inet-socket-address} (jolt.host/ref-get x :jolt/type)))
+      (fn [x] (contains? #{:inet-address :inet-socket-address :unix-address} (jolt.host/ref-get x :jolt/type)))
       (fn [x]
-        (if (= :inet-address (jolt.host/ref-get x :jolt/type))
-          (inet-address-hash x)
+        (case (jolt.host/ref-get x :jolt/type)
+          :inet-address (inet-address-hash x)
+          :unix-address (.hashCode ^String (unix-path x))
           (isa-hash x))))
 
     ;; (str sock) renders through toString like Java; pred is two cheap lookups.

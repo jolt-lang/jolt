@@ -1425,6 +1425,13 @@
            ;; (reflection on the Class reads the registries it fills), and one
            ;; this program does not carry is a ClassNotFoundException
            (lazy-shims-class-for-name! nm)
+           ;; a class a stdlib or library provider claims (java.net.Socket is
+           ;; jolt.socket's) loads that provider, as a reference to it does: a
+           ;; capability probe must not answer ClassNotFoundException for a class
+           ;; the program can use (jolt-lang/jolt#1911)
+           (and (lib-try-autoload! nm)
+                (or (hashtable-ref class-statics-tbl nm #f)
+                    (hashtable-ref class-ctors-tbl nm #f)))
            (jch-known-exact? nm))))
 (define (forname-qualified? nm)
   (let loop ((i 0))

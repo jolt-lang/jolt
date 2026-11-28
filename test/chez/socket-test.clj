@@ -1631,6 +1631,141 @@
   (fib/spawn (fn [] (deliver p (late-connect))))
   (check-eq "…on a fiber too" (deref p 5000 :hung) :connected))
 
+;; -- unix-domain sockets and NIO socket channels (jolt-lang/jolt#1911) ---------
+;; UnixDomainSocketAddress and SocketChannel/ServerSocketChannel over AF_UNIX:
+;; bind in a temp directory, connect, a line each way through Channels' streams,
+;; close, remove the path. The class must resolve for a capability probe before
+;; anything has named it.
+(check-eq "Class/forName finds UnixDomainSocketAddress"
+          (str (Class/forName "java.net.UnixDomainSocketAddress"))
+          "class java.net.UnixDomainSocketAddress")
+(check-eq "Class/forName finds SocketChannel"
+          (str (Class/forName "java.nio.channels.SocketChannel"))
+          "class java.nio.channels.SocketChannel")
+
+(defn- uds-dir []
+  (let [d (io/file (System/getProperty "java.io.tmpdir")
+                   (str "jolt-uds-" (System/nanoTime) "-" (rand-int 100000)))]
+    (.mkdirs d)
+    d))
+
+(let [dir    (uds-dir)
+      path   (str dir "/s.sock")
+      addr   (java.net.UnixDomainSocketAddress/of path)
+      server (java.nio.channels.ServerSocketChannel/open java.net.StandardProtocolFamily/UNIX)]
+  (try
+    (check-eq "an unbound unix listener" (str server) "sun.nio.ch.ServerSocketChannelImpl[unbound]")
+    (.bind server addr)
+    (check-eq "getLocalAddress is the bound path" (str (.getLocalAddress server)) path)
+    (check-eq "the path is a file once bound" (.exists (io/file path)) true)
+    (let [served (future
+                   (let [peer (.accept server)]
+                     (try
+                       (let [in  (io/reader (java.nio.channels.Channels/newInputStream peer))
+                             out (io/writer (java.nio.channels.Channels/newOutputStream peer))
+                             line (.readLine in)]
+                         (.write out (str "echo:" line "\n"))
+                         (.flush out)
+                         [line (str (.getRemoteAddress peer))])
+                       (finally (.close peer)))))
+          client (java.nio.channels.SocketChannel/open addr)]
+      (try
+        (check-eq "a connected unix channel" (.isConnected client) true)
+        (check-eq "its remote address is the listener's path" (.getRemoteAddress client) addr)
+        (let [out (io/writer (java.nio.channels.Channels/newOutputStream client))
+              in  (io/reader (java.nio.channels.Channels/newInputStream client))]
+          (.write out "hello\n")
+          (.flush out)
+          (check-eq "the reply crosses back" (.readLine in) "echo:hello")
+          (check-eq "the server read the line; an unbound client is unnamed"
+                    (deref served 5000 :hung) ["hello" ""])
+          (check-eq "EOF once the peer closed" (.readLine in) nil))
+        (finally (.close client))))
+    (check-eq "the listener is still open" (.isOpen server) true)
+    (check-eq "binding a path that exists fails like the JDK"
+              (let [s2 (java.nio.channels.ServerSocketChannel/open java.net.StandardProtocolFamily/UNIX)]
+                (try (.bind s2 addr) :bound
+                     (catch java.net.BindException e (.getMessage e))
+                     (finally (.close s2))))
+              "Address already in use")
+    (check-eq "binding twice is AlreadyBoundException"
+              (try (.bind server addr) :bound
+                   (catch java.nio.channels.AlreadyBoundException _ :already-bound))
+              :already-bound)
+    (finally (.close server)))
+  (check-eq "closing the listener leaves its path" (.exists (io/file path)) true)
+  (check-eq "connecting to a path nothing listens on is refused"
+            (try (java.nio.channels.SocketChannel/open (java.net.UnixDomainSocketAddress/of path)) :connected
+                 (catch java.net.ConnectException e :refused))
+            :refused)
+  (io/delete-file path)
+  (check-eq "connecting to a missing path fails"
+            (try (java.nio.channels.SocketChannel/open (java.net.UnixDomainSocketAddress/of path)) :connected
+                 (catch java.net.SocketException e :failed))
+            :failed)
+  (check-eq "a path over the platform's sun_path limit fails clearly"
+            (let [s (java.nio.channels.ServerSocketChannel/open java.net.StandardProtocolFamily/UNIX)]
+              (try (.bind s (java.net.UnixDomainSocketAddress/of (str dir "/" (apply str (repeat 120 "x")))))
+                   :bound
+                   (catch java.net.SocketException e (.getMessage e))
+                   (finally (.close s))))
+            "Unix domain path too long")
+  (io/delete-file dir))
+
+(check-eq "UnixDomainSocketAddress is a value"
+          (let [a (java.net.UnixDomainSocketAddress/of "/x/y")]
+            [(= a (java.net.UnixDomainSocketAddress/of "/x/y")) (hash a) (str (.getPath a))
+             (instance? java.net.SocketAddress a)])
+          [true (hash (java.net.UnixDomainSocketAddress/of "/x/y")) "/x/y" true])
+(check-eq "a unix channel takes no inet address"
+          (let [c (java.nio.channels.SocketChannel/open java.net.StandardProtocolFamily/UNIX)]
+            (try (.connect c (java.net.InetSocketAddress. "127.0.0.1" 1)) :connected
+                 (catch java.nio.channels.UnsupportedAddressTypeException _ :unsupported)
+                 (finally (.close c))))
+          :unsupported)
+(check-eq "bind(null) names a unix listener in the temp directory"
+          (let [s (java.nio.channels.ServerSocketChannel/open java.net.StandardProtocolFamily/UNIX)]
+            (.bind s nil)
+            (let [p (str (.getLocalAddress s))]
+              (.close s)
+              (io/delete-file p)
+              (str/starts-with? p (str (System/getProperty "java.io.tmpdir")))))
+          true)
+
+;; the same channels over TCP, with ByteBuffer reads and writes, the accept
+;; parked on a fiber
+(let [server (java.nio.channels.ServerSocketChannel/open)]
+  (try
+    (.bind server (java.net.InetSocketAddress. "127.0.0.1" 0))
+    (let [p (promise)]
+      (fib/spawn
+       (fn []
+         (deliver p (let [peer (.accept server) bb (java.nio.ByteBuffer/allocate 16)
+                          n (.read peer bb)]
+                      (.flip bb)
+                      (.write peer bb)
+                      (.close peer)
+                      n))))
+      (let [c (java.nio.channels.SocketChannel/open (.getLocalAddress server))]
+        (try
+          (.write c (java.nio.ByteBuffer/wrap (.getBytes "ping")))
+          (let [bb (java.nio.ByteBuffer/allocate 16) n (.read c bb)]
+            (check-eq "a TCP channel echoes through ByteBuffers" (String. (.array bb) 0 n) "ping"))
+          (check-eq "the accept parked on a fiber" (deref p 5000 :hung) 4)
+          (check-eq "EOF is -1" (.read c (java.nio.ByteBuffer/allocate 4)) -1)
+          (finally (.close c)))
+        (check-eq "a closed channel refuses a read"
+                  (try (.read c (java.nio.ByteBuffer/allocate 1)) :read
+                       (catch java.nio.channels.ClosedChannelException _ :closed))
+                  :closed)))
+    (finally (.close server))))
+(check-eq "channels are blocking only"
+          (let [c (java.nio.channels.SocketChannel/open)]
+            (try [(.isBlocking c) (try (.configureBlocking c false) :ok
+                                       (catch UnsupportedOperationException _ :refused))]
+                 (finally (.close c))))
+          [true :refused])
+
 (if (empty? @failures)
   (println "SOCKET-TEST OK")
   (do (doseq [f @failures] (println "FAIL:" f))

@@ -1434,6 +1434,13 @@
         (cons "SYNC"              (make-oopt 'sync))
         (cons "DSYNC"             (make-oopt 'dsync))))
 (register-enum-class! "java.nio.file.attribute.PosixFilePermission" pfp-constants)
+;; java.net.StandardProtocolFamily, which ServerSocketChannel/open and
+;; SocketChannel/open take (jolt.socket). Declared here rather than in jolt.socket
+;; because an enum is a host model; jolt.socket reads a constant by its name.
+(register-enum-class! "java.net.StandardProtocolFamily"
+  (list (cons "INET"  (make-jhost "protocol-family" 'inet))
+        (cons "INET6" (make-jhost "protocol-family" 'inet6))
+        (cons "UNIX"  (make-jhost "protocol-family" 'unix))))
 
 ;; copy / move honor REPLACE_EXISTING; write honors APPEND. newOutputStream's
 ;; options need a fuller mapping because CREATE_NEW is an atomic filesystem
