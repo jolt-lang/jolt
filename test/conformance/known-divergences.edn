@@ -1468,6 +1468,19 @@
            :jvm "throws RuntimeException"
            :jolt "\"a 3 b 4\""}
    :note "clojure.core.strint/<< ships alongside it and expands through the same grammar; a string with no marker reads as itself, so #$\"plain\" IS \"plain\"."}
+  ;; *reader-resolver* reaches ::k, ::alias/k and #::{} (reader.ss rdr-resolver)
+  ;; but not syntax-quote: jolt lowers a backquote against *ns* and its aliases,
+  ;; where LispReader asks the resolver's resolveClass/resolveVar/currentNS. Only
+  ;; a tool that binds a resolver and reads backquoted source sees it; clj-reload
+  ;; (jolt.reload) binds one but reads only ns forms and top-level def heads.
+  {:category :reader-model
+   :behavior "`foo read with a *reader-resolver* whose currentNS is cur"
+   :jvm "(quote cur/foo), qualified through the resolver"
+   :jolt "(quote user/foo), qualified against *ns*"
+   :check {:expr "(binding [*reader-resolver* (reify clojure.lang.LispReader$Resolver (currentNS [_] (quote cur)) (resolveClass [_ s] nil) (resolveAlias [_ s] nil) (resolveVar [_ s] nil))] (read-string \"`foo\"))"
+           :jvm "(quote cur/foo)"
+           :jolt "(quote user/foo)"}
+   :note "Known since jolt.reload (PR #1898)."}
   ;; Class reflection answers from what jolt REGISTERS for a class — a deftype's
   ;; methods and fields (the protocol/type registry), an ArrayList's methods (the
   ;; host shim tables), Long/MAX_VALUE and Math/floor (class-statics) — because

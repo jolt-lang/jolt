@@ -211,6 +211,7 @@ make-proxy-in
 make-sorted
 make-thread-local
 map-entry
+mark-loaded!
 mark-spliced!
 maximum-memory-bytes
 method-overload-entry
