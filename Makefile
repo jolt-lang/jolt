@@ -736,9 +736,12 @@ footprint: testbin
 # bounds the total heap (not only the live data) within the collector's working
 # room -- 10%: Chez cannot compact in place, so a full collection over live data
 # near the limit either copies (room for a second copy) or marks in place
-# (fragments that cannot go back to the OS) --
+# (fragments that cannot go back to the OS), and leaves out the boot image as
+# -Xmx leaves out code (a 96m ceiling holds data beside a 93MB image) --
 # JOLT_MAX_RAM_PERCENTAGE sets the heap ceiling, and a bad value is refused by
-# name. Each mode is its own process, since the policy is per process.
+# name. Each mode is its own process, since the policy is per process. The
+# ceiling cases run under 196m: the room 256m left beside the 60MB boot image
+# they were sized for, so they stay near the ceiling as the image grows.
 # Recipes run under bash -e (.cache/makes/init.mk), so a capture whose process is
 # meant to fail takes `|| true` and the check after it decides; without it the
 # recipe exits there with no FAIL line (macOS's make 3.81 ignores .SHELLFLAGS,
@@ -763,18 +766,21 @@ gcpolicy: testbin
 	 tenth=$$(JOLT_NO_USER_DEPS=1 JOLT_MAX_RAM_PERCENTAGE=10 $$j -e '(print (.maxMemory (Runtime/getRuntime)))'); \
 	 [ $$((tenth * 25 / 10)) -le $$((full + 1)) ] && [ $$((tenth * 25 / 10)) -ge $$((full - 4)) ] || { echo "FAIL gcpolicy: JOLT_MAX_RAM_PERCENTAGE=10 gave $$tenth against $$full at the default 25"; exit 1; }; \
 	 errf=$$(mktemp); \
-	 out=$$(JOLT_NO_USER_DEPS=1 JOLT_GC_LOG=1 JOLT_MAX_HEAP=256m $$j run $$t ceiling 2>"$$errf"); \
+	 out=$$(JOLT_NO_USER_DEPS=1 JOLT_GC_LOG=1 JOLT_MAX_HEAP=196m $$j run $$t ceiling 2>"$$errf"); \
 	 set -- $$(printf '%s\n' "$$out" | sed -n 's/^peak //p'); pk=$$1; mx=$$3; \
 	 after=$$(sed -n 's/^gc: .* total \([0-9]*\)MB .*/\1/p' "$$errf" | sort -n | tail -1); rm -f "$$errf"; \
-	 echo "gcpolicy: JOLT_MAX_HEAP=256m with ~100MB held -> total after collections $${after}MB, peak $$((pk / 1048576))MB, max $$((mx / 1048576))MB"; \
-	 [ -n "$$after" ] && [ $$((after * 1048576 * 10)) -le $$((mx * 11)) ] || { echo "FAIL gcpolicy: a collection left the total heap at $${after}MB, more than 10% over JOLT_MAX_HEAP=256m: the ceiling bounds the TOTAL heap, as -Xmx does, within the collector's working room"; exit 1; }; \
-	 [ -n "$$pk" ] && [ $$((pk * 10)) -le $$((mx * 11)) ] || { echo "FAIL gcpolicy: the total heap peaked at $$pk during collections, more than 10% over JOLT_MAX_HEAP=256m (v0.8.12 peaked 23% over)"; exit 1; }; \
+	 echo "gcpolicy: JOLT_MAX_HEAP=196m with ~100MB held -> total after collections $${after}MB, peak $$((pk / 1048576))MB, max $$((mx / 1048576))MB"; \
+	 [ -n "$$after" ] && [ $$((after * 1048576 * 10)) -le $$((mx * 11)) ] || { echo "FAIL gcpolicy: a collection left the total heap at $${after}MB, more than 10% over JOLT_MAX_HEAP=196m: the ceiling bounds the TOTAL heap, as -Xmx does, within the collector's working room"; exit 1; }; \
+	 [ -n "$$pk" ] && [ $$((pk * 10)) -le $$((mx * 11)) ] || { echo "FAIL gcpolicy: the total heap peaked at $$pk during collections, more than 10% over JOLT_MAX_HEAP=196m (v0.8.12 peaked 23% over)"; exit 1; }; \
 	 fdir=$$(mktemp -d); \
 	 for pad in 0 1024 4096 8192; do \
-	   set -- $$(cd "$$fdir" && JOLT_NO_USER_DEPS=1 JOLT_MAX_HEAP=256m "$(CURDIR)/$$j" run "$(CURDIR)/test/gc_ceiling_forced_test.clj" $$pad 2>&1 | sed -n 's/^peak //p'); pk=$$1; mx=$$3; \
+	   set -- $$(cd "$$fdir" && JOLT_NO_USER_DEPS=1 JOLT_MAX_HEAP=196m "$(CURDIR)/$$j" run "$(CURDIR)/test/gc_ceiling_forced_test.clj" $$pad 2>&1 | sed -n 's/^peak //p'); pk=$$1; mx=$$3; \
 	   echo "gcpolicy: a ceiling-forced full collection with ~140MB spread over the older generations, $${pad}KB more at boot -> peak $$(($${pk:-0} / 1048576))MB"; \
-	   [ -n "$$pk" ] && [ $$((pk * 10)) -le $$((mx * 11)) ] || { rmdir "$$fdir"; echo "FAIL gcpolicy: the heap peaked at $${pk:-?} near the ceiling with $${pad}KB more at boot, more than 10% over JOLT_MAX_HEAP=256m: a collection under the ceiling copied more than the room left (a whole generation beside its sources; sa-collect-young!, sa-collect-tight; jolt-exoj)"; exit 1; }; \
+	   [ -n "$$pk" ] && [ $$((pk * 10)) -le $$((mx * 11)) ] || { rmdir "$$fdir"; echo "FAIL gcpolicy: the heap peaked at $${pk:-?} near the ceiling with $${pad}KB more at boot, more than 10% over JOLT_MAX_HEAP=196m: a collection under the ceiling copied more than the room left (a whole generation beside its sources; sa-collect-young!, sa-collect-tight; jolt-exoj)"; exit 1; }; \
 	 done; rmdir "$$fdir"; \
+	 set -- $$(JOLT_NO_USER_DEPS=1 JOLT_MAX_HEAP=96m $$j run $$t boot 2>&1 | sed -n 's/^boot held //p'); \
+	 echo "gcpolicy: JOLT_MAX_HEAP=96m beside a $$(($${3:-0} / 1048576))MB boot image held $${1:-nothing}, totalMemory $$(($${7:-0} / 1048576))MB of maxMemory $$(($${5:-0} / 1048576))MB"; \
+	 [ "$${1:-}" = 300000 ] && [ "$${5:-}" = 100663296 ] && [ $$(($${7:-0} * 10)) -le $$(($$5 * 11)) ] || { echo "FAIL gcpolicy: the ceiling counted the boot image: under JOLT_MAX_HEAP=96m a program could not hold ~50MB, or totalMemory went past maxMemory (the ceiling leaves the image out, as -Xmx leaves out code and metaspace)"; exit 1; }; \
 	 set -- $$(JOLT_NO_USER_DEPS=1 $$j run $$t refresh 2>&1 | sed -n 's/^growth //p'); \
 	 echo "gcpolicy: older generations' allowance with ~100MB held $$(($${1:-0} / 1048576))MB, after dropping it and System/gc $$(($${2:-0} / 1048576))MB"; \
 	 [ -n "$${2:-}" ] && [ "$$1" -gt 67108864 ] && [ "$$2" -ge 67108864 ] && [ $$(($$2 * 2)) -lt "$$1" ] || { echo "FAIL gcpolicy: System/gc did not re-measure the live set the older generations' allowance is sized from"; exit 1; }; \

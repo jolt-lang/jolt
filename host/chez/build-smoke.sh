@@ -398,20 +398,24 @@ hm_off="$(JOLT_MAX_HEAP=off heap_max)"
 if [ "$hm_off" != "9223372036854775807" ]; then
   echo "  FAIL: JOLT_MAX_HEAP=off gave $hm_off, want Long/MAX_VALUE"; exit 1
 fi
-# and exceeding one is an error the program can catch, not a SIGKILL. 256m, not
-# something smaller: a built binary's own baseline live heap is ~83MB here, and a
-# ceiling under that cannot be satisfied at all (checked separately below).
+# and exceeding one is an error the program can catch, not a SIGKILL.
 hm_oom="$(cd / && JOLT_MAX_HEAP=256m "$out" --heap-oom 2>&1 | sed -n 's/^heap-oom: //p')"
 if [ "$hm_oom" != ":caught-oom" ]; then
   echo "  FAIL: exceeding a 256m ceiling gave '$hm_oom', want :caught-oom"; exit 1
 fi
-# a ceiling below the runtime's own live heap is rejected AS a bad setting, named
-# as such, rather than failing somewhere inside namespace initialization
-hm_low="$(cd / && JOLT_MAX_HEAP=16m "$out" --heap 2>&1 | head -2)"
+# a ceiling too small to use is rejected AS a bad setting, named as such, rather
+# than failing somewhere inside namespace initialization. The ceiling leaves out
+# the boot image, so what a built program holds at startup is next to nothing;
+# the floor is the JVM's instead: 2m starts, 1m is "Too small maximum heap".
+hm_low="$(cd / && JOLT_MAX_HEAP=1m "$out" --heap 2>&1 | head -2)"
 case "$hm_low" in
-  *"smaller than the runtime's own live heap"*) : ;;
-  *) echo "  FAIL: a 16m ceiling should be refused with a clear message, got: $hm_low"; exit 1 ;;
+  *"JOLT_MAX_HEAP is too small"*) : ;;
+  *) echo "  FAIL: a 1m ceiling should be refused with a clear message, got: $hm_low"; exit 1 ;;
 esac
+hm_two="$(JOLT_MAX_HEAP=2m heap_max)"
+if [ "$hm_two" != "2097152" ]; then
+  echo "  FAIL: a 2m ceiling, the JVM's floor, gave $hm_two, want 2097152"; exit 1
+fi
 
 # A NAMED inner fn inside a spliced callee (jolt-pzos). Two claims:
 #  - the alpha-rename the splicer applies for hygiene (step-boom -> step-boom__ilN)

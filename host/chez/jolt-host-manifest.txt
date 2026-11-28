@@ -322,6 +322,7 @@ source-roots
 stack-limit
 stash-inline!
 static-member
+static-memory-bytes
 stop-main-pump
 symlink?
 table?
