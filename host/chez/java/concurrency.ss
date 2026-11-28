@@ -4067,6 +4067,94 @@
         ;; AbstractCollection.toString: the elements, head first
         (cons "toString" (lambda (self) (host-elems-tostring self (abq-snapshot self))))))
 (alias-host-methods! "lbq" "abq")
+;; --- SynchronousQueue ---------------------------------------------------------
+;; A queue with no capacity: each insert waits for a remove and each remove for
+;; an insert, so an element is handed from one thread straight to another.
+;; promesa's cached-executor builds its ThreadPoolExecutor over one. That pool
+;; only reads a queue argument for an ArrayBlockingQueue's capacity, so here the
+;; class mostly has to exist and behave as the JDK's does when used directly.
+;;
+;; state #(mutex cond items takers): ITEMS are the offers waiting to be taken,
+;; oldest first, each #(value taken?); TAKERS counts removers waiting with no
+;; item yet. An untimed offer succeeds only when a taker is waiting for it, as
+;; the JDK's does; put and a timed offer wait until their item is taken, and
+;; withdraw it on a timeout or an interrupt. As a Collection it is always empty.
+(define (make-sync-queue) (make-jhost "sync-queue" (vector (make-mutex) (jolt-make-cv) '() 0)))
+(define (sq-take-item! st)               ; under the mutex, ITEMS non-empty
+  (let ((e (car (vector-ref st 2))))
+    (vector-set! st 2 (cdr (vector-ref st 2)))
+    (vector-set! e 1 #t)
+    (jolt-cv-wake! (vector-ref st 1))
+    (vector-ref e 0)))
+(define (sq-withdraw! st e) (vector-set! st 2 (remq e (vector-ref st 2))))
+;; Hand V over, waiting until a taker has it. TIMEOUT is the (n unit) argument
+;; list, or #f to wait for as long as it takes. Answers #t once taken, #f when
+;; the timeout runs out first.
+(define (sq-put-wait self v timeout)
+  (let* ((st (jhost-state self)) (mu (vector-ref st 0)) (e (vector v #f)))
+    (jolt-with-mutex mu
+      (vector-set! st 2 (append (vector-ref st 2) (list e)))
+      (jolt-cv-wake! (vector-ref st 1)))
+    (guard (x (#t (jolt-with-mutex mu (unless (vector-ref e 1) (sq-withdraw! st e))) (raise x)))
+      (jolt-cv-wait-interruptibly "SynchronousQueue.put" mu (vector-ref st 1)
+                                  (and timeout (ms->timeout (tu-args->ms timeout)))
+        (lambda (timed-out?)
+          (cond ((vector-ref e 1) #t)
+                (timed-out? (sq-withdraw! st e) #f)
+                (else jolt-cv-again)))))))
+;; Take an item, waiting for one. Answers (v . #t), or #f on a timeout.
+(define (sq-take-wait self timeout)
+  (let* ((st (jhost-state self)) (mu (vector-ref st 0)))
+    (or (jolt-with-mutex mu
+          (if (pair? (vector-ref st 2))
+              (cons (sq-take-item! st) #t)
+              (begin (vector-set! st 3 (fx+ (vector-ref st 3) 1))
+                     (jolt-cv-wake! (vector-ref st 1))
+                     #f)))
+        (guard (x (#t (jolt-with-mutex mu (vector-set! st 3 (fx- (vector-ref st 3) 1))) (raise x)))
+          (jolt-cv-wait-interruptibly "SynchronousQueue.take" mu (vector-ref st 1)
+                                      (and timeout (ms->timeout (tu-args->ms timeout)))
+            (lambda (timed-out?)
+              (cond ((pair? (vector-ref st 2))
+                     (vector-set! st 3 (fx- (vector-ref st 3) 1))
+                     (cons (sq-take-item! st) #t))
+                    (timed-out? (vector-set! st 3 (fx- (vector-ref st 3) 1)) #f)
+                    (else jolt-cv-again))))))))
+;; An untimed offer: only into the hands of a taker already waiting.
+(define (sq-offer-now self v)
+  (let ((st (jhost-state self)))
+    (jolt-with-mutex (vector-ref st 0)
+      (and (fx>? (vector-ref st 3) (length (vector-ref st 2)))
+           (begin (vector-set! st 2 (append (vector-ref st 2) (list (vector v #f))))
+                  (jolt-cv-wake! (vector-ref st 1))
+                  #t)))))
+(define (sq-null-check v) (when (jolt-nil? v) (throw-jvm (quote NullPointerException) jolt-nil)))
+(register-host-methods! "sync-queue"
+  (list (cons "offer" (lambda (self v . args)
+          (sq-null-check v)
+          (if (null? args) (sq-offer-now self v) (sq-put-wait self v args))))
+        (cons "put" (lambda (self v) (sq-null-check v) (sq-put-wait self v #f) jolt-nil))
+        (cons "add" (lambda (self v)
+          (sq-null-check v)
+          (or (sq-offer-now self v) (throw-jvm (quote IllegalStateException) "Queue full"))))
+        (cons "take" (lambda (self) (car (sq-take-wait self #f))))
+        (cons "poll" (lambda (self . args)
+          (if (null? args)
+              (let ((st (jhost-state self)))
+                (jolt-with-mutex (vector-ref st 0)
+                  (if (pair? (vector-ref st 2)) (sq-take-item! st) jolt-nil)))
+              (let ((r (sq-take-wait self args))) (if r (car r) jolt-nil)))))
+        (cons "peek" (lambda (self) jolt-nil))
+        (cons "size" (lambda (self) 0))
+        (cons "remainingCapacity" (lambda (self) 0))
+        (cons "isEmpty" (lambda (self) #t))
+        (cons "contains" (lambda (self v) #f))
+        (cons "clear" (lambda (self) jolt-nil))
+        (cons "iterator" (lambda (self) (make-jiterator (list->cseq '()))))
+        (cons "toArray" (lambda (self . _) (na-to-array (list->cseq '()))))
+        (cons "toString" (lambda (self) "[]"))))
+(for-each (lambda (nm) (register-class-ctor! nm (lambda _ (make-sync-queue))))
+          '("SynchronousQueue" "java.util.concurrent.SynchronousQueue"))
 ;; a blocking queue is a java.util Collection: str, seq and the image see its
 ;; elements (jutil-colls.ss)
 (register-jutil-coll! "abq" 'coll abq-snapshot)
@@ -4430,6 +4518,104 @@
           (executor-schedule! self task initial unit (scheduled-period-ms period unit 1))))
         (cons "scheduleWithFixedDelay" (lambda (self task initial delay unit)
           (executor-schedule! self task initial unit (scheduled-period-ms delay unit -1))))))
+;; --- ForkJoinPool -------------------------------------------------------------
+;; The pool behind promesa's default executor (ForkJoinPool/commonPool) and its
+;; forkjoin-executor. It is jolt's executor service under the ForkJoinPool class:
+;; submit, execute, invokeAll, shutdown and awaitTermination work as they do for
+;; a ThreadPoolExecutor, with daemon workers that start as tasks arrive, up to
+;; the parallelism, and retire after the keep-alive (60 seconds by default, the
+;; JDK's). There is no work stealing and no ForkJoinTask: a task runs on a
+;; worker like any other pool's.
+;;
+;; The commonPool is one pool for the process, sized at availableProcessors - 1
+;; (at least 1), as the JDK sizes it, and shutdown and shutdownNow leave it
+;; running, as the JDK's do.
+;;
+;; A ForkJoinWorkerThreadFactory reaches the pool as a ThreadFactory would: each
+;; worker is the Thread its newThread answers, started by the pool. So a factory
+;; that names its threads or sets their daemon flag (promesa's does both, over
+;; defaultForkJoinWorkerThreadFactory) sees those threads run the tasks. The
+;; argument its newThread receives is the worker to run rather than the pool, and
+;; the Thread it answers is a java.lang.Thread, not a ForkJoinWorkerThread; that
+;; is the one divergence a factory can observe.
+(define fj-default-keep-alive-ms 60000)
+(define (make-forkjoin-pool parallelism factory keep-ms)
+  (let ((n (jnum->exact parallelism)))
+    (when (or (< n 1) (> n #x7fff))
+      (throw-jvm (quote IllegalArgumentException) jolt-nil))
+    (make-executor* "forkjoin-pool" 0 n keep-ms #f #t
+                    (and factory (not (fj-default-factory? factory)) factory))))
+(define fj-default-factory (make-jhost "fj-default-factory" (vector)))
+(define (fj-default-factory? x) (eq? x fj-default-factory))
+;; newThread(worker): an unstarted daemon Thread over the worker. Called with an
+;; actual pool (directly, not by a pool spawning a worker), it answers a daemon
+;; Thread with nothing to run.
+(register-host-methods! "fj-default-factory"
+  (list (cons "newThread" (lambda (self x)
+          (let ((t (host-new "java.lang.Thread"
+                             (if (and (jhost? x) (string=? (jhost-tag x) "forkjoin-pool"))
+                                 (lambda () jolt-nil)
+                                 x))))
+            (record-method-dispatch t "setDaemon" (jolt-list #t))
+            t)))
+        (cons "toString" host-object-tostring)))
+(define fj-common-pool-cell #f)
+(define fj-common-pool-mu (make-mutex))
+(define (fj-common-parallelism) (max 1 (- (jolt-available-processors) 1)))
+;; Built outside the lock (making a pool can park, which a held lock must not
+;; see) and installed under it only if no other thread got there first. A pool
+;; that loses that race has no workers yet, since they start with the first task,
+;; so dropping it costs nothing.
+(define (fj-common-pool)
+  (or (jolt-with-mutex fj-common-pool-mu fj-common-pool-cell)
+      (let ((p (make-forkjoin-pool (fj-common-parallelism) #f fj-default-keep-alive-ms)))
+        (jolt-with-mutex fj-common-pool-mu
+          (unless fj-common-pool-cell (set! fj-common-pool-cell p))
+          fj-common-pool-cell))))
+(define (fj-common? self) (and fj-common-pool-cell (eq? self fj-common-pool-cell)))
+;; Its own table rather than the ThreadPoolExecutor's (ForkJoinPool is not one,
+;; so derive-host-methods! refuses, and alias-host-methods! would share the
+;; table and its overrides): the members a ForkJoinPool has call through to the
+;; executor service's.
+(define (fj-delegate name)
+  (lambda (self . args) (apply (host-method-ref "executor-service" name) self args)))
+(register-host-methods! "forkjoin-pool"
+  (map (lambda (nm) (cons nm (fj-delegate nm)))
+       '("submit" "execute" "invokeAll" "invokeAny" "isShutdown" "isTerminated"
+         "awaitTermination" "getPoolSize" "getActiveCount" "toString")))
+(register-host-methods! "forkjoin-pool"
+  (list (cons "getParallelism" (lambda (self) (vector-ref (jhost-state self) 7)))
+        (cons "shutdown" (lambda (self)
+          (unless (fj-common? self) ((host-method-ref "executor-service" "shutdown") self))
+          jolt-nil))
+        (cons "shutdownNow" (lambda (self)
+          (if (fj-common? self)
+              (host-new "java.util.ArrayList")
+              ((host-method-ref "executor-service" "shutdownNow") self))))
+        (cons "close" (lambda (self)
+          (unless (fj-common? self) ((host-method-ref "executor-service" "close") self))
+          jolt-nil))))
+;; (), (parallelism), (parallelism factory handler asyncMode), and the JDK 9
+;; (parallelism factory handler asyncMode corePoolSize maximumPoolSize
+;; minimumRunnable saturate keepAliveTime unit). The handler, asyncMode and the
+;; sizing arguments past the parallelism are accepted and not used; keepAliveTime
+;; is.
+(for-each (lambda (nm) (register-class-ctor! nm
+            (case-lambda
+              (() (make-forkjoin-pool (jolt-available-processors) #f fj-default-keep-alive-ms))
+              ((n) (make-forkjoin-pool n #f fj-default-keep-alive-ms))
+              ((n factory handler async?)
+               (make-forkjoin-pool n (if (jolt-nil? factory) #f factory) fj-default-keep-alive-ms))
+              ((n factory handler async? core max-n min-run saturate keep unit)
+               (make-forkjoin-pool n (if (jolt-nil? factory) #f factory) (tu->ms keep unit))))))
+          '("ForkJoinPool" "java.util.concurrent.ForkJoinPool"))
+;; one list for both spellings: they share a member table, and registering a
+;; fresh lambda under each reads as one member registered twice.
+(let ((statics (list (cons "commonPool" (lambda () (fj-common-pool)))
+                     (cons "getCommonPoolParallelism" (lambda () (fj-common-parallelism)))
+                     (cons "defaultForkJoinWorkerThreadFactory" fj-default-factory))))
+  (for-each (lambda (nm) (register-class-statics! nm statics))
+            '("ForkJoinPool" "java.util.concurrent.ForkJoinPool")))
 ;; ScheduledThreadPoolExecutor ctor: (corePoolSize [factory] [handler]) — at least
 ;; one worker, as every pool here (a pool with no worker runs nothing; the JVM's
 ;; ensurePrestart starts one on demand for core 0).

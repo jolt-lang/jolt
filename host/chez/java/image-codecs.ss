@@ -243,6 +243,7 @@
   "an iterator is a position in a walk this process is making; write the collection instead")
 (register-image-refusal!
   '("user-thread" "thread-group" "executor-service" "vthread-executor" "scheduled-executor" "cf-delayed-executor"
+    "forkjoin-pool" "fj-default-factory" "sync-queue"
     "future-task" "j-future" "scheduled-future" "completable-future" "process" "process-handle")
   "it is execution, not state: a thread, a pool or a task belongs to this process")
 (register-image-refusal!

@@ -1102,6 +1102,8 @@
   '("java.util.AbstractQueue" "java.util.concurrent.BlockingQueue" "java.io.Serializable"))
 (jch-register-supers! "java.util.concurrent.LinkedBlockingQueue"
   '("java.util.AbstractQueue" "java.util.concurrent.BlockingQueue" "java.io.Serializable"))
+(jch-register-supers! "java.util.concurrent.SynchronousQueue"
+  '("java.util.AbstractQueue" "java.util.concurrent.BlockingQueue" "java.io.Serializable"))
 (jch-register-supers! "java.util.Deque" '("java.util.Queue" "java.util.SequencedCollection"))
 (jch-register-supers! "java.util.LinkedList" '("java.util.List" "java.util.Deque"))
 (jch-register-supers! "java.util.ArrayDeque" '("java.util.Deque"))
@@ -1385,6 +1387,16 @@
 (jch-register-supers! "java.util.concurrent.ThreadPoolExecutor"
                       '("java.util.concurrent.AbstractExecutorService"
                         "java.util.concurrent.ExecutorService" "java.util.concurrent.Executor"))
+;; ForkJoinPool (concurrency.ss): an AbstractExecutorService, NOT a
+;; ThreadPoolExecutor. ForkJoinWorkerThread is registered so that it resolves as
+;; a class (promesa imports it and hints with it), though a pool's workers are
+;; java.lang.Threads here.
+(jch-register-supers! "java.util.concurrent.ForkJoinPool"
+                      '("java.util.concurrent.AbstractExecutorService"
+                        "java.util.concurrent.ExecutorService" "java.util.concurrent.Executor"))
+(jch-register-supers! "java.util.concurrent.ForkJoinWorkerThread" '("java.lang.Thread"))
+(jch-register-supers! "java.util.concurrent.ForkJoinPool$DefaultForkJoinWorkerThreadFactory"
+                      '("java.util.concurrent.ForkJoinPool$ForkJoinWorkerThreadFactory"))
 (jch-register-supers! "java.util.concurrent.Future" '())
 (jch-mark-interface! "java.util.concurrent.Future")
 (jch-register-supers! "java.util.concurrent.RunnableFuture"
@@ -1627,6 +1639,9 @@
     ("vthread-factory" . "java.lang.ThreadBuilders$VirtualThreadFactory")
     ("abq" . "java.util.concurrent.ArrayBlockingQueue")
     ("lbq" . "java.util.concurrent.LinkedBlockingQueue")
+    ("sync-queue" . "java.util.concurrent.SynchronousQueue")
+    ("forkjoin-pool" . "java.util.concurrent.ForkJoinPool")
+    ("fj-default-factory" . "java.util.concurrent.ForkJoinPool$DefaultForkJoinWorkerThreadFactory")
     ("future-task" . "java.util.concurrent.FutureTask")
     ;; Executors' pools are ThreadPoolExecutors on the JVM too, and what their
     ;; submit returns is a FutureTask — the same class the "future-task" tag

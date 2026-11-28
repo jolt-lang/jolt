@@ -46,6 +46,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   diagnostics (type hints that do nothing) it used to print on its own. Errors
   apply everywhere. The check's compile-time cost is within noise on the
   compile-forms bench, check on vs off; `JOLT_CHECK=0` turns it off.
+- `java.util.concurrent.ForkJoinPool` and `SynchronousQueue`, so promesa's
+  default executor (`ForkJoinPool/commonPool`), `forkjoin-executor` and
+  `cached-executor` start, and `p/future` and `px/submit!` without an explicit
+  executor run. A `ForkJoinPool` is jolt's executor service under that class:
+  `submit`, `execute`, `invokeAll`, `shutdown` and `awaitTermination` work, its
+  daemon workers start as tasks arrive, up to the parallelism, and a
+  `ForkJoinWorkerThreadFactory` names and configures them. The `commonPool` is
+  shared, sized at availableProcessors - 1, and ignores `shutdown`. There is no
+  work stealing and no `ForkJoinTask`, and a worker is a `java.lang.Thread`
+  rather than a `ForkJoinWorkerThread`. `SynchronousQueue` hands each element
+  from a producer to a consumer: `put` waits for a taker, an untimed `offer`
+  succeeds only when one is waiting, and as a collection it is always empty.
 
 ### Changed
 
