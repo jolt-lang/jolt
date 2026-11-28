@@ -47,7 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the out-of-memory messages leave it out too, so `totalMemory` stays under
   `maxMemory`. `jolt.host/static-memory-bytes` reports the image's size. A
   process now uses up to the image's size more memory than it did under the
-  same setting.
+  same setting. As with `-Xmx`, a ceiling under 2MB is refused at startup.
 
 ### Performance
 

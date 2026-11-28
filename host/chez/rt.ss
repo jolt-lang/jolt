@@ -616,6 +616,7 @@
 ;; install; what is reported (maxMemory, totalMemory, the GC log, error
 ;; messages) leaves it out.
 (define gc-boot-bytes 0)
+(define heap-ceiling-min (* 2 1024 1024))   ; the JVM's: -Xmx1m is refused, 2m starts
 (define gc-heap-limit #f)                ; ceiling + gc-boot-bytes; #f = unbounded
 (define (gc-heap-bytes b) (max 0 (- b gc-boot-bytes)))
 ;; The ceiling JOLT_MAX_HEAP asks for, else the default; #f for none.
@@ -638,6 +639,16 @@
     ;; (163MB against 62MB live): collect before refusing, or a 150m ceiling --
     ;; and the default one in a 512MB container -- reads as under the runtime.
     (set! gc-boot-bytes (sa-static-memory-bytes))
+    ;; With the boot image left out, a built program holds next to nothing at
+    ;; this point, so the live-heap check alone let a 1k ceiling start. Refuse
+    ;; under the JVM's own floor: `java -Xmx1m` is "Too small maximum heap",
+    ;; -Xmx2m starts.
+    (when (and ceiling (< ceiling heap-ceiling-min))
+      (error 'jolt
+             (string-append
+               "JOLT_MAX_HEAP is too small: asked for " (number->string ceiling)
+               " bytes, and the smallest ceiling is " (number->string heap-ceiling-min)
+               " (2m), as for -Xmx. Raise it, or JOLT_MAX_HEAP=off for no ceiling.")))
     (when (and ceiling (<= ceiling (gc-heap-bytes (sa-bytes-allocated))))
       (sa-gc-collect))
     (when (and ceiling (<= ceiling (gc-heap-bytes (sa-bytes-allocated))))
