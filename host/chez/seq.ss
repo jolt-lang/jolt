@@ -1780,12 +1780,15 @@
 ;; Math.pow over proven doubles. Java's pow is not C's: a NaN exponent is NaN
 ;; even for a base of 1.0, and so is a base of magnitude 1.0 to an infinite
 ;; power, where flexpt (C's pow) answers 1.0. Every other special case agrees.
+;; An exponent of 2.0 is the one multiply a*a, which is what HotSpot answers:
+;; glibc's pow is only within an ulp, so (Math/pow -135965.65000000002 2)
+;; came out one ulp above the JVM's, and the multiply is also far cheaper.
 (define-syntax jolt-fl-pow
   (syntax-rules ()
     ((_ ea eb) (let ((a ea) (b eb))
-                 (if (or (nan? b) (and (infinite? b) (fl= (flabs a) 1.0)))
-                     +nan.0
-                     (flexpt a b))))))
+                 (cond ((fl= b 2.0) (fl* a a))
+                       ((or (nan? b) (and (infinite? b) (fl= (flabs a) 1.0))) +nan.0)
+                       (else (flexpt a b)))))))
 (define-syntax jolt-l-inc (syntax-rules () ((_ a) (jolt-l-checked (+ a 1)))))
 (define-syntax jolt-l-dec (syntax-rules () ((_ a) (jolt-l-checked (- a 1)))))
 
