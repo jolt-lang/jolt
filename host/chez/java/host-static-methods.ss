@@ -1508,12 +1508,11 @@
         (cons "contains" jolt-contains?) (cons "find" (rt-core-var "find"))
         (cons "keys" jolt-keys) (cons "vals" jolt-vals)
         (cons "peek" jolt-peek) (cons "pop" jolt-pop) (cons "subvec" (rt-core-var "subvec"))
-        ;; one array representation, so the typed aset/aget overloads are one
-        ;; each; aget/alength are the core fns, which know an array (jolt-nth
-        ;; alone does not)
-        (cons "aget" (rt-core-var "aget"))
+        ;; One representation covers the typed overloads. A two-argument aget
+        ;; is a single nth, without the core var's variadic index walk.
+        (cons "aget" (lambda (arr i) (jolt-nth arr i)))
         (cons "aset" (lambda (arr i v) (jolt-ref-put! arr (jnum->exact i) v) v))
-        (cons "alength" (rt-core-var "alength"))
+        (cons "alength" (lambda (arr) (jolt-alength arr)))
         (cons "booleanCast" jolt-boolean) (cons "charCast" jolt-char)
         (cons "byteCast" jolt-byte-cast) (cons "shortCast" jolt-short-cast)
         (cons "intCast" jolt-int-cast) (cons "longCast" jolt-long-cast)
