@@ -480,9 +480,8 @@
 ;; Copy n elements from SRC at soff into DST at doff — the region move behind
 ;; System/arraycopy, a ByteBuffer bulk get/put and a heap slice. Two bytevector
 ;; backings are one block move (memmove-shaped, so an overlapping region inside
-;; one byte array is correct without the backwards walk); everything else steps,
-;; descending when the regions overlap forwards in the SAME backing, which is
-;; what gives arraycopy's "as if through a temporary" without the temporary.
+;; one byte array is correct without the backwards walk). The element-wise
+;; fallback walks backwards for a forward overlap in the same backing.
 (define (ja-copy-range! src soff dst doff n)
   (let ((sv (jolt-array-vec src)) (dv (jolt-array-vec dst)))
     (cond
@@ -500,6 +499,9 @@
       ;; overlapping region inside one char array is correct without the
       ;; descending walk below — the same reason the bytevector arm is here.
       ((and (string? sv) (string? dv)) (sa-string-copy-range! dv doff sv soff (+ soff n)))
+      ;; Plain Object[] has a vector backing and accepts every reference.
+      ((and (eq? (jolt-array-kind src) 'object) (eq? (jolt-array-kind dst) 'object))
+       (vector-copy! sv soff dv doff n))
       ((and (eq? sv dv) (< soff doff))
        (let loop ((i (- n 1)))
          (when (>= i 0) (ja-set! dst (+ doff i) (ja-ref src (+ soff i))) (loop (- i 1)))))
