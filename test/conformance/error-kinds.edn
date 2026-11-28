@@ -126,6 +126,16 @@
  "A symbol that names neither a local, an interned var, nor an imported class.
   Carries :symbol, :suggestions and :ns alongside the position."
 
+ :analyze/type-error
+ "A call that can never succeed: a core op handed an argument PROVEN to be a
+  type it throws on (`(+ \"s\" 1)`, `(count :a)`, a local a `string?` test
+  narrowed passed to `inc`), or a value proven not to be a function called as
+  one. Only literals and what the compiler proves from them feed it, never a
+  type hint, a var's value or a caller, so it rejects nothing that could run.
+  A call inside a `try` that catches is a warning instead (a `thrown?`
+  assertion is a valid reason to write it). Carries :errors, one entry per
+  such call in the form."
+
  :analyze/unknown-namespace
  "A qualified symbol whose namespace half is namespace-shaped — dotted, with a
   lowercase segment after the last dot — and names no loaded namespace at all: a

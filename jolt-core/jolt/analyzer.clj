@@ -54,7 +54,8 @@
                                          host-call-arg-casts static-invoke host-call-target-class
                                          with-ret-nhint fi-tag-class fi-adapt-form
                                          parse-params strip-arglist-meta arglist-ret-nkind arglist-type-method? arglist-meta
-                                         str-target-type kw-target-type sb-target-type]]
+                                         str-target-type kw-target-type sb-target-type
+                                         double-hinted?]]
             [jolt.analyzer.tree :refer [check-recur-tails! fn-free-names check-fn-arities]]
             [jolt.analyzer.ffi :refer [analyze-ffi-layout analyze-ffi-fn analyze-ffi-pointer-fn
                                        analyze-ffi-signature-type]]
@@ -62,7 +63,7 @@
             [jolt.analyzer.interop :refer [catch-dispatch-form field-head? method-head? ctor-head?
                                            array-class-dims array-class-name
                                            method-value-form static-class-ns
-                                           unchecked-arith num-cast invoke-rewrite]]))
+                                           unchecked-arith unchecked-form num-cast invoke-rewrite]]))
 
 (declare analyze)
 ;; the quote arm reaches it well before its definition (it needs analyze itself)
@@ -217,6 +218,7 @@
   (-> env
       (update :locals #(reduce conj % names))
       (update :hints #(reduce dissoc % names))
+      (update :dcasts #(reduce disj (or % #{}) names))
       (update :jclasses #(reduce dissoc % names))
       (update :jlocals #(reduce dissoc % names))
       (update :jprims #(reduce dissoc % names))))
@@ -292,6 +294,7 @@
           ;; an explicit hint wins; init-proves-hint only fills in where the
           ;; programmer wrote nothing.
           (recur (+ i 2) (let [e (-> (add-locals env [nm])
+                                     (cond-> (double-hinted? ctx bsym) (update :dcasts (fnil conj #{}) nm))
                                      (add-hint nm (or (hint-of ctx bsym) (init-proves-hint init)))
                                      (add-jclass nm (or (sym-tag-class ctx bsym) (init-jclass ctx init env)))
                                      (add-jlocal nm (binding-jlocal ctx bsym init env)))]
@@ -877,8 +880,10 @@
 
 (defn- analyze-let* [ctx form items env]
   (let [env (if (wraps? (:here env) :let) (wrapper-env ctx form env) env)
-        [pairs env*] (analyze-bindings ctx (binding-vector items) env)]
-    (let-node pairs (analyze-body ctx (drop 2 items) env* (or (:here env) :expression)))))
+        bvec (binding-vector items)
+        [pairs env*] (analyze-bindings ctx bvec env)
+        node (let-node pairs (analyze-body ctx (drop 2 items) env* (or (:here env) :expression)))]
+    node))
 
 (defn- analyze-loop* [ctx form items env]
   (let [hm (form-sym-meta (first items))
@@ -1366,7 +1371,9 @@
   (let [nm (form-sym-name form) ns (form-sym-ns form)]
     (cond
       (and (nil? ns) (local? env nm))
-        (let [h (get (:hints env) nm)] (if h (assoc (local nm) :hint h) (local nm)))
+        (let [h (get (:hints env) nm)
+              n (if h (assoc (local nm) :hint h) (local nm))]
+          (if (contains? (:dcasts env) nm) (assoc n :dcast true) n))
       ns (analyze-qualified-symbol ctx form nm ns env)
       :else (analyze-global-symbol ctx form nm env))))
 
@@ -1627,7 +1634,7 @@
         (cond
           ;; *unchecked-math* rewrite, before macro/special dispatch (these are
           ;; ordinary core fns). The unchecked-* form re-analyzes normally.
-          unm (analyze ctx (cons (symbol unm) (rest items)) env)
+          unm (analyze ctx (unchecked-form unm (rest items)) env)
           ;; Canonical order (Clojure/CLJS analyze-seq): macroexpand FIRST, then
           ;; dispatch special forms / interop / invoke. A local shadows the macro.
           ;; A true special form is NOT shadowable by a same-named macro, matching

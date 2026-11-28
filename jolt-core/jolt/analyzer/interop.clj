@@ -140,13 +140,26 @@
 
 (defn unchecked-arith [hname n]
   (cond
-    (= hname "+") "unchecked-add"
-    (= hname "*") "unchecked-multiply"
-    (= hname "-") (if (= n 2) "unchecked-negate" "unchecked-subtract")
+    ;; The JVM inlines + and * only from two args up (:inline-arities >1?), so
+    ;; (+ a), (+) and (*) stay the ordinary fns; - inlines from one, as a negate.
+    (= hname "+") (when (>= n 3) "unchecked-add")
+    (= hname "*") (when (>= n 3) "unchecked-multiply")
+    (= hname "-") (cond (= n 2) "unchecked-negate" (>= n 3) "unchecked-subtract")
     (= hname "inc") "unchecked-inc"
     (= hname "dec") "unchecked-dec"
     :else (when-let [[arity target] (get unchecked-int-ops hname)]
             (when (= n arity) target))))
+
+;; The form an unchecked-arith rewrite analyzes: the op over the call's args, and
+;; past two args the left-nested pairs clojure.core's nary-inline expands to, since
+;; unchecked-add/-subtract/-multiply take exactly two: (+ a b c) is
+;; (unchecked-add (unchecked-add a b) c).
+(defn unchecked-form [unm args]
+  (let [op (symbol unm)]
+    (if (and (> (count args) 2)
+             (contains? #{"unchecked-add" "unchecked-subtract" "unchecked-multiply"} unm))
+      (reduce (fn [acc a] (list op acc a)) (list op (first args) (second args)) (drop 2 args))
+      (cons op args))))
 
 ;; A clojure.core numeric cast (double/long/int/float/byte/short of one arg)
 ;; becomes a :coerce node carrying the checked runtime helper, so it feeds the
