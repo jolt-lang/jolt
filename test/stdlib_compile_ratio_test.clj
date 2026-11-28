@@ -68,8 +68,23 @@
     [(reduce min (map first ps)) (reduce min (map second ps))]))
 
 (def ^:private failures (atom []))
+(declare judge-row!)
+
+;; STDLIBRATIO_ONLY, a comma-separated list of labels, judges those rows and
+;; skips the rest. The Makefile sets it to re-judge a failed run's rows in a
+;; fresh process (see the stdlibratio target): blank? has read 1.41 and 1.74 on
+;; every round of one CI process, its minimum over 21 samples included, and 0.95
+;; on the same commit's rerun, so whatever held it there belonged to the
+;; process, and a re-measure inside it cannot clear it. A real regression reads
+;; high in every process, so the second process costs the gate no power.
+(def ^:private only
+  (some-> (System/getenv "STDLIBRATIO_ONLY") not-empty (str/split #",") set))
 
 (defn- judge! [label ns-sym fname n call ceiling]
+  (when (or (nil? only) (contains? only label))
+    (judge-row! label ns-sym fname n call ceiling)))
+
+(defn- judge-row! [label ns-sym fname n call ceiling]
   (let [cns (copy-ns! ns-sym)
         sf @(ns-resolve ns-sym fname)
         uf @(ns-resolve cns fname)

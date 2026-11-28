@@ -97,6 +97,10 @@ jolt.parser.position
 jolt.process
 jolt.profile
 jolt.reader
+jolt.reload
+jolt.reload.keep
+jolt.reload.parse
+jolt.reload.util
 jolt.scheme
 jolt.socket
 jolt.tasks

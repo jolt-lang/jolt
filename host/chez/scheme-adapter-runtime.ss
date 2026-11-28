@@ -123,6 +123,15 @@
 (define (sa-total-memory-bytes)
   (current-memory-bytes))
 
+;; (sa-static-memory-bytes) -> exact integer
+;; The boot image's share of sa-bytes-allocated: what Chez's static generation
+;; holds, the compiled runtime and stdlib that no collection moves or frees. The
+;; heap ceiling leaves it out, as -Xmx leaves out code and metaspace (rt.ss
+;; jolt-install-gc-policy!). Contract: bytes the program's data can never use.
+;; Degradation: 0 -- the ceiling then counts the image, as it did before.
+(define (sa-static-memory-bytes)
+  (bytes-allocated 'static))
+
 ;; (sa-gc-reserve-ratio! r) -> void
 ;; How much free memory the collector keeps from the OS after a collection, as a
 ;; ratio of the memory in use (a nonnegative real): the rest it returns. Chez's

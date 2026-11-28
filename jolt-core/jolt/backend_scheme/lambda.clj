@@ -9,13 +9,14 @@
             [jolt.ir :refer [reduce-ir-children]]
             [jolt.backend-scheme.session
              :refer [*array-vecs* *self-recs* *dbg-scope* *known-procs* *letrec-binders*
-                     *qualifying-ns* *recur-target* *self-wrap* *site-call* *tail?*
+                     *psite-owner* *qualifying-ns* *recur-target* *self-wrap* *site-call* *tail?*
                      *trace-frame* *trace-self* *trace-site* *variadic-reg-suppressed?* dbg-record
-                     debug-locals? fresh-label target trace-frames?]]
+                     debug-locals? fresh-label seed-mint? target trace-frames?]]
             [jolt.backend-scheme.hoist :refer [*cache-cells* *const-pool* hoist-const hoist-const-per-site]]
             [jolt.backend-scheme.once :refer [*once-clears* once-last-uses]]
             [jolt.backend-scheme.fnsrc
              :refer [*fnsrc-def-init?* *fnsrc-ns* *fnsrc-regs* fnsrc-maker-site
+                     fnsrc-pos-table fnsrc-pos-file
                      fnsrc-name fnsrc-system-ns?]]))
 
 ;; One arity -> a Scheme lambda param-list + a named-let-wrapped body. The named
@@ -100,7 +101,7 @@
                              (recur (into work (:args n)) (conj acc [(:val k) (:val i) (:val c)])))
           :else (recur (reduce-ir-children conj work n) acc))))))
 
-(defn- self-receiver
+(defn self-receiver
   "[param-munged flag binding-string] for an arity that reads its first param's
   fields at two or more sites, else nil."
   [a]
@@ -479,7 +480,16 @@
 ;; map-indexed, distinct and tree-seq capture.
 (defn- register-fn-literal [node nm src-ns inner]
   (let [frees (:free-names node)
-        lives (:live-names node)]
+        lives (:live-names node)
+        ;; a top-level literal that closes over nothing is what the runtime
+        ;; specializer recompiles and inlines (#1861), from text that reads
+        ;; back with no positions: its positions ride alongside
+        pos (when (and (nil? *psite-owner*) (empty? frees) (nil? lives)
+                       (not= :gambit (target)) (not (seed-mint?)))
+              (when-let [t (fnsrc-pos-table (:src-form node))]
+                [(or (fnsrc-pos-file (:src-form node))
+                     (let [p (:pos node)] (when (map? p) (:file p))))
+                 t]))]
     (if (or lives (nil? *cache-cells*)
             ;; nothing captured, nothing to recover: the restore wrapper
             ;; binds no free names, so this closure never needs a layout
@@ -488,9 +498,9 @@
       ;; no maker: a spliced copy (see above), or a literal emitted outside
       ;; any cache-cell scope — there would be nowhere to bind one, and a
       ;; site calling an unbound maker is worse than a closure that refuses.
-      (do (swap! *fnsrc-regs* conj [nm (:src-form node) src-ns frees lives (:class node)])
+      (do (swap! *fnsrc-regs* conj [nm (:src-form node) src-ns frees lives (:class node) pos])
           inner)
-      (do (swap! *fnsrc-regs* conj [nm (:src-form node) src-ns frees nil (:class node)])
+      (do (swap! *fnsrc-regs* conj [nm (:src-form node) src-ns frees nil (:class node) pos])
           (fnsrc-maker-site nm frees inner)))))
 
 ;; A named fn references itself by name — the analyzer binds that name as a
@@ -618,6 +628,20 @@
       (bind-anon-fn node lambda fnsrc-nm src-ns variadic-fixed
                     (when reg-here? (fresh-label "fnvar"))))))
 
+;; The specializer owner a literal's body emits under (session *psite-owner*).
+;; Only the OUTERMOST literal of a top-level form can own: its procedure is made
+;; once, when the form loads, so a recompiled one can take its place where it
+;; was installed. It must close over nothing -- the recompile has the source
+;; alone -- and not be a def's direct init, which the define names. A
+;; specializer recompile names the owner it is recompiling (:psite-owner), so
+;; the new code's sites keep reporting to it.
+(defn- psite-owner-for [node def-init? fnsrc-nm]
+  (cond
+    (some? *psite-owner*) *psite-owner*
+    (:psite-owner node) (:psite-owner node)
+    (and fnsrc-nm (not def-init?) (some? (:free-names node)) (empty? (:free-names node))) fnsrc-nm
+    :else :none))
+
 (defn emit-fn [emit node]
   (let [;; a def's DIRECT anonymous init is named by its define, so it keeps the
         ;; bare lambda; *fnsrc-def-init?* is set only around that init's emission
@@ -662,8 +686,11 @@
         ;; claimed before the bodies emit, so no nested literal takes it
         variant (claim-step-variant)
         once (fn-once-box node arities)
-        clauses (emit-fn-clauses emit (or (:marked once) arities) self site frame (:clears once) self-wrap)
+        owner (psite-owner-for node def-init? fnsrc-nm)
+        clauses (binding [*psite-owner* owner]
+                  (emit-fn-clauses emit (or (:marked once) arities) self site frame (:clears once) self-wrap))
         clauses (fill-self-wrap clauses self-wrap)
-        _ (maybe-emit-step-variant variant once emit arities self info)
+        _ (binding [*psite-owner* owner]
+            (maybe-emit-step-variant variant once emit arities self info))
         lambda (fn-lambda clauses arities id-nm once)]
     (bind-fn-lambda node lambda qname fnsrc-nm src-ns arities)))

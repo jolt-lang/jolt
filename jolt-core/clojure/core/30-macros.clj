@@ -652,7 +652,19 @@
         arts' (if (vector? (first arts)) (do-art arts) (map do-art arts))]
     (concat (list head) (when named? (list fname)) arts')))
 
+;; A rewritten list keeps the reader position of the list it replaces, so a
+;; method body's calls report their own lines in a backtrace, and the runtime
+;; specializer has the positions to give an inlined copy (#1861). Rebuilt by
+;; map, every list lost it.
+(declare rewrite-field-access*)
 (defn- rewrite-field-access [mplace inst shadowed form]
+  (let [r (rewrite-field-access* mplace inst shadowed form)
+        m (when (seq? form) (meta form))]
+    (if (and m (:line m) (seq? r) (not (identical? r form)))
+      (with-meta (apply list r) (merge m (meta r)))
+      r)))
+
+(defn- rewrite-field-access* [mplace inst shadowed form]
   (let [rw (fn [x] (rewrite-field-access mplace inst shadowed x))
         h (form-head-name form)]
     (cond

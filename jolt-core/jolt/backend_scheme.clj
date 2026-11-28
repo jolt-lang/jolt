@@ -51,7 +51,9 @@
             [jolt.backend-scheme.interop :refer [host-call-emit cast-call]]
             [jolt.backend-scheme.lambda
              :refer [emit-fn emit-nhint-coerce]]
-            [jolt.backend-scheme.fused :refer [emit-fused-invoke]]))
+            [jolt.backend-scheme.fused :refer [emit-fused-invoke]]
+            [jolt.backend-scheme.specialize :as spec :refer [psite-ticked]]
+            [jolt.backend-scheme.slots :refer [emit-deftype-slot-read emit-deftype-slot-write]]))
 
 ;; op-registry and its derived accessor tables live in jolt.op-registry — the
 ;; single source of truth for per-op facts, shared with the passes. Bind them to
@@ -587,7 +589,7 @@
         (str "(let* ((" vf " " vf-src ")" binds ")"
              " (if (eq? " vf " " shim ")"
              " (let* ((" d " (jrec-pic-desc/i " (first ts) ")) (" f " (and " d " (jrdesc-vtable-ref " d " " id "))))"
-             " (if " f " " (with-site (:node c) (kept (emit-call tail? f ts (:tl c) (:ich c))))
+             " (if " f " " (psite-ticked c f d (with-site (:node c) (kept (emit-call tail? f ts (:tl c) (:ich c)))))
              " " (kept (emit-call tail? vf ts (:tl c) (:ich c))) "))"
              (slow shim) "))"))
       :else (str "(let* ((" vf " " vf-src ")" binds ")" (slow nil) ")"))))
@@ -600,6 +602,7 @@
                  "jolt-invoke")
         fsrc (emit (:fnode c))
         chez? (not= :gambit (session/target))
+        via (spec/fallback-site c n chez?)
         ;; the protocol call site keys on the callee's var cell as emitted, so
         ;; a call whose arguments are bound to temporaries first (any argument
         ;; that is not a plain local or constant) is still recognized; the
@@ -618,6 +621,9 @@
                   (fn [operands]
                     (let [cell (and chez? (second (re-find var-cell-deref-re (first operands))))]
                       (cond
+                        via
+                        (emit-proto-site-call (assoc c :fnode {:op :var :ns (:ns (nth via 0)) :name (:name (nth via 0))})
+                                              (first operands) operands callee (nth via 1) true)
                         pk
                         (emit-proto-site-call c (if cell (str "(jolt-var-fn " cell ")") (first operands))
                                               operands callee pk pooled?)
@@ -828,60 +834,6 @@
               (= :const (:op i)) (int? (:val i))
               (= :const (:op cnt)) (int? (:val cnt))
               (< -1 (:val i) (:val cnt))))))
-
-;; jrecN-fI, the per-arity slot accessor (records.ss); its -set! twin is the
-;; write. names.clj lists every one, so a local of that name is renamed away.
-(defn- slot-accessor [n i] (str "jrec" n "-f" i))
-
-(defn- deftype-slot-place [arg-nodes]
-  [(:val (nth arg-nodes 2)) (:val (nth arg-nodes 3))])
-
-(declare emit-deftype-slot-read*)
-(defn- emit-deftype-slot-read [arg-nodes order-args]
-  (let [o0 (first arg-nodes)
-        flag (when (= :local (:op o0)) (get session/*self-recs* (munge-name (:name o0))))]
-    (if flag
-      ;; the arity checked its receiver once (lambda.clj self-receiver)
-      (let [[i n] (deftype-slot-place arg-nodes)]
-        (order-args
-         (fn [as]
-           (str "(if " flag
-                (if (<= n 8) (str " (jrec-slot/u " (first as) " " i ")")
-                    (str " (jrec*-slot/u " (first as) " " i ")"))
-                " (jrec-field " (first as) " " (second as) "))"))))
-      (emit-deftype-slot-read* arg-nodes order-args))))
-
-(defn- emit-deftype-slot-read* [arg-nodes order-args]
-  (let [site (hoist-const-per-site "(jrec-field-site-make)")
-        [i n] (deftype-slot-place arg-nodes)
-        o (fresh-label "_o$")]
-    (order-args
-     (fn [as]
-       (str "(let ((" o " " (first as) "))"
-            " (if (and (jrec? " o ") (eq? (jrec-desc " o ") (unbox " site ")))"
-            (cond
-              ;; on Chez the matched descriptor is the proof: an unchecked load
-              (and (not= :gambit (session/target)) (<= n 8)) (str " (jrec-slot/u " o " " i ")")
-              (not= :gambit (session/target)) (str " (jrec*-slot/u " o " " i ")")
-              (<= n 8) (str " (" (slot-accessor n i) " " o ")")
-              :else (str " (vector-ref (jrec*-vals " o ") " i ")"))
-            " (jrec-own-slot-miss " site " " o " " (second as) " " i " " n ")))")))))
-
-(defn- emit-deftype-slot-write [arg-nodes order-args]
-  (let [site (hoist-const-per-site "(jrec-field-site-make)")
-        [i n] (deftype-slot-place arg-nodes)
-        o (fresh-label "_o$")
-        v (fresh-label "_v$")]
-    (order-args
-     (fn [as]
-       (str "(let ((" o " " (first as) ") (" v " " (nth as 4) "))"
-            " (if (and (jrec? " o ") (eq? (jrec-desc " o ") (unbox " site ")))"
-            (cond
-              (and (not= :gambit (session/target)) (<= n 8)) (str " (begin (jrec-slot-set!/u " o " " i " " v ") " v ")")
-              (not= :gambit (session/target)) (str " (begin (jrec*-slot-set!/u " o " " i " " v ") " v ")")
-              (<= n 8) (str " (begin (" (slot-accessor n i) "-set! " o " " v ") " v ")")
-              :else (str " (begin (vector-set! (jrec*-vals " o ") " i " " v ") " v ")"))
-            " (jrec-own-slot-set-miss! " site " " o " " (second as) " " i " " n " " v ")))")))))
 
 ;; The vector read in front of an indexed call (jolt.passes.numeric
 ;; indexed-invoke): the in-range test pvec-ref-or makes, inline, so a loop over
@@ -1241,6 +1193,7 @@
      (and (= :const (:op node)) (boolean? (:val node))) true
      ;; a guarded splice's test is an eq? (hoist-inline-guard)
      (= :inline-guard (:op node)) true
+     (= :proto-guard (:op node)) true
      ;; the declared-^Record guard emits an (and ...) of jrec-desc-is? tests
      (and (= :invoke (:op node)) (some? (:rec-guard node))) true
      (= :invoke (:op node))
@@ -1459,6 +1412,12 @@
       (contains? #{"jolt-long-cast" "jolt-unchecked-long"} (:cast-fn node))
       (let [t (fresh-label "_lc$")]
         (str "(let ((" t " " e ")) (if (fixnum? " t ") " t " (" (cast-entry node) " " t ")))"))
+      ;; (double x) hands a flonum back unchanged: the same type check first.
+      ;; It is also the cast on each arithmetic use of a ^double let/loop local
+      ;; (jolt.passes.numeric dcast-args), where the value usually is one.
+      (= "jolt-double" (:cast-fn node))
+      (let [t (fresh-label "_dc$")]
+        (str "(let ((" t " " e ")) (if (flonum? " t ") " t " (jolt-double " t ")))"))
       ;; a float cast whose value an fl op takes (:fl-unbox, numeric
       ;; pass) hands it the double it widens to, never building the jfloat
       (and (:fl-unbox node) (contains? #{"jolt-float" "jolt-unchecked-float"} (:cast-fn node)))
@@ -1512,6 +1471,7 @@
     :set-var (str "(jolt-set-var! " (emit (:the-var node)) " " (emit (:val node)) ")")
     ;; does the var still hold the fn a spliced body was compiled from (passes/inline.clj)
     :inline-guard (hoist-inline-guard (emit (:fn node)) (:ns node) (:name node) (:token node))
+    :proto-guard (spec/emit-proto-guard emit node)
     ;; (set! (.-field obj) val) -> mutate the deftype instance field in place.
     ;; Inside a def the site keeps the resolved slot (records.ss jolt-set-own-field!).
     :set-field (let [kw (hoist-const (str "(keyword #f " (chez-str-lit (:field node)) ")"))]
@@ -1561,7 +1521,10 @@
           t (binding [*tail?* false]
               (if (returns-scheme-bool? test) (emit test)
                   (str "(jolt-truthy? " (emit test) ")")))]
-      (str "(if " t " " (emit (:then node)) " " (emit (:else node)) ")"))
+      (str "(if " t " " (if (= :proto-guard (:op test))
+                            (spec/emit-specialized-then emit test (:then node))
+                            (emit (:then node)))
+           " " (emit (:else node)) ")"))
     (str "(begin " (binding [*tail?* false] (str/join " " (mapv emit (:statements node))))
          (if (empty? (:statements node)) "" " ") (emit (:ret node)) ")")))
 
@@ -1685,7 +1648,7 @@
     ;; late-bound var: read the cell's current root at use time. A value-position
     ;; ref to a clojure.core fn the RT provides lowers to the RT procedure.
     :var (emit-var-node node)
-    (:the-var :set-var :set-field :defmacro :inline-guard) (emit-var-form node)
+    (:the-var :set-var :set-field :defmacro :inline-guard :proto-guard) (emit-var-form node)
     (:host :host-static :host-new) (emit-host-node node)
     (:if :do) (emit-if-or-do node)
     :invoke (emit-invoke-maybe-clone node)
