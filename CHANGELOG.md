@@ -68,6 +68,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `jolt.native` region, `defnative` or `defextern` the region compiler
+  rejects reports as `error[native/invalid-region]`, with
+  `:jolt.error/kind :native/invalid-region` in its ex-data. It read as
+  `error[analyze/internal-failure]`, which says the compiler failed, for a
+  mistake in the program such as using an array after a helper took it.
+
 - **The reader honors `*reader-resolver*` and `*suppress-read*`.** With a
   `clojure.lang.LispReader$Resolver` bound, `::k`, `::alias/k`, `#::{}` and
   `#::alias{}` ask it for their namespace, as on the JVM, so a tool can read

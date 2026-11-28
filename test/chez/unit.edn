@@ -1467,6 +1467,10 @@
   ;; descriptor.
   {:suite "reader" :expr "(try (load-string \"(jolt.ffi/__layout [:struct [[1 :int]]])\") (catch Throwable e (str (:jolt.error/kind (ex-data e)))))" :expected "\":ffi/invalid-field\""}
   {:suite "reader" :expr "(try (load-string \"(jolt.ffi/__cfn \\\"strlen\\\" [[:bogus 1]] :size_t)\") (catch Throwable e (str (:jolt.error/kind (ex-data e)))))" :expected "\":ffi/invalid-type\""}
+  ;; A native region the region compiler rejects (ownership, types, an unknown
+  ;; call) is the caller's mistake, so it carries :native/invalid-region rather
+  ;; than reading as :analyze/internal-failure, a bug in the compiler.
+  {:suite "reader" :expr "(try (load-string \"(do (require (quote jolt.native)) (fn [^long n] (jolt.native/native [^long n] (no-such-fn n))))\") (catch Throwable e (str (:jolt.error/kind (ex-data e)))))" :expected "\":native/invalid-region\""}
   ;; (. target member ...) with no member names the shape it wanted, as the
   ;; reference does; the two-element (. 1 5) is the one that says only this much.
   {:suite "reader" :expr "[(try (load-string \"(. 1)\") (catch Throwable e (ex-message e))) (try (load-string \"(. 1 5)\") (catch Throwable e (ex-message e)))]" :expected "[\"Malformed member expression, expecting (. target member ...)\" \"Malformed member expression\"]"}

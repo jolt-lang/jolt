@@ -90,16 +90,16 @@
     (let [types (into {} (map (juxt (comp #(with-meta % nil) :name) :type) (:params region)))]
       (when-not (and (vector? names) (seq names) (every? symbol? names) (apply distinct? names))
         (throw (ex-info (str "native: :specialize takes a vector of parameter names, got " (pr-str names))
-                        {:jolt.native/error true})))
+                        ast/error-data)))
       (doseq [n names]
         (let [t (types n)]
           (cond
             (nil? t) (throw (ex-info (str "native: :specialize names " n ", which is not a parameter")
-                                     {:jolt.native/error true}))
+                                     ast/error-data))
             (not (#{:long :double :bool} t))
             (throw (ex-info (str "native: :specialize takes ^long ^double or ^boolean parameters; " n
                                  " is an array (specialize on a long that gives its size)")
-                            {:jolt.native/error true})))))
+                            ast/error-data)))))
       names)))
 
 (defmacro native
@@ -158,22 +158,22 @@
   (when (some on-form? body)
     (when-not (every? on-form? body)
       (throw (ex-info (str "defnative " name ": with (on ...) bodies, every form must be one")
-                      {:jolt.native/error true})))
+                      ast/error-data)))
     (let [vs (mapv (fn [[_ guard & forms]]
                      (when-not (or (= :default guard)
                                    (and (string? guard) (not (str/blank? guard))
                                         (not (re-find #"[\r\n]" guard))))
                        (throw (ex-info (str "defnative " name ": a guard is a one-line C condition"
                                             " string or :default, got " (pr-str guard))
-                                       {:jolt.native/error true})))
+                                       ast/error-data)))
                      (when (empty? forms)
                        (throw (ex-info (str "defnative " name ": (on " (pr-str guard) ") has no body")
-                                       {:jolt.native/error true})))
+                                       ast/error-data)))
                      {:guard guard :body (vec forms)})
                    body)]
       (when (< 1 (count (filter #(= :default (:guard %)) vs)))
         (throw (ex-info (str "defnative " name ": more than one (on :default ...)")
-                        {:jolt.native/error true})))
+                        ast/error-data)))
       vs)))
 
 (defmacro defnative
@@ -235,7 +235,7 @@
         (and arrays? (extern-arrays tag))
         (throw (ex-info (str "defextern: " what " needs a hint of ^long ^double or ^boolean"
                              (when arrays? ", or ^doubles ^longs") ", got " (pr-str tag))
-                        {:jolt.native/error true})))))
+                        ast/error-data)))))
 
 (def ^:private extern-array-class
   {:doubles (class (double-array 0)) :longs (class (long-array 0))})
@@ -324,9 +324,9 @@
         info (list 'quote {:c c :header header :params ps :ret ret})]
     (when-not (re-matches #"[A-Za-z_][A-Za-z0-9_]*" c)
       (throw (ex-info (str "defextern: " (pr-str c) " is not a C identifier; name it with {:c \"...\"}")
-                      {:jolt.native/error true})))
+                      ast/error-data)))
     (when (and header (not (re-matches #"<?[A-Za-z0-9_./+-]+>?" header)))
-      (throw (ex-info (str "defextern: bad header " (pr-str header)) {:jolt.native/error true})))
+      (throw (ex-info (str "defextern: bad header " (pr-str header)) ast/error-data)))
     (if (some some? kinds)
       (let [raw (symbol (str name "__c"))
             args (mapv #(with-meta (symbol (str "a" %)) nil) (range (count ps)))]
